@@ -28,7 +28,7 @@ const COMPILATION = Object.freeze({
       "--order-type",
       "FAK",
     ],
-    maximumFundingBalance: "1.12",
+    maximumAuthorizedDebit: "1.12",
     expiresAt: "2026-07-21T12:05:00.000Z",
   },
 });

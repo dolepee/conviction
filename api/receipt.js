@@ -1,4 +1,5 @@
 import { ConvictionError } from "../src/errors.mjs";
+import { trustedIssuerRegistryFromEnvironment } from "../src/intent-issuer.mjs";
 import { createPublicApiGuard, PublicApiError } from "../src/public-api-guard.mjs";
 import { fetchAndVerifyPosition } from "../src/receipt-verifier.mjs";
 
@@ -9,9 +10,19 @@ function send(response, status, body) {
 }
 
 export function createReceiptHandler({
-  verifyImpl = fetchAndVerifyPosition,
+  verifyImpl = undefined,
+  trustedIssuers = undefined,
+  environment = process.env,
   publicGuard = createPublicApiGuard({ limit: 15, maxBodyBytes: 32_768, maxInFlight: 6 }),
 } = {}) {
+  let resolvedTrustedIssuers = trustedIssuers;
+  if (!resolvedTrustedIssuers) {
+    try {
+      resolvedTrustedIssuers = trustedIssuerRegistryFromEnvironment(environment);
+    } catch {
+      resolvedTrustedIssuers = new Map();
+    }
+  }
   return async function handler(request, response) {
     if (request.method !== "POST") {
       response.setHeader("allow", "POST");
@@ -19,10 +30,13 @@ export function createReceiptHandler({
     }
     try {
       const body = request.body && typeof request.body === "object" ? request.body : {};
-      const result = await publicGuard.run(request, () => verifyImpl(body.transactionHash, {
+      const verify = verifyImpl ?? fetchAndVerifyPosition;
+      const result = await publicGuard.run(request, () => verify(body.transactionHash, {
         intent: body.intent,
         intentHash: body.intentHash,
         orderId: body.orderId,
+        issuance: body.issuance,
+        trustedIssuers: resolvedTrustedIssuers,
       }));
       return send(response, 200, result);
     } catch (error) {

@@ -7,8 +7,10 @@ import {
 } from "./constants.mjs";
 import { formatDecimal, parseDecimal, parseHexUint } from "./decimal.mjs";
 import { ConvictionError, invariant } from "./errors.mjs";
+import { verifyIntentIssuance } from "./intent-issuer.mjs";
 
 const TX_HASH_RE = /^0x[0-9a-f]{64}$/i;
+const BLOCK_HASH_RE = TX_HASH_RE;
 const CONDITION_ID_RE = /^0x[0-9a-f]{64}$/i;
 const TOKEN_ID_RE = /^\d+$/;
 const PRICE_SCALE = 1_000_000n;
@@ -90,6 +92,27 @@ function deriveActualFill(receipt, { wallet, orderId, outcomeTokenId }) {
   );
 }
 
+function verifySettlementBlock(receipt, block) {
+  invariant(block && typeof block === "object", "missing_settlement_block", "Settlement block was not found");
+  invariant(BLOCK_HASH_RE.test(receipt?.blockHash || ""), "invalid_receipt", "Receipt has no valid block hash");
+  invariant(BLOCK_HASH_RE.test(block.hash || ""), "invalid_settlement_block", "Settlement block hash is invalid");
+  const receiptBlockNumber = parseHexUint(receipt.blockNumber, "receipt block number");
+  const blockNumber = parseHexUint(block.number, "settlement block number");
+  invariant(blockNumber === receiptBlockNumber, "settlement_block_mismatch", "Settlement block number does not match the receipt");
+  invariant(lower(block.hash) === lower(receipt.blockHash), "settlement_block_mismatch", "Settlement block hash does not match the receipt");
+  const timestampSeconds = parseHexUint(block.timestamp, "settlement block timestamp");
+  invariant(
+    timestampSeconds <= BigInt(Math.floor(Number.MAX_SAFE_INTEGER / 1_000)),
+    "invalid_settlement_block",
+    "Settlement block timestamp is out of range",
+  );
+  return {
+    blockNumber: Number(blockNumber),
+    blockHash: lower(block.hash),
+    settledAt: new Date(Number(timestampSeconds) * 1_000).toISOString(),
+  };
+}
+
 export function verifyReceipt({ chainId, receipt, expected }) {
   invariant(Number(chainId) === POLYGON_CHAIN_ID, "wrong_chain", "Receipt is not from Polygon", {
     chainId,
@@ -105,7 +128,13 @@ export function verifyReceipt({ chainId, receipt, expected }) {
   const outcomeTokenId = String(expected.outcomeTokenId || expected.yesTokenId || "");
   invariant(TOKEN_ID_RE.test(outcomeTokenId), "invalid_expected_value", "Expected outcome token ID is invalid");
   const tokenId = BigInt(outcomeTokenId);
-  const legacyReceipt = expected.receiptVersion !== "conviction-receipt-v3";
+  const receiptVersion = expected.receiptVersion || "conviction-receipt-v2";
+  invariant(
+    ["conviction-receipt-v2", "conviction-receipt-v3", "conviction-receipt-v4"].includes(receiptVersion),
+    "invalid_expected_value",
+    "Expected receipt version is invalid",
+  );
+  const legacyReceipt = receiptVersion === "conviction-receipt-v2";
   const principalRaw = BigInt(expected.principalRaw ?? expected.spendRaw);
   const feeRaw = BigInt(expected.feeRaw ?? 0);
   const totalDebitRaw = BigInt(expected.totalDebitRaw ?? principalRaw + feeRaw);
@@ -177,7 +206,7 @@ export function verifyReceipt({ chainId, receipt, expected }) {
   }
 
   const proof = {
-    version: "conviction-receipt-v3",
+    version: receiptVersion,
     chainId: POLYGON_CHAIN_ID,
     transactionHash: lower(receipt.transactionHash),
     blockNumber: Number(parseHexUint(receipt.blockNumber, "block number")),
@@ -197,8 +226,17 @@ export function verifyReceipt({ chainId, receipt, expected }) {
       exactOutcomeTransfer: true,
       exactVenueFee: true,
       exactOrderFill: true,
+      ...(receiptVersion === "conviction-receipt-v4"
+        ? { settlementBlockMatched: true }
+        : {}),
     },
   };
+  if (receiptVersion === "conviction-receipt-v4") {
+    invariant(expected.settlement?.blockNumber === proof.blockNumber, "settlement_block_mismatch", "Verified settlement block number disagrees with the receipt");
+    invariant(BLOCK_HASH_RE.test(expected.settlement?.blockHash || ""), "invalid_expected_value", "Verified settlement block hash is invalid");
+    proof.blockHash = lower(expected.settlement.blockHash);
+    proof.settledAt = expected.settlement.settledAt;
+  }
   return { ok: true, proof, receiptHash: sha256(proof) };
 }
 
@@ -208,16 +246,32 @@ export function verifyPositionProof({
   intent,
   intentHash,
   orderId,
+  issuance,
+  trustedIssuers,
+  settlementBlock,
 }) {
   const legacyIntent = intent?.version === "conviction-intent-v2";
+  const signedIntent = intent?.version === "conviction-intent-v4";
   invariant(
-    legacyIntent || intent?.version === "conviction-intent-v3",
+    legacyIntent || intent?.version === "conviction-intent-v3" || signedIntent,
     "invalid_intent",
     "Unsupported intent version",
   );
   invariant(TX_HASH_RE.test(intentHash || ""), "invalid_intent_hash", "Invalid intent hash");
   invariant(sha256(intent) === lower(intentHash), "intent_hash_mismatch", "Intent hash does not match the canonical intent");
   invariant(Number(intent.chainId) === POLYGON_CHAIN_ID, "wrong_chain", "Intent is not for Polygon");
+  let settlement;
+  let issuanceProof;
+  if (signedIntent) {
+    settlement = verifySettlementBlock(receipt, settlementBlock);
+    issuanceProof = verifyIntentIssuance({
+      intent,
+      intentHash,
+      issuance,
+      trustedIssuers,
+      settledAt: settlement.settledAt,
+    });
+  }
   invariant(intent.market?.source === "polymarket", "invalid_intent", "Intent market source is invalid");
   invariant(
     lower(intent.market?.exchange) === CONTRACTS.standardExchangeV2 &&
@@ -325,7 +379,9 @@ export function verifyPositionProof({
         requestedBudgetRaw >= maximumTotalDebitRaw &&
         intent.order.feeSource === "polymarket_clob_maker_base_fee" &&
         intent.order.feeReserveMethod === "ceil(orderPrincipal*feeBps/10000)" &&
-        intent.order.feeEnforcement === "dedicated-wallet-balance-cap-plus-post-settlement-verification",
+        intent.order.feeEnforcement === (signedIntent
+          ? "signed-order-bounds-plus-post-settlement-verification"
+          : "dedicated-wallet-balance-cap-plus-post-settlement-verification"),
       "intent_economics_mismatch",
       "Intent fee-inclusive debit fields disagree",
     );
@@ -405,6 +461,9 @@ export function verifyPositionProof({
       totalDebitRaw: totalDebitRaw.toString(),
       sharesRaw: sharesRaw.toString(),
       receiptVersion: legacyIntent ? "conviction-receipt-v2" : "conviction-receipt-v3",
+      ...(signedIntent
+        ? { receiptVersion: "conviction-receipt-v4", settlement }
+        : {}),
     },
   });
   const averagePriceCeilingRaw =
@@ -451,11 +510,19 @@ export function verifyPositionProof({
   }
 
   const positionProof = {
-    version: "conviction-position-proof-v2",
+    version: signedIntent ? "conviction-position-proof-v3" : "conviction-position-proof-v2",
     intentHash: lower(intentHash),
     receiptHash: receiptResult.receiptHash,
     transactionHash: receiptResult.proof.transactionHash,
     blockNumber: receiptResult.proof.blockNumber,
+    ...(signedIntent
+      ? {
+          blockHash: settlement.blockHash,
+          settledAt: settlement.settledAt,
+          issuanceKeyId: issuanceProof.keyId,
+          issuanceFingerprint: issuanceProof.fingerprint,
+        }
+      : {}),
     orderId: lower(orderId),
     marketConditionId: lower(intent.market?.conditionId),
     outcome,
@@ -485,14 +552,42 @@ export function verifyPositionProof({
       totalDebitWithinMaximum: true,
       averagePriceWithinMaximum: true,
       receiptSettlementMatched: true,
+      ...(signedIntent
+        ? {
+            trustedIssuerSignature: true,
+            settlementInsideSignedWindow: true,
+            settlementBlockMatched: true,
+          }
+        : {}),
     },
+    ...(signedIntent
+      ? {
+          verificationMode: "signed-intent-window",
+          temporalBinding: true,
+        }
+      : {}),
   };
-  return {
+  const result = {
     ok: true,
     intent,
     receiptProof: receiptResult.proof,
     positionProof,
     positionProofHash: sha256(positionProof),
+  };
+  if (!signedIntent) return result;
+  const positionPassport = {
+    version: "conviction-position-passport-v1",
+    status: "VERIFIED",
+    issuance,
+    intent,
+    receiptProof: receiptResult.proof,
+    positionProof,
+  };
+  return {
+    ...result,
+    issuance,
+    positionPassport,
+    positionPassportHash: sha256(positionPassport),
   };
 }
 
@@ -536,9 +631,18 @@ export async function fetchAndVerifyPosition(
     rpc("eth_chainId", [], { fetchImpl, rpcUrl }),
     rpc("eth_getTransactionReceipt", [transactionHash], { fetchImpl, rpcUrl }),
   ]);
+  let settlementBlock;
+  if (expected?.intent?.version === "conviction-intent-v4") {
+    invariant(receipt && typeof receipt === "object", "missing_receipt", "Transaction receipt was not found");
+    settlementBlock = await rpc("eth_getBlockByNumber", [receipt.blockNumber, false], {
+      fetchImpl,
+      rpcUrl,
+    });
+  }
   return verifyPositionProof({
     chainId: Number(BigInt(chainHex)),
     receipt,
+    settlementBlock,
     ...expected,
   });
 }

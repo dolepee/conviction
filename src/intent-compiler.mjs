@@ -281,10 +281,10 @@ function disclosuresFor({ requestedBudget, orderPrincipal, maximumFee }) {
   return [
     "The buyer's own wallet signs and pays for the order.",
     "FAK fills immediately at or below maxPrice and cancels any unfilled remainder.",
-    `The ${requestedBudget} pUSD input is a total-debit ceiling; the compiled principal is ${orderPrincipal} pUSD and the maximum venue fee is ${maximumFee} pUSD.`,
+    `The ${requestedBudget} pUSD input is the accepted total-debit ceiling for verification; the compiled principal is ${orderPrincipal} pUSD and the current venue-fee reserve is ${maximumFee} pUSD.`,
     "The order principal is cent-aligned with a whole-share quantity so the official V2 plugin's live precision pass cannot rewrite the reviewed order.",
-    "Maximum loss includes the venue-fee reserve; actual FAK debit may be lower on a partial fill.",
-    "Polymarket V2 applies fees at match time rather than in the signed order. Keep the dedicated wallet balance at or below the requested budget; Conviction verifies the actual fee and total debit after settlement.",
+    "Displayed maximum loss includes the current venue-fee reserve; actual FAK debit may be lower on a partial fill.",
+    "Polymarket V2 signs the order principal, token, shares, and price, while the operator applies fees at match time. Conviction rechecks that fee immediately before execution and verifies the actual fee and total debit after settlement; the fee itself is not part of the V2 signature.",
     "New deposit-wallet users must review Polymarket's five-approval setup before trading.",
   ];
 }
@@ -309,6 +309,12 @@ export function compilePreview(request, market, options = {}) {
 }
 
 export function compileIntent(request, market, options = {}) {
+  const intentVersion = options.intentVersion ?? "conviction-intent-v3";
+  invariant(
+    intentVersion === "conviction-intent-v3" || intentVersion === "conviction-intent-v4",
+    "invalid_intent_version",
+    "Unsupported intent version",
+  );
   const wallet = String(request.wallet || "").toLowerCase();
   invariant(ADDRESS_RE.test(wallet), "invalid_wallet", "wallet must be a valid EVM address");
   const rationale = String(request.rationale || "").trim();
@@ -318,11 +324,17 @@ export function compileIntent(request, market, options = {}) {
     "rationale must be empty or 20 to 500 characters",
   );
   const bounded = compileBoundedOrder(request, market, options);
+  const order = intentVersion === "conviction-intent-v4"
+    ? {
+        ...bounded.order,
+        feeEnforcement: "signed-order-bounds-plus-post-settlement-verification",
+      }
+    : bounded.order;
   const intent = {
-    version: "conviction-intent-v3",
+    version: intentVersion,
     chainId: POLYGON_CHAIN_ID,
     market: bounded.market,
-    order: bounded.order,
+    order,
     buyer: { wallet },
     rationale,
     snapshot: bounded.snapshot,
@@ -339,7 +351,9 @@ export function compileIntent(request, market, options = {}) {
       argv: [
         "buy",
         "--market-id",
-        bounded.market.slug || bounded.market.conditionId,
+        bounded.market.conditionId,
+        "--token-id",
+        bounded.market.outcomeTokenId,
         "--outcome",
         bounded.outcome.toLowerCase(),
         "--amount",
@@ -351,8 +365,9 @@ export function compileIntent(request, market, options = {}) {
       ],
       requiresUserConfirmation: true,
       nonCustodial: true,
-      requiresDedicatedBalanceCap: true,
-      maximumFundingBalance: bounded.requestedBudget,
+      requiresSufficientBalance: true,
+      authorizationScope: "single-bounded-order",
+      maximumAuthorizedDebit: bounded.order.maximumTotalDebit,
       expiresAt: bounded.expiresAt,
     },
     disclosures: disclosuresFor(bounded),

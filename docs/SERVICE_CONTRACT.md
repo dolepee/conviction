@@ -43,11 +43,11 @@ Conviction returns:
 
 No transaction is signed or broadcast by this response.
 
-The wallet-free economic preview expires 30 seconds after its market snapshot. The final public wallet-bound card is always compiled from a fresh snapshot no more than 30 seconds old and expires five minutes after capture, leaving time for the documented cross-application dry run. The paid machine response also accepts only a snapshot no more than 30 seconds old, but its card expires 120 seconds after capture so synchronous X Layer payment settlement does not normally consume the usable execution window. The buyer must reject every expired card.
+The wallet-free economic preview expires 30 seconds after its market snapshot. The final public wallet-bound card is always compiled from a fresh snapshot no more than 30 seconds old and expires five minutes after capture. The paid machine response also accepts only a snapshot no more than 30 seconds old and returns a signed v4 card that expires five minutes after capture. The buyer must reject every expired card.
 
 ## Execution
 
-The public handoff copies a request derived from the canonical `executionCard.argv` with `--dry-run` appended. Pasting that request is explicitly not live authorization. The buyer's own Agentic Wallet runs the official `polymarket-plugin` preview and may execute the identical request only after a separate, fresh live confirmation. FAK fills only at or below `maxPrice` and cancels any remainder. Conviction does not receive the wallet key or Polymarket credentials. Because V2 fees are applied at match time rather than encoded in the signed order, the dedicated wallet balance must remain at or below the requested budget until settlement.
+The buyer orchestrator derives an argument vector from canonical `executionCard.argv`, runs the official `polymarket-plugin` dry run, and may execute the identical vector only after a separate, fresh live confirmation. It rechecks deposit-wallet mode, atomic pUSD balance, card expiry, and the venue dry run immediately before signing. FAK fills only at or below `maxPrice` and cancels any remainder. Conviction does not receive the wallet key or Polymarket credentials. V2 signs the order principal, token, shares, and price while the operator applies fees at match time; Conviction reserves the observed fee in the displayed total and verifies it after settlement, but does not mislabel that fee as part of the V2 signature.
 
 ## Verification request
 
@@ -56,13 +56,14 @@ The public handoff copies a request derived from the canonical `executionCard.ar
   "transactionHash": "0x…",
   "orderId": "0x…",
   "intentHash": "0x…",
-  "intent": { "version": "conviction-intent-v3", "...": "original compiler output" }
+  "intent": { "version": "conviction-intent-v4", "...": "original compiler output" },
+  "issuance": { "version": "conviction-issuance-v1", "...": "trusted Ed25519 signature" }
 }
 ```
 
-Conviction recomputes the intent hash, derives actual principal, venue fee, total debit, and shares from the selected order's Polygon events, verifies the selected YES/NO token mapping, and checks every value stayed within the fee-inclusive budget and maximum price. The response includes a deterministic position-proof hash.
+Conviction recomputes the intent hash, verifies the pinned issuer and settlement time against the signed five-minute window, derives actual principal, venue fee, total debit, and shares from the selected order's Polygon events, verifies the selected YES/NO token mapping, and checks every value stayed within the displayed fee-inclusive budget and maximum price. The response includes deterministic position-proof and signed position-passport hashes.
 
-The intent hash proves deterministic content integrity when compared with the hash originally received by the buyer. It is not a wallet signature or independent proof that the rationale existed before the transaction.
+The issuer signature proves the exact card existed inside its issuance window; the buyer wallet separately signs only the Polymarket order. The final passport binds the signed card to the mined settlement block and verified fill.
 
 ## Refusal conditions
 

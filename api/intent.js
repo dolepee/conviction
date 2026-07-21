@@ -16,6 +16,7 @@ export function createIntentHandler({
   publicAccess = true,
   publicGuard = createPublicApiGuard(),
   resolveMarketImpl = resolveMarket,
+  issueIntentImpl = undefined,
 } = {}) {
   return async function handler(request, response) {
     if (request.method !== "POST") {
@@ -26,7 +27,8 @@ export function createIntentHandler({
       const body = request.body && typeof request.body === "object" ? request.body : {};
       const compile = async () => {
         const market = await resolveMarketImpl(body.market, { outcome: body.outcome });
-        return compileIntent(body, market, compileOptions);
+        const compilation = compileIntent(body, market, compileOptions);
+        return issueIntentImpl ? await issueIntentImpl(compilation) : compilation;
       };
       const result = publicAccess ? await publicGuard.run(request, compile) : await compile();
       return send(response, 200, result);

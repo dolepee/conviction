@@ -68,7 +68,9 @@ test("compiles the canonical live order exactly", () => {
   assert.deepEqual(result.executionCard.argv, [
     "buy",
     "--market-id",
-    "will-the-us-invade-iran-before-2027",
+    LIVE_MARKET_SNAPSHOT.conditionId.toLowerCase(),
+    "--token-id",
+    LIVE_MARKET_SNAPSHOT.yesTokenId,
     "--outcome",
     "yes",
     "--amount",
@@ -78,8 +80,9 @@ test("compiles the canonical live order exactly", () => {
     "--order-type",
     "FAK",
   ]);
-  assert.equal(result.executionCard.requiresDedicatedBalanceCap, true);
-  assert.equal(result.executionCard.maximumFundingBalance, "1.35");
+  assert.equal(result.executionCard.requiresSufficientBalance, true);
+  assert.equal(result.executionCard.authorizationScope, "single-bounded-order");
+  assert.equal(result.executionCard.maximumAuthorizedDebit, "1.35");
 });
 
 test("previews the same economics without a wallet, rationale, intent hash, or execution card", () => {
@@ -148,7 +151,7 @@ test("compiles NO from the canonical NO token and selected order book", () => {
   assert.equal(result.intent.order.outcome, "NO");
   assert.equal(result.intent.order.outcomeTokenId, LIVE_MARKET_SNAPSHOT.noTokenId);
   assert.equal(result.intent.market.outcomes.NO.tokenId, LIVE_MARKET_SNAPSHOT.noTokenId);
-  assert.equal(result.executionCard.argv[4], "no");
+  assert.equal(result.executionCard.argv[6], "no");
 });
 
 test("produces a deterministic intent hash", () => {
@@ -208,7 +211,7 @@ test("rounds a total budget down transparently to whole shares", () => {
   assert.equal(result.intent.order.maximumTotalDebit, "1.08");
   assert.equal(result.intent.order.unusedBudget, "0.26");
   assert.equal(result.intent.order.fullFillSharesAtCap, "4");
-  assert.equal(result.executionCard.argv[6], "1.08");
+  assert.equal(result.executionCard.argv[8], "1.08");
 });
 
 test("cent-aligns the principal so the live V2 plugin cannot rewrite the reviewed order", () => {
@@ -253,7 +256,7 @@ test("cent-aligns the principal so the live V2 plugin cannot rewrite the reviewe
   assert.equal(result.intent.order.maximumOrderPrincipal, "1.12");
   assert.equal(result.intent.order.fullFillSharesAtCap, "8");
   assert.equal(result.intent.order.principalPrecision, "v2-cent-aligned-whole-shares");
-  assert.equal(result.executionCard.argv[6], "1.12");
+  assert.equal(result.executionCard.argv[8], "1.12");
 });
 
 test("includes the conservative V2 fee reserve in total loss", () => {
@@ -277,7 +280,7 @@ test("includes the conservative V2 fee reserve in total loss", () => {
   assert.equal(result.intent.exposure.maximumLoss, "1.232");
   assert.equal(result.intent.exposure.grossProfitAtCap, "6.768");
   assert.equal(result.intent.exposure.grossBreakEvenPrice, "0.154");
-  assert.equal(result.executionCard.argv[6], "1.12");
+  assert.equal(result.executionCard.argv[8], "1.12");
 });
 
 test("fails before signing when fees leave principal below the marketable BUY floor", () => {

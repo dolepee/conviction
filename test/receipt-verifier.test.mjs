@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 
 import { sha256 } from "../src/canonical.mjs";
 import { compileIntent } from "../src/intent-compiler.mjs";
 import { ConvictionError } from "../src/errors.mjs";
-import { verifyPositionProof, verifyReceipt } from "../src/receipt-verifier.mjs";
+import { createIntentIssuer, trustedIssuerRegistry } from "../src/intent-issuer.mjs";
+import {
+  fetchAndVerifyPosition,
+  verifyPositionProof,
+  verifyReceipt,
+} from "../src/receipt-verifier.mjs";
 import { LIVE_EXPECTED_FILL, LIVE_MARKET_SNAPSHOT, LIVE_RECEIPT } from "./fixtures.mjs";
 
 const NOW = Date.parse("2026-07-21T02:00:10.000Z");
@@ -19,6 +25,7 @@ const REQUEST = Object.freeze({
 const YES_TOKEN_HEX = BigInt(LIVE_MARKET_SNAPSHOT.yesTokenId).toString(16).padStart(64, "0");
 const NO_TOKEN_HEX = BigInt(LIVE_MARKET_SNAPSHOT.noTokenId).toString(16).padStart(64, "0");
 const FEE_ORDER_ID = `0x${"f".repeat(64)}`;
+const SETTLEMENT_BLOCK_HASH = `0x${"c".repeat(64)}`;
 
 function uintWord(value) {
   return BigInt(value).toString(16).padStart(64, "0");
@@ -102,6 +109,37 @@ function feeCompiled() {
     market,
     { now: NOW },
   );
+}
+
+function signedCompiled() {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const compilation = compileIntent(REQUEST, LIVE_MARKET_SNAPSHOT, {
+    now: NOW,
+    quoteTtlMs: 300_000,
+    intentVersion: "conviction-intent-v4",
+  });
+  const issue = createIntentIssuer({
+    keyId: "conviction-test-2026-07",
+    privateKey,
+    now: () => NOW + 1_000,
+  });
+  return {
+    issued: issue(compilation),
+    trustedIssuers: trustedIssuerRegistry([issue.issuer]),
+  };
+}
+
+function signedReceiptAndBlock(timestamp = Math.floor((NOW + 2_000) / 1_000)) {
+  const receipt = structuredClone(LIVE_RECEIPT);
+  receipt.blockHash = SETTLEMENT_BLOCK_HASH;
+  return {
+    receipt,
+    settlementBlock: {
+      number: receipt.blockNumber,
+      hash: SETTLEMENT_BLOCK_HASH,
+      timestamp: `0x${timestamp.toString(16)}`,
+    },
+  };
 }
 
 function feeReceipt({ feeRaw = 112000n, totalDebitRaw = 1232000n, builderRaw = 0n } = {}) {
@@ -362,4 +400,114 @@ test("receipt hash is deterministic", () => {
   });
   assert.equal(first.receiptHash, second.receiptHash);
   assert.equal(first.receiptHash, "0x1746d89ea5c08c5edc214fcca3baf5b3bc6ce7b4ea9d02427dd88035cd4373b3");
+});
+
+test("creates a signed, block-time-bound v4 position passport", () => {
+  const { issued, trustedIssuers } = signedCompiled();
+  const settlement = signedReceiptAndBlock();
+  const input = {
+    chainId: 137,
+    ...settlement,
+    intent: issued.intent,
+    intentHash: issued.intentHash,
+    issuance: issued.issuance,
+    trustedIssuers,
+    orderId: LIVE_EXPECTED_FILL.orderId,
+  };
+  const first = verifyPositionProof(input);
+  const second = verifyPositionProof({
+    ...input,
+    receipt: structuredClone(input.receipt),
+    settlementBlock: structuredClone(input.settlementBlock),
+  });
+  assert.equal(first.positionProof.version, "conviction-position-proof-v3");
+  assert.equal(first.positionProof.verificationMode, "signed-intent-window");
+  assert.equal(first.positionProof.temporalBinding, true);
+  assert.equal(first.positionProof.blockHash, SETTLEMENT_BLOCK_HASH);
+  assert.equal(first.positionPassport.status, "VERIFIED");
+  assert.equal(first.positionPassportHash, second.positionPassportHash);
+  assert.deepEqual(first.positionProof.checks, {
+    canonicalIntentHash: true,
+    selectedOutcomeToken: true,
+    orderPrincipalWithinMaximum: true,
+    venueFeeWithinMaximum: true,
+    totalDebitWithinMaximum: true,
+    averagePriceWithinMaximum: true,
+    receiptSettlementMatched: true,
+    trustedIssuerSignature: true,
+    settlementInsideSignedWindow: true,
+    settlementBlockMatched: true,
+  });
+});
+
+test("v4 never downgrades around missing issuance or substituted settlement blocks and times", () => {
+  const { issued, trustedIssuers } = signedCompiled();
+  const settlement = signedReceiptAndBlock();
+  const base = {
+    chainId: 137,
+    ...settlement,
+    intent: issued.intent,
+    intentHash: issued.intentHash,
+    issuance: issued.issuance,
+    trustedIssuers,
+    orderId: LIVE_EXPECTED_FILL.orderId,
+  };
+  errorCode(() => verifyPositionProof({ ...base, issuance: undefined }), "invalid_issuance");
+  errorCode(
+    () => verifyPositionProof({
+      ...base,
+      settlementBlock: { ...settlement.settlementBlock, hash: `0x${"d".repeat(64)}` },
+    }),
+    "settlement_block_mismatch",
+  );
+  const beforeIssue = signedReceiptAndBlock(Math.floor(NOW / 1_000));
+  errorCode(
+    () => verifyPositionProof({ ...base, ...beforeIssue }),
+    "settlement_outside_intent_window",
+  );
+  const afterExpiry = signedReceiptAndBlock(Math.floor((NOW + 301_000) / 1_000));
+  errorCode(
+    () => verifyPositionProof({ ...base, ...afterExpiry }),
+    "settlement_outside_intent_window",
+  );
+});
+
+test("fetches the canonical Polygon block before verifying a signed v4 settlement", async () => {
+  const { issued, trustedIssuers } = signedCompiled();
+  const settlement = signedReceiptAndBlock();
+  const methods = [];
+  const result = await fetchAndVerifyPosition(
+    settlement.receipt.transactionHash,
+    {
+      intent: issued.intent,
+      intentHash: issued.intentHash,
+      issuance: issued.issuance,
+      trustedIssuers,
+      orderId: LIVE_EXPECTED_FILL.orderId,
+    },
+    {
+      rpcUrl: "https://polygon.example.invalid",
+      async fetchImpl(_url, options) {
+        const request = JSON.parse(options.body);
+        methods.push(request.method);
+        const values = {
+          eth_chainId: "0x89",
+          eth_getTransactionReceipt: settlement.receipt,
+          eth_getBlockByNumber: settlement.settlementBlock,
+        };
+        return {
+          ok: true,
+          async json() {
+            return { jsonrpc: "2.0", id: request.id, result: values[request.method] };
+          },
+        };
+      },
+    },
+  );
+  assert.equal(result.positionPassport.status, "VERIFIED");
+  assert.deepEqual(methods.sort(), [
+    "eth_chainId",
+    "eth_getBlockByNumber",
+    "eth_getTransactionReceipt",
+  ]);
 });
