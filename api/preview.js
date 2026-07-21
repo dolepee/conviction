@@ -1,8 +1,6 @@
 import { ConvictionError } from "../src/errors.mjs";
-import { compileIntent } from "../src/intent-compiler.mjs";
+import { compilePreview } from "../src/intent-compiler.mjs";
 import { resolveMarket } from "../src/market-client.mjs";
-
-export const PUBLIC_INTENT_QUOTE_TTL_MS = 300_000;
 
 function send(response, status, body) {
   response.status(status).setHeader("content-type", "application/json; charset=utf-8");
@@ -10,8 +8,10 @@ function send(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-export function createIntentHandler({
-  compileOptions = { maxSnapshotAgeMs: 30_000, quoteTtlMs: PUBLIC_INTENT_QUOTE_TTL_MS },
+export function createPreviewHandler({
+  resolveMarketImpl = resolveMarket,
+  compilePreviewImpl = compilePreview,
+  compileOptions = undefined,
 } = {}) {
   return async function handler(request, response) {
     if (request.method !== "POST") {
@@ -20,9 +20,8 @@ export function createIntentHandler({
     }
     try {
       const body = request.body && typeof request.body === "object" ? request.body : {};
-      const market = await resolveMarket(body.market, { outcome: body.outcome });
-      const result = compileIntent(body, market, compileOptions);
-      return send(response, 200, result);
+      const market = await resolveMarketImpl(body.market, { outcome: body.outcome });
+      return send(response, 200, compilePreviewImpl(body, market, compileOptions));
     } catch (error) {
       if (error instanceof ConvictionError) {
         const upstream = ["market_api_error", "rpc_error"].includes(error.code);
@@ -31,13 +30,13 @@ export function createIntentHandler({
           error: { code: error.code, message: error.message, details: error.details },
         });
       }
-      console.error("intent handler failed", error);
+      console.error("preview handler failed", error);
       return send(response, 500, {
         ok: false,
-        error: { code: "internal_error", message: "Intent compilation failed" },
+        error: { code: "internal_error", message: "Bounds preview failed" },
       });
     }
   };
 }
 
-export default createIntentHandler();
+export default createPreviewHandler();

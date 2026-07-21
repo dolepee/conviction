@@ -1,6 +1,6 @@
 # Bounded YES/NO Position Card — Service Contract
 
-Conviction turns an explicit user thesis into a ready-to-sign, fee-inclusive Polymarket YES or NO position card, computes the objective exposure before signing, and independently verifies the resulting Polygon settlement. It does not recommend an outcome or take custody.
+Conviction turns an explicit user thesis into a ready-to-sign, fee-inclusive Polymarket YES or NO position card, computes the objective exposure before signing, and independently verifies the resulting Polygon settlement. The public web flow begins with wallet-free market and bounds previews. It does not recommend an outcome or take custody.
 
 The paid marketplace call is `POST /api/service` and covers the pre-execution compile only. The public web app uses the free `POST /api/intent` preview. Post-execution verification is a separate `POST /api/receipt` call.
 
@@ -10,12 +10,12 @@ Send JSON:
 
 ```json
 {
-  "market": "will-the-us-invade-iran-before-2027",
-  "outcome": "yes",
-  "spend": "1.35",
-  "maxPrice": "0.27",
-  "wallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
-  "rationale": "I expect this event to resolve YES and will not pay above 27 cents."
+  "market": "will-gpt-6-be-released-by-december-31-2026-834-362-194-984-527",
+  "outcome": "no",
+  "spend": "1.232",
+  "maxPrice": "0.14",
+  "wallet": "0x1111111111111111111111111111111111111111",
+  "rationale": "I selected NO and accept only the stated fee-inclusive bounds."
 }
 ```
 
@@ -26,7 +26,7 @@ Rules:
 - `spend`: total fee-inclusive pUSD risk budget of at least 1 pUSD. Conviction derives the largest whole-share order principal that stays within it.
 - `maxPrice`: `(0, 1)`, aligned to the market tick.
 - `wallet`: buyer-controlled EVM deposit-wallet address.
-- `rationale`: user-authored, 20–500 characters.
+- `rationale`: optional user-authored note; when present, 20–500 characters.
 
 Never send a seed phrase, private key, bearer token, CLOB credential, reusable signature, or raw transaction authorization.
 
@@ -43,11 +43,11 @@ Conviction returns:
 
 No transaction is signed or broadcast by this response.
 
-The free interactive preview expires 30 seconds after its market snapshot. The paid machine response still accepts only a snapshot no more than 30 seconds old, but its card expires 120 seconds after capture so synchronous X Layer payment settlement does not normally consume the usable execution window. The buyer must still reject an expired card.
+The wallet-free economic preview expires 30 seconds after its market snapshot. The final public wallet-bound card is always compiled from a fresh snapshot no more than 30 seconds old and expires five minutes after capture, leaving time for the documented cross-application dry run. The paid machine response also accepts only a snapshot no more than 30 seconds old, but its card expires 120 seconds after capture so synchronous X Layer payment settlement does not normally consume the usable execution window. The buyer must reject every expired card.
 
 ## Execution
 
-The buyer's own Agentic Wallet runs the official `polymarket-plugin` live-confirmation flow. FAK fills only at or below `maxPrice` and cancels any remainder. Conviction does not receive the wallet key or Polymarket credentials. Because V2 fees are applied at match time rather than encoded in the signed order, the dedicated wallet balance must remain at or below the requested budget until settlement.
+The public handoff copies a request derived from the canonical `executionCard.argv` with `--dry-run` appended. Pasting that request is explicitly not live authorization. The buyer's own Agentic Wallet runs the official `polymarket-plugin` preview and may execute the identical request only after a separate, fresh live confirmation. FAK fills only at or below `maxPrice` and cancels any remainder. Conviction does not receive the wallet key or Polymarket credentials. Because V2 fees are applied at match time rather than encoded in the signed order, the dedicated wallet balance must remain at or below the requested budget until settlement.
 
 ## Verification request
 

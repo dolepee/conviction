@@ -1,0 +1,59 @@
+{
+  "version": "conviction-review-deliverable-v1",
+  "label": "Controlled house proof — inspect only",
+  "cardStatus": "historical-expired-do-not-execute",
+  "summary": "A bounded YES position card matched to an independently verified Polygon fill.",
+  "positionCard": {
+    "intentHash": "0xd4f3012ecd894e2184ac7c0717297c2aac21f57abf690f8301619949ab966f1d",
+    "market": {
+      "source": "polymarket",
+      "conditionId": "0x5db999fad322cea2914535aae5517060c3f80ad6d8c0231cde2124a434d16846",
+      "question": "Will the U.S. invade Iran before 2027?",
+      "selectedOutcome": "YES",
+      "selectedOutcomeTokenId": "55115078421062885512539156303747803058407616201213034911037320915726138659123"
+    },
+    "buyerDepositWallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+    "order": {
+      "side": "BUY",
+      "orderType": "FAK",
+      "requestedFeeInclusiveBudget": "1.35 pUSD",
+      "maximumOrderPrincipal": "1.35 pUSD",
+      "maximumVenueFee": "0 pUSD",
+      "maximumTotalDebitAndLoss": "1.35 pUSD",
+      "maximumPrice": "0.27",
+      "fullFillSharesAtCap": "5 YES"
+    },
+    "browserSignedOrBroadcast": false,
+    "requiresSeparateWalletConfirmation": true
+  },
+  "verifiedPositionProof": {
+    "version": "conviction-position-proof-v2",
+    "positionProofHash": "0x63fceb5a55d1f061ab139f3f69fb6f3568620e17b516c6d19c42289d0686c244",
+    "receiptHash": "0x8b51f365e655afe066383c0b405fc4d978a9c08cba76be7680630b34548a13d0",
+    "transactionHash": "0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a",
+    "transactionExplorer": "https://polygonscan.com/tx/0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a",
+    "blockNumber": 90598011,
+    "orderId": "0xbad8f143b0e71f0cf78f3ec268d22e5cffa8b8e9ef7f0821ac720eac94ebf42c",
+    "actualFill": {
+      "orderPrincipal": "1.35 pUSD",
+      "venueFee": "0 pUSD",
+      "totalDebit": "1.35 pUSD",
+      "sharesReceived": "5 YES",
+      "allInAveragePriceCeiling": "0.27"
+    },
+    "checks": {
+      "canonicalIntentHash": true,
+      "selectedOutcomeToken": true,
+      "orderPrincipalWithinMaximum": true,
+      "venueFeeWithinMaximum": true,
+      "totalDebitWithinMaximum": true,
+      "averagePriceWithinMaximum": true,
+      "receiptSettlementMatched": true
+    }
+  },
+  "reviewNotes": [
+    "This is a controlled house proof, not external traction or financial performance.",
+    "The historical card is expired and must not be submitted for execution.",
+    "No wallet connection, plugin installation, approval, signature, or payment is needed to inspect this file."
+  ]
+}
