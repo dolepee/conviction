@@ -3,6 +3,7 @@ import {
   executionRequest,
   quoteIsExpired,
 } from "./src/execution-handoff.mjs";
+import { selectAvailableOutcome } from "./src/market-selection.mjs";
 
 const SAFE_EXAMPLE = "will-gpt-6-be-released-by-december-31-2026-834-362-194-984-527";
 
@@ -350,17 +351,27 @@ function renderMarketLookup(payload) {
       </div>
     `;
   }).join("");
+  const previouslyChecked = previewForm
+    .querySelector('input[name="outcome"]:checked')
+    ?.value.toUpperCase();
+  const nextOutcome = selectAvailableOutcome(outcomes, previouslyChecked);
   for (const outcome of ["YES", "NO"]) {
     const control = document.querySelector(`#outcome-${outcome.toLowerCase()}`);
     control.disabled = !outcomes[outcome].available;
+    control.checked = outcome === nextOutcome;
   }
-  if (!outcomes.YES.available && outcomes.NO.available) {
-    document.querySelector("#outcome-no").checked = true;
-  }
+  previewForm.querySelector('button[type="submit"]').disabled = nextOutcome === null;
   marketResult.hidden = false;
   previewForm.hidden = false;
-  syncOutcomePrice();
-  syncOutcomeMinimum();
+  if (nextOutcome) {
+    syncOutcomePrice();
+    syncOutcomeMinimum();
+  } else {
+    maxPriceInput.value = "";
+    clearAutoSuggestedSpend();
+    spendHelp.textContent = "Neither outcome currently has an ask. Try again when the market is liquid.";
+  }
+  return nextOutcome;
 }
 
 function exposureMarkup(data, title) {
@@ -539,9 +550,11 @@ marketForm.addEventListener("submit", async (event) => {
     const payload = await postJson("/api/market", { market: marketInput.value }, request.signal);
     if (!isCurrentRequest("market", request)) return;
     marketLookup = payload;
-    renderMarketLookup(payload);
+    const selected = renderMarketLookup(payload);
     setStep("bounds");
-    marketStatus.textContent = "Market found. Choose the side and economic bounds below.";
+    marketStatus.textContent = selected
+      ? `Market found. ${selected} is selected; choose the economic bounds below.`
+      : "Market found, but neither outcome currently has an ask. Nothing can be previewed yet.";
   } catch (error) {
     if (isDiscardedRequest(error, "market", request)) return;
     marketStatus.textContent = failureMessage(error);
