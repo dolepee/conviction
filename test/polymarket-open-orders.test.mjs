@@ -46,7 +46,7 @@ test("complete open-order client follows every opaque cursor and pins the select
   assert.equal(result.pageCount, 2);
   assert.deepEqual(result.orders.map(({ id }) => id), ["first", "second"]);
   assert.equal(calls[0].url.searchParams.get("asset_id"), TOKEN);
-  assert.equal(calls[0].url.searchParams.get("status"), "OPEN");
+  assert.equal(calls[0].url.searchParams.has("status"), false);
   assert.equal(calls[0].url.searchParams.has("next_cursor"), false);
   assert.equal(calls[1].url.searchParams.get("next_cursor"), "MTAw");
   assert.equal(calls[0].init.headers.POLY_ADDRESS, SIGNER);

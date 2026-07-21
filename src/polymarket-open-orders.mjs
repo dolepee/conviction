@@ -128,7 +128,7 @@ export async function fetchAllOpenOrders({
   const seenCursors = new Set();
   let cursor = "";
   for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const query = new URLSearchParams({ status: "OPEN", asset_id: outcomeTokenId });
+    const query = new URLSearchParams({ asset_id: outcomeTokenId });
     if (cursor) query.set("next_cursor", cursor);
     const timestamp = Math.floor(Number(now()) / 1_000);
     invariant(Number.isSafeInteger(timestamp) && timestamp > 0, "invalid_open_orders_clock", "Open-order clock is invalid");
