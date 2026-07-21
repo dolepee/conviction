@@ -6,12 +6,14 @@ import test from "node:test";
 
 import {
   fetchAllOpenOrders,
+  fetchExactOrder,
   loadDepositWalletCredentials,
 } from "../src/polymarket-open-orders.mjs";
 
 const SIGNER = "0x1111111111111111111111111111111111111111";
 const DEPOSIT = "0x2222222222222222222222222222222222222222";
 const TOKEN = "123456789";
+const ORDER_ID = `0x${"a".repeat(64)}`;
 const CREDS = Object.freeze({
   signerAddress: SIGNER,
   depositWallet: DEPOSIT,
@@ -22,6 +24,27 @@ const CREDS = Object.freeze({
 
 function response(body, ok = true, status = 200) {
   return { ok, status, json: async () => body };
+}
+
+function exactOrder(overrides = {}) {
+  return {
+    id: ORDER_ID,
+    status: "LIVE",
+    market: `0x${"b".repeat(64)}`,
+    asset_id: TOKEN,
+    side: "SELL",
+    original_size: "10",
+    size_matched: "0",
+    price: "0.2",
+    order_type: "GTD",
+    expiration: "1800003600",
+    outcome: "Yes",
+    created_at: "1800000000",
+    owner: CREDS.apiKey,
+    maker_address: DEPOSIT,
+    associate_trades: [],
+    ...overrides,
+  };
 }
 
 test("complete open-order client follows every opaque cursor and pins the selected token", async () => {
@@ -148,6 +171,70 @@ test("complete open-order client fails closed on missing, repeated, or invalid p
     }),
     (error) => error?.code === "incomplete_open_orders" && duplicatePage === 2,
   );
+});
+
+test("exact-order client authenticates one canonical order without returning credentials", async () => {
+  let request;
+  const result = await fetchExactOrder({
+    signerAddress: SIGNER,
+    depositWallet: DEPOSIT,
+    orderId: ORDER_ID,
+    outcomeTokenId: TOKEN,
+    credentials: CREDS,
+    now: () => 1_800_000_000_000,
+    fetchImpl: async (url, init) => {
+      request = { url, init };
+      return response(exactOrder());
+    },
+  });
+  assert.equal(request.url, `https://clob.polymarket.com/data/order/${ORDER_ID}`);
+  assert.equal(request.init.method, "GET");
+  assert.equal(request.init.redirect, "error");
+  assert.equal(request.init.headers.POLY_ADDRESS, SIGNER);
+  assert.match(request.init.headers.POLY_SIGNATURE, /^[A-Za-z0-9_-]+=*$/);
+  assert.equal(result.verificationSource, "authenticated-polymarket-clob");
+  assert.equal(result.onChain, false);
+  assert.equal(result.credentialOwnerVerified, true);
+  assert.equal(result.order.id, ORDER_ID);
+  assert.equal(result.order.orderType, "GTD");
+  assert.equal(result.order.status, "LIVE");
+  assert.equal(result.order.sizeMatched, "0");
+  assert.equal(JSON.stringify(result).includes(CREDS.apiKey), false);
+  assert.equal(JSON.stringify(result).includes(CREDS.secret), false);
+  assert.equal(JSON.stringify(result).includes(CREDS.passphrase), false);
+});
+
+test("exact-order client fails closed on missing or substituted identity", async () => {
+  await assert.rejects(
+    fetchExactOrder({
+      signerAddress: SIGNER,
+      depositWallet: DEPOSIT,
+      orderId: ORDER_ID,
+      outcomeTokenId: TOKEN,
+      credentials: CREDS,
+      fetchImpl: async () => response({ error: "not found" }, false, 404),
+    }),
+    (error) => error?.code === "order_not_found",
+  );
+  for (const [mutation, code] of [
+    [{ id: `0x${"c".repeat(64)}` }, "order_identity_mismatch"],
+    [{ asset_id: "987654321" }, "order_token_mismatch"],
+    [{ owner: "another-key" }, "order_wallet_mismatch"],
+    [{ maker_address: "0x3333333333333333333333333333333333333333" }, "order_wallet_mismatch"],
+    [{ associate_trades: null }, "invalid_order_response"],
+  ]) {
+    await assert.rejects(
+      fetchExactOrder({
+        signerAddress: SIGNER,
+        depositWallet: DEPOSIT,
+        orderId: ORDER_ID,
+        outcomeTokenId: TOKEN,
+        credentials: CREDS,
+        fetchImpl: async () => response(exactOrder(mutation)),
+      }),
+      (error) => error?.code === code,
+    );
+  }
 });
 
 test("credential loader binds an owner-only v2 entry to the selected deposit wallet", async () => {

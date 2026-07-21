@@ -7,11 +7,13 @@ import { ConvictionError, invariant } from "./errors.mjs";
 
 const CLOB_ORIGIN = "https://clob.polymarket.com";
 const ORDERS_PATH = "/data/orders";
+const ORDER_PATH_PREFIX = "/data/order/";
 const LAST_CURSOR = "LTE=";
 const MAX_PAGES = 1_000;
 const MAX_ORDERS = 100_000;
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 const TOKEN_ID_RE = /^(0|[1-9]\d*)$/;
+const ORDER_ID_RE = /^0x[0-9a-f]{64}$/;
 
 function fail(code, message, details) {
   throw new ConvictionError(code, message, details);
@@ -33,7 +35,7 @@ function paddedBase64Url(buffer) {
   return buffer.toString("base64").replaceAll("+", "-").replaceAll("/", "_");
 }
 
-function hmacHeaders({ signerAddress, apiKey, secret, passphrase, timestamp }) {
+function hmacHeaders({ signerAddress, apiKey, secret, passphrase, timestamp, requestPath = ORDERS_PATH }) {
   invariant(
     typeof apiKey === "string" && apiKey.length > 0 &&
       typeof passphrase === "string" && passphrase.length > 0 &&
@@ -43,7 +45,7 @@ function hmacHeaders({ signerAddress, apiKey, secret, passphrase, timestamp }) {
   );
   const secretBytes = Buffer.from(secret, "base64url");
   invariant(secretBytes.length > 0, "invalid_open_orders_credentials", "Polymarket credential secret is invalid");
-  const message = `${timestamp}GET${ORDERS_PATH}`;
+  const message = `${timestamp}GET${requestPath}`;
   const signature = paddedBase64Url(createHmac("sha256", secretBytes).update(message).digest());
   return {
     POLY_ADDRESS: signerAddress,
@@ -52,6 +54,12 @@ function hmacHeaders({ signerAddress, apiKey, secret, passphrase, timestamp }) {
     POLY_API_KEY: apiKey,
     POLY_PASSPHRASE: passphrase,
   };
+}
+
+function canonicalOrderId(value) {
+  const orderId = String(value || "").toLowerCase();
+  invariant(ORDER_ID_RE.test(orderId), "invalid_order_identity", "Polymarket order ID is invalid");
+  return orderId;
 }
 
 export async function loadDepositWalletCredentials({
@@ -200,4 +208,106 @@ export async function fetchAllOpenOrders({
     cursor = next;
   }
   fail("open_orders_limit", "Polymarket open-order pagination did not terminate");
+}
+
+export async function fetchExactOrder({
+  signerAddress: signerValue,
+  depositWallet: depositValue,
+  orderId: orderValue,
+  outcomeTokenId: tokenValue,
+  credentials,
+  credentialsPath,
+  fetchImpl = fetch,
+  now = () => Date.now(),
+  origin = CLOB_ORIGIN,
+} = {}) {
+  const signerAddress = canonicalAddress(signerValue, "Polymarket signer address");
+  const depositWallet = canonicalAddress(depositValue, "Polymarket deposit wallet");
+  const orderId = canonicalOrderId(orderValue);
+  const outcomeTokenId = canonicalTokenId(tokenValue);
+  invariant(origin === CLOB_ORIGIN, "invalid_order_origin", "Order verification must use the canonical Polymarket CLOB");
+  const auth = credentials || await loadDepositWalletCredentials({
+    signerAddress,
+    depositWallet,
+    credentialsPath,
+  });
+  invariant(
+    auth.signerAddress === signerAddress && auth.depositWallet === depositWallet,
+    "order_wallet_mismatch",
+    "Polymarket order credentials changed wallet identity",
+  );
+
+  const requestPath = `${ORDER_PATH_PREFIX}${orderId}`;
+  const nowMs = Number(now());
+  const timestamp = Math.floor(nowMs / 1_000);
+  invariant(
+    Number.isFinite(nowMs) && Number.isSafeInteger(timestamp) && timestamp > 0,
+    "invalid_order_clock",
+    "Order-verification clock is invalid",
+  );
+  const headers = hmacHeaders({ ...auth, signerAddress, timestamp, requestPath });
+  let response;
+  let body;
+  try {
+    response = await fetchImpl(`${origin}${requestPath}`, {
+      method: "GET",
+      headers,
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
+    body = await response.json();
+  } catch {
+    fail("order_unavailable", "Exact Polymarket order could not be fetched");
+  }
+  if (response.status === 404) {
+    fail("order_not_found", "Polymarket did not return the exact order");
+  }
+  if (!response.ok || !body || typeof body !== "object" || Array.isArray(body)) {
+    fail("order_unavailable", "Polymarket returned an invalid exact-order response", {
+      status: response.status,
+    });
+  }
+  if (String(body.id || "").toLowerCase() !== orderId) {
+    fail("order_identity_mismatch", "Polymarket returned another order ID");
+  }
+  if (String(body.asset_id || "") !== outcomeTokenId) {
+    fail("order_token_mismatch", "Polymarket returned another outcome token");
+  }
+  if (
+    String(body.owner || "") !== auth.apiKey ||
+    String(body.maker_address || "").toLowerCase() !== depositWallet
+  ) {
+    fail("order_wallet_mismatch", "Polymarket returned an order outside the selected credential and deposit wallet");
+  }
+  const associatedTrades = Array.isArray(body.associate_trades)
+    ? body.associate_trades.map((value) => String(value))
+    : null;
+  if (!associatedTrades || associatedTrades.some((value) => !value || value !== value.trim())) {
+    fail("invalid_order_response", "Polymarket returned invalid associated-trade metadata");
+  }
+
+  return Object.freeze({
+    version: "conviction-polymarket-order-snapshot-v1",
+    verificationSource: "authenticated-polymarket-clob",
+    onChain: false,
+    fetchedAt: new Date(nowMs).toISOString(),
+    signerAddress,
+    depositWallet,
+    credentialOwnerVerified: true,
+    order: Object.freeze({
+      id: orderId,
+      status: String(body.status || "").toUpperCase(),
+      market: String(body.market || "").toLowerCase(),
+      assetId: String(body.asset_id || ""),
+      side: String(body.side || "").toUpperCase(),
+      originalSize: String(body.original_size ?? ""),
+      sizeMatched: String(body.size_matched ?? ""),
+      price: String(body.price ?? ""),
+      orderType: String(body.order_type || "").toUpperCase(),
+      expiration: String(body.expiration ?? ""),
+      outcome: String(body.outcome || ""),
+      createdAt: String(body.created_at || ""),
+      associatedTrades: Object.freeze(associatedTrades),
+    }),
+  });
 }
