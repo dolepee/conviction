@@ -326,19 +326,27 @@ export function summarizeOpenSellReservations(input, outcomeTokenId) {
     });
   }
 
-  const matching = normalizeOpenOrders(input).filter((order) => {
+  let reservedSharesRaw = 0n;
+  let openSellOrderCount = 0;
+  for (const order of normalizeOpenOrders(input)) {
     const side = String(order?.side || "").toUpperCase();
     const orderTokenId = String(order?.token_id ?? order?.asset_id ?? "");
-    return side === "SELL" && orderTokenId === tokenId;
-  });
+    if ((side !== "BUY" && side !== "SELL") || !/^\d+$/.test(orderTokenId)) {
+      throw Object.assign(new Error("Polymarket returned an open order with an invalid side or token"), {
+        code: "invalid_tool_output",
+      });
+    }
+    if (side !== "SELL" || orderTokenId !== tokenId) continue;
 
-  let reservedSharesRaw = 0n;
-  for (const order of matching) {
     try {
       const originalRaw = parseDecimal(order?.original_size, 6, "open SELL original size");
       const matchedRaw = parseDecimal(order?.size_matched ?? "0", 6, "open SELL matched size");
       if (matchedRaw > originalRaw) throw new Error("matched size exceeds original size");
-      reservedSharesRaw += originalRaw - matchedRaw;
+      const remainingRaw = originalRaw - matchedRaw;
+      if (remainingRaw > 0n) {
+        openSellOrderCount += 1;
+        reservedSharesRaw += remainingRaw;
+      }
     } catch (error) {
       throw Object.assign(new Error("Polymarket returned an invalid matching open SELL order"), {
         code: "invalid_tool_output",
@@ -348,7 +356,7 @@ export function summarizeOpenSellReservations(input, outcomeTokenId) {
   }
 
   return Object.freeze({
-    openSellOrderCount: matching.length,
+    openSellOrderCount,
     reservedSharesRaw: reservedSharesRaw.toString(),
   });
 }

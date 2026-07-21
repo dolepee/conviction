@@ -316,6 +316,7 @@ test("buyer CLI reserves only unmatched SELL shares for the selected outcome tok
         { status: "OPEN", side: "BUY", token_id: "1", original_size: "99", size_matched: "0" },
         { status: "LIVE", side: "SELL", token_id: "2", original_size: "8", size_matched: "0" },
         { status: "OPEN", side: "sell", token_id: "1", original_size: "5", size_matched: "1.25" },
+        { status: "OPEN", side: "SELL", token_id: "1", original_size: "2", size_matched: "2" },
         { status: "MATCHED", side: "SELL", token_id: "1", original_size: "4", size_matched: "4" },
       ],
     },
@@ -332,6 +333,18 @@ test("buyer CLI reserves only unmatched SELL shares for the selected outcome tok
 });
 
 test("buyer CLI fail-closes on malformed selected-token SELL reservations", () => {
+  assert.throws(
+    () => summarizeOpenSellReservations({
+      orders: [{ status: "OPEN", side: null, token_id: "2", original_size: "1", size_matched: "0" }],
+    }, "1"),
+    (error) => error?.code === "invalid_tool_output",
+  );
+  assert.throws(
+    () => summarizeOpenSellReservations({
+      orders: [{ status: "OPEN", side: "BUY", token_id: null, original_size: "1", size_matched: "0" }],
+    }, "1"),
+    (error) => error?.code === "invalid_tool_output",
+  );
   assert.throws(
     () => summarizeOpenSellReservations({
       orders: [{ status: "OPEN", side: "SELL", token_id: "1", original_size: null, size_matched: "0" }],
