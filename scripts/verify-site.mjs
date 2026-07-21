@@ -61,6 +61,8 @@ assert.ok(app.includes('postJson("/api/receipt"'), "receipt verification is not 
 assert.ok(app.includes('setAttribute("aria-invalid", "true")'), "invalid fields are not identified");
 assert.ok(app.includes('setAttribute("aria-errormessage", statusId)'), "field errors are not associated with status text");
 assert.ok(app.includes('setAttribute("aria-describedby", [...describedBy].join(" "))'), "field errors lack a broadly supported description");
+assert.ok(app.includes('invalid_order_id: ["orderId"]'), "invalid order IDs are not mapped to the Order ID field");
+assert.equal(app.includes('missing_order_id: ["orderId"]'), false, "stale missing-order error mapping must not remain");
 assert.ok(app.includes("intent.exposure.maximumLoss"), "compiler UI does not render exposure");
 assert.ok(app.includes("order.maximumOrderPrincipal"), "compiler UI does not render order principal");
 assert.ok(app.includes("exposure.maximumFee"), "compiler UI does not render the venue-fee reserve");

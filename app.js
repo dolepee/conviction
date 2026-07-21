@@ -60,7 +60,7 @@ const fieldNamesByErrorCode = {
   limit_below_best_ask: ["maxPrice"],
   invalid_transaction_hash: ["transactionHash"],
   missing_receipt: ["transactionHash"],
-  missing_order_id: ["orderId"],
+  invalid_order_id: ["orderId"],
 };
 
 let marketLookup = null;
