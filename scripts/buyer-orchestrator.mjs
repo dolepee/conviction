@@ -169,8 +169,11 @@ export function normalizePluginReadiness({
   const depositWallet = depositWalletFromQuickstart(quickstart);
   const status = data?.status;
   const explicitTradingAddress = data?.trading_address;
+  const normalizedMode = selectedMode === "deposit-wallet"
+    ? "deposit_wallet"
+    : selectedMode;
   const depositWalletActive =
-    selectedMode === "deposit_wallet" &&
+    normalizedMode === "deposit_wallet" &&
     (status === "active" || status === "deposit_wallet_ready");
 
   return {
@@ -178,7 +181,7 @@ export function normalizePluginReadiness({
       access?.data?.accessible === true &&
       data?.accessible !== false,
     clobVersion: depositWalletActive ? "V2" : "",
-    currentMode: selectedMode,
+    currentMode: normalizedMode,
     paymentPayer: String(findAddress(addresses, 196) || "").toLowerCase(),
     buyerWallet: depositWallet || "",
     tradingAddress: String(explicitTradingAddress || depositWallet || "").toLowerCase(),

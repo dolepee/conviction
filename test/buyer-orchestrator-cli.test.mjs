@@ -93,7 +93,7 @@ test("buyer CLI normalizes the installed deposit-wallet quickstart shape", () =>
       assets: { deposit_wallet_pusd: "1.12" },
       wallet: { deposit_wallet: wallet },
     },
-    selectedMode: "deposit_wallet",
+    selectedMode: "deposit-wallet",
     pUsdBalanceRaw: "1120000",
   });
 
