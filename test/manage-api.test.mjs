@@ -171,6 +171,73 @@ test("paid manager re-verifies source and holdings before compiling CLOSE", asyn
   assert.equal(MANAGE_QUOTE_TTL_MS, 300_000);
 });
 
+test("paid manager dispatches TAKE_PROFIT without changing the CLOSE default", async () => {
+  const calls = [];
+  const handler = createManageHandler({
+    issueIntentImpl(compilation) { return { ...compilation, issued: true }; },
+    trustedIssuers: new Map(),
+    async resolveMarketImpl(market, options) {
+      calls.push(["market", market, options.outcome]);
+      return LIVE_MARKET_SNAPSHOT;
+    },
+    async verifySourceImpl(input) {
+      calls.push(["source", input]);
+      return source();
+    },
+    async fetchPositionImpl(wallet, tokenId) {
+      calls.push(["position", wallet, tokenId]);
+      return position();
+    },
+    compileOptions: { now: Date.parse("2026-07-21T02:00:10.000Z"), quoteTtlMs: 300_000 },
+  });
+  const response = responseRecorder();
+
+  await handler({
+    method: "POST",
+    body: {
+      action: "take_profit",
+      market: LIVE_MARKET_SNAPSHOT.slug,
+      outcome: "yes",
+      shares: "5",
+      targetPrice: "0.4",
+      venueExpiresAt: "2026-07-22T02:00:00.000Z",
+      wallet: WALLET,
+      rationale: "Rest the full verified YES position at a forty-cent take-profit target.",
+      sourcePosition: { supplied: true },
+    },
+  }, response);
+
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.intent.version, "conviction-take-profit-intent-v1");
+  assert.equal(body.intent.action, "TAKE_PROFIT");
+  assert.equal(body.intent.order.orderType, "GTD");
+  assert.equal(body.intent.order.postOnly, true);
+  assert.equal(body.executionCard.authorizationScope, "single-bounded-take-profit");
+  assert.equal(body.executionCard.targetPrice, "0.4");
+  assert.equal(body.executionCard.venueExpiresAtUnix, "1784685600");
+  assert.equal(body.issued, true);
+  assert.deepEqual(calls.map((entry) => entry[0]).sort(), ["market", "position", "source"]);
+});
+
+test("paid manager rejects an unknown action before any upstream lookup", async () => {
+  let upstreamCalls = 0;
+  const handler = createManageHandler({
+    issueIntentImpl(compilation) { return compilation; },
+    trustedIssuers: new Map(),
+    async resolveMarketImpl() { upstreamCalls += 1; return LIVE_MARKET_SNAPSHOT; },
+    async verifySourceImpl() { upstreamCalls += 1; return source(); },
+    async fetchPositionImpl() { upstreamCalls += 1; return position(); },
+  });
+  const response = responseRecorder();
+
+  await handler({ method: "POST", body: { action: "sell_everything" } }, response);
+
+  assert.equal(response.statusCode, 422);
+  assert.equal(JSON.parse(response.body).error.code, "unsupported_manager_action");
+  assert.equal(upstreamCalls, 0);
+});
+
 test("paid manager refetches one transiently stale Polygon position without weakening the freshness bound", async () => {
   let positionReads = 0;
   let issuances = 0;
