@@ -128,6 +128,26 @@ test("complete open-order client fails closed on missing, repeated, or invalid p
       (error) => error?.code === "open_orders_wallet_mismatch",
     );
   }
+
+  let duplicatePage = 0;
+  await assert.rejects(
+    fetchAllOpenOrders({
+      signerAddress: SIGNER,
+      depositWallet: DEPOSIT,
+      outcomeTokenId: TOKEN,
+      credentials: CREDS,
+      fetchImpl: async () => {
+        duplicatePage += 1;
+        return response({
+          count: 1,
+          limit: 500,
+          data: [{ id: "duplicate", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT }],
+          next_cursor: duplicatePage === 1 ? "MTAw" : "",
+        });
+      },
+    }),
+    (error) => error?.code === "incomplete_open_orders" && duplicatePage === 2,
+  );
 });
 
 test("credential loader binds an owner-only v2 entry to the selected deposit wallet", async () => {
