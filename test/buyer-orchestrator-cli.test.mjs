@@ -5,7 +5,15 @@ import {
   parseArgs,
   parseJsonOutput,
   paymentTransaction,
+  validatePaymentChallenge,
 } from "../scripts/buyer-orchestrator.mjs";
+import {
+  SERVICE_ASSET,
+  SERVICE_NETWORK,
+  SERVICE_PAYEE,
+  SERVICE_PRICE_ATOMIC,
+  SERVICE_RESOURCE,
+} from "../src/service-payment.mjs";
 
 const BASE = [
   "open",
@@ -38,4 +46,32 @@ test("JSON tool output and payment transaction parsing fail closed", () => {
   const tx = `0x${"ab".repeat(32)}`;
   assert.equal(paymentTransaction({ transaction: tx }), tx);
   assert.throws(() => paymentTransaction({ transaction: "0x1234" }), /no settlement transaction/);
+});
+
+test("buyer CLI accepts only the exact pinned x402 challenge", () => {
+  const challenge = {
+    x402Version: 2,
+    resource: { url: SERVICE_RESOURCE },
+    accepts: [{
+      scheme: "exact",
+      network: SERVICE_NETWORK,
+      asset: SERVICE_ASSET,
+      payTo: SERVICE_PAYEE,
+      amount: SERVICE_PRICE_ATOMIC,
+    }],
+  };
+
+  assert.equal(validatePaymentChallenge(challenge), challenge.accepts[0]);
+
+  for (const mutation of [
+    { resource: { url: "https://attacker.example/api/service" } },
+    { accepts: [{ ...challenge.accepts[0], amount: "50001" }] },
+    { accepts: [{ ...challenge.accepts[0], network: "eip155:137" }] },
+    { accepts: [{ ...challenge.accepts[0], payTo: "0x1111111111111111111111111111111111111111" }] },
+  ]) {
+    assert.throws(
+      () => validatePaymentChallenge({ ...challenge, ...mutation }),
+      (error) => error?.code === "payment_challenge_mismatch",
+    );
+  }
 });

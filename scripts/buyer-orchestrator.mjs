@@ -12,8 +12,10 @@ import { CONTRACTS, POLYGON_CHAIN_ID, POLYGON_RPC_URL } from "../src/constants.m
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import {
   SERVICE_ASSET,
+  SERVICE_NETWORK,
   SERVICE_PAYEE,
   SERVICE_PRICE_ATOMIC,
+  SERVICE_RESOURCE,
 } from "../src/service-payment.mjs";
 import { fetchAndVerifyX402Payment } from "../src/x402-payment-verifier.mjs";
 import {
@@ -193,6 +195,23 @@ export function paymentTransaction(paymentResponse) {
   return String(transaction).toLowerCase();
 }
 
+export function validatePaymentChallenge(decoded) {
+  const requirement = decoded?.accepts?.[0];
+  if (
+    decoded?.x402Version !== 2 || decoded?.resource?.url !== SERVICE_RESOURCE ||
+    requirement?.scheme !== "exact" || requirement?.network !== SERVICE_NETWORK ||
+    requirement?.asset?.toLowerCase() !== SERVICE_ASSET ||
+    requirement?.payTo?.toLowerCase() !== SERVICE_PAYEE ||
+    requirement?.amount !== SERVICE_PRICE_ATOMIC
+  ) {
+    throw Object.assign(
+      new Error("x402 challenge differs from Conviction's pinned price"),
+      { code: "payment_challenge_mismatch" },
+    );
+  }
+  return requirement;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const trustedIssuers = JSON.parse(await readFile(options.issuerRegistry, "utf8"));
@@ -303,14 +322,7 @@ async function main() {
         });
       }
       const decoded = decodeHeader(encoded, "PAYMENT-REQUIRED");
-      const requirement = decoded?.accepts?.[0];
-      if (
-        decoded?.x402Version !== 2 || decoded?.resource?.url !== SERVICE_RESOURCE ||
-        requirement?.scheme !== "exact" || requirement?.network !== "eip155:196" ||
-        requirement?.asset?.toLowerCase() !== SERVICE_ASSET ||
-        requirement?.payTo?.toLowerCase() !== SERVICE_PAYEE ||
-        requirement?.amount !== SERVICE_PRICE_ATOMIC
-      ) throw Object.assign(new Error("x402 challenge differs from Conviction's pinned price"), { code: "payment_challenge_mismatch" });
+      validatePaymentChallenge(decoded);
       return { encoded, decoded };
     },
     payAndRequestCard: async ({ challenge }) => {
