@@ -153,8 +153,37 @@ function findAddress(addresses, chainIndex) {
 }
 
 function depositWalletFromQuickstart(quickstart) {
-  const address = quickstart?.wallet?.deposit_wallet || quickstart?.data?.wallet?.deposit_wallet;
+  const data = quickstart?.data || quickstart;
+  const address = data?.wallet?.deposit_wallet;
   return address ? String(address).toLowerCase() : null;
+}
+
+export function normalizePluginReadiness({
+  access,
+  addresses,
+  quickstart,
+  selectedMode,
+  pUsdBalanceRaw,
+}) {
+  const data = quickstart?.data || quickstart;
+  const depositWallet = depositWalletFromQuickstart(quickstart);
+  const status = data?.status;
+  const explicitTradingAddress = data?.trading_address;
+  const depositWalletActive =
+    selectedMode === "deposit_wallet" &&
+    (status === "active" || status === "deposit_wallet_ready");
+
+  return {
+    accessible:
+      access?.data?.accessible === true &&
+      data?.accessible !== false,
+    clobVersion: depositWalletActive ? "V2" : "",
+    currentMode: selectedMode,
+    paymentPayer: String(findAddress(addresses, 196) || "").toLowerCase(),
+    buyerWallet: depositWallet || "",
+    tradingAddress: String(explicitTradingAddress || depositWallet || "").toLowerCase(),
+    pUsdBalanceRaw,
+  };
 }
 
 async function polygonPusdBalanceRaw(wallet) {
@@ -260,6 +289,7 @@ async function main() {
     };
   const readline = createInterface({ input: stdin, output: options.json ? stderr : stdout });
   let paymentConsentUsed = false;
+  let selectedTradingMode = "";
   const confirm = async (kind) => {
     if (kind === "payment") {
       if (paymentConsentUsed) return false;
@@ -278,7 +308,14 @@ async function main() {
         ["switch-mode", "--mode", "deposit-wallet"],
         "Polymarket trading-mode selection",
       );
-      return switched?.data || switched;
+      const result = switched?.data || switched;
+      if (result?.mode !== "deposit-wallet") {
+        throw Object.assign(new Error("Polymarket did not select DEPOSIT_WALLET mode"), {
+          code: "wrong_trading_mode",
+        });
+      }
+      selectedTradingMode = result.mode;
+      return result;
     },
     checkReadiness: async () => {
       const [access, addresses, quickstart] = await Promise.all([
@@ -287,19 +324,14 @@ async function main() {
         commandJson("polymarket-plugin", ["quickstart"], "Polymarket readiness"),
       ]);
       const depositWallet = depositWalletFromQuickstart(quickstart);
-      const status = quickstart?.status || quickstart?.data?.status;
-      const currentMode = quickstart?.current_mode || quickstart?.data?.current_mode;
-      const tradingAddress = quickstart?.trading_address || quickstart?.data?.trading_address;
       const pUsdBalanceRaw = depositWallet ? await polygonPusdBalanceRaw(depositWallet) : "0";
-      return {
-        accessible: access?.data?.accessible === true,
-        clobVersion: status === "deposit_wallet_ready" ? "V2" : "",
-        currentMode,
-        paymentPayer: String(findAddress(addresses, 196) || "").toLowerCase(),
-        buyerWallet: depositWallet || "",
-        tradingAddress: String(tradingAddress || "").toLowerCase(),
+      return normalizePluginReadiness({
+        access,
+        addresses,
+        quickstart,
+        selectedMode: selectedTradingMode,
         pUsdBalanceRaw,
-      };
+      });
     },
     previewMarket: async () => {
       const { response, json } = await postJson(`${options.origin}/api/preview`, requestBody);
