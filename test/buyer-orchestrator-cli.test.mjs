@@ -16,6 +16,7 @@ import {
   paymentAuthorizationMetadata,
   paymentTransaction,
   reconcileCloseJournal,
+  resumePaidCloseJournal,
   normalizePluginReadiness,
   requireDistinctPaymentPayer,
   requirePinnedCloseExecutionReadiness,
@@ -103,6 +104,28 @@ test("buyer CLI accepts the read-only CLOSE reconciliation command", () => {
     issuerRegistry: "config/trusted-issuer.production.json",
     json: true,
   });
+});
+
+test("buyer CLI accepts only journal and issuer inputs for paid CLOSE resume", () => {
+  assert.deepEqual(parseArgs([
+    "resume-close",
+    "--journal", "/tmp/journey.json",
+    "--issuer-registry", "config/trusted-issuer.production.json",
+    "--json",
+  ]), {
+    command: "resume-close",
+    journal: "/tmp/journey.json",
+    issuerRegistry: "config/trusted-issuer.production.json",
+    json: true,
+  });
+  assert.throws(
+    () => parseArgs([
+      "resume-close", "--journal", "/tmp/journey.json",
+      "--issuer-registry", "issuers.json", "--payment-payer", "0x1234",
+    ]),
+    /Unknown arguments/,
+  );
+  assert.equal(typeof resumePaidCloseJournal, "function");
 });
 
 test("buyer CLI refuses incomplete or broadened CLOSE arguments", () => {

@@ -200,6 +200,7 @@ test("close journey keeps x402 and trade consent distinct and executes exactly o
   assert.equal(f.executes(), 1);
   assert.ok(result.timings.paidAt < result.timings.confirmedAt);
   assert.ok(result.timings.confirmedAt < result.timings.provedAt);
+  assert.equal(result.timings.paymentToProofMs, result.timings.provedAt - result.timings.paidAt);
   const confirmation = f.emitted.find((event) => event.type === "trade_confirmation");
   assert.equal(confirmation.bounds.marketQuestion, "Fixture market?");
   assert.equal(confirmation.bounds.conditionId, CONDITION);

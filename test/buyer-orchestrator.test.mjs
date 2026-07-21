@@ -103,6 +103,7 @@ test("open journey keeps payment and trade consent distinct and executes exactly
   });
   assert.ok(result.timings.paidAt < result.timings.confirmedAt);
   assert.ok(result.timings.confirmedAt < result.timings.provedAt);
+  assert.equal(result.timings.paymentToProofMs, result.timings.provedAt - result.timings.paidAt);
 });
 
 for (const [name, mutate, code] of [

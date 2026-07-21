@@ -120,7 +120,7 @@ function requireReadiness(readiness, paymentPayer, buyerWallet, minimumDebitRaw 
   }
 }
 
-function bindCloseCardToRequest(validated, previewInput, request, sellerWallet) {
+export function bindCloseCardToRequest(validated, previewInput, request, sellerWallet) {
   const preview = previewInput?.preview || previewInput;
   const intent = validated?.intent;
   requireValue(intent && validated?.bounds && preview?.market && preview?.source, "invalid_card", "Validated CLOSE card or preview is incomplete");
@@ -281,6 +281,7 @@ export async function runOpenJourney({
       confirmedAt: confirmed.at,
       provedAt: proved.at,
       wallMs: proved.at - startedAt,
+      paymentToProofMs: proved.at - events.find((event) => event.type === "payment_verified").at,
     },
   };
 }
@@ -490,6 +491,7 @@ export async function runCloseJourney({
       confirmedAt: confirmed.at,
       provedAt: proved.at,
       wallMs: proved.at - startedAt,
+      paymentToProofMs: proved.at - events.find((event) => event.type === "payment_verified").at,
     },
   };
 }

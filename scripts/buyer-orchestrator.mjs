@@ -9,7 +9,11 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout, stderr } from "node:process";
 import { promisify } from "node:util";
 
-import { runCloseJourney, runOpenJourney } from "../src/buyer-orchestrator.mjs";
+import {
+  bindCloseCardToRequest,
+  runCloseJourney,
+  runOpenJourney,
+} from "../src/buyer-orchestrator.mjs";
 import { sha256 } from "../src/canonical.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID, POLYGON_RPC_URL } from "../src/constants.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
@@ -17,6 +21,7 @@ import { fetchAndVerifyClose } from "../src/exit-receipt-verifier.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchPositionSnapshot } from "../src/position-client.mjs";
 import { fetchAllOpenOrders } from "../src/polymarket-open-orders.mjs";
+import { verifySourcePosition } from "../src/source-position.mjs";
 import {
   POSITION_CARD_SERVICE,
   POSITION_MANAGER_SERVICE,
@@ -62,12 +67,15 @@ const checkpoint = {
   paidCard: null,
   liveResult: null,
   paymentProof: null,
+  paymentRequestedAt: null,
   paymentAuthorization: null,
   paidServiceResponse: null,
   request: null,
+  sourcePosition: null,
   paymentPayer: null,
   buyerWallet: null,
   tradeConfirmedAt: null,
+  tradeConsent: null,
   executionArgv: null,
   executionArgvHash: null,
   replayKey: null,
@@ -107,6 +115,9 @@ function usage() {
     "  node scripts/buyer-orchestrator.mjs reconcile-close --journal <journey.json>",
     "    --issuer-registry <issuers.json> [--json]",
     "",
+    "  node scripts/buyer-orchestrator.mjs resume-close --journal <journey.json>",
+    "    --issuer-registry <issuers.json> [--json]",
+    "",
     "The program displays the exact service-payment challenge and requires `confirm payment`,",
     "then displays the final signed bounds and requires exactly one",
     "interactive `confirm live mode` before it can submit the Polygon order.",
@@ -135,7 +146,7 @@ export function parseArgs(argv) {
     rest.splice(index, 1);
     return true;
   };
-  if (command === "reconcile-close") {
+  if (command === "reconcile-close" || command === "resume-close") {
     const parsed = {
       command,
       journal: take("--journal"),
@@ -759,12 +770,13 @@ function safeStatePath(value, kind, stateDirectory = journalDirectory) {
   return candidate;
 }
 
-export async function releaseReconciledLocks(
+export async function verifyJournalLockOwnership(
   state,
   {
     stateDirectory = journalDirectory,
     journal,
     fields = ["replayLockPath", "executionLockPath"],
+    requirePresent = false,
   } = {},
 ) {
   const definitions = {
@@ -774,13 +786,26 @@ export async function releaseReconciledLocks(
   const checked = [];
   for (const field of fields) {
     const kind = definitions[field];
-    if (!kind || !state[field]) continue;
+    if (!kind) continue;
+    if (!state[field]) {
+      if (requirePresent) {
+        throw Object.assign(new Error(`${kind} is missing from the journey`), {
+          code: "lock_ownership_mismatch",
+        });
+      }
+      continue;
+    }
     const file = safeStatePath(state[field], kind, stateDirectory);
     let lock;
     try {
       lock = JSON.parse(await readFile(file, "utf8"));
     } catch (error) {
       if (error?.code === "ENOENT") {
+        if (requirePresent) {
+          throw Object.assign(new Error(`${kind} is missing`), {
+            code: "lock_ownership_mismatch",
+          });
+        }
         checked.push({ field, file, missing: true });
         continue;
       }
@@ -803,6 +828,23 @@ export async function releaseReconciledLocks(
     }
     checked.push({ field, file, missing: false });
   }
+
+  return checked;
+}
+
+export async function releaseReconciledLocks(
+  state,
+  {
+    stateDirectory = journalDirectory,
+    journal,
+    fields = ["replayLockPath", "executionLockPath"],
+  } = {},
+) {
+  const checked = await verifyJournalLockOwnership(state, {
+    stateDirectory,
+    journal,
+    fields,
+  });
 
   const released = [];
   for (const { field, file, missing } of checked) {
@@ -962,6 +1004,406 @@ export async function reconcileCloseJournal({
   };
 }
 
+function resumeInvariant(condition, code, message) {
+  if (!condition) throw Object.assign(new Error(message), { code });
+}
+
+function resumeRequest(state) {
+  const stored = asObject(state?.request);
+  const sourcePosition = normalizeSourcePosition(
+    firstObject(state?.sourcePosition, stored?.sourcePosition),
+  );
+  resumeInvariant(stored, "invalid_resume_checkpoint", "Paid CLOSE journal has no request");
+  if (state?.sourcePosition && stored.sourcePosition) {
+    resumeInvariant(
+      sha256(normalizeSourcePosition(state.sourcePosition)) ===
+        sha256(normalizeSourcePosition(stored.sourcePosition)),
+      "invalid_resume_checkpoint",
+      "Paid CLOSE journal contains conflicting source proofs",
+    );
+  }
+  const request = {
+    market: String(stored.market || "").trim(),
+    outcome: String(stored.outcome || stored.side || "").toUpperCase(),
+    shares: String(stored.shares || ""),
+    minPrice: String(stored.minPrice || ""),
+    rationale: String(stored.rationale || ""),
+    sourcePosition,
+    source: {
+      intentHash: sourcePosition.intentHash,
+      positionProofHash: sourcePosition.positionProofHash,
+      transactionHash: sourcePosition.transactionHash,
+      orderId: sourcePosition.orderId,
+    },
+  };
+  resumeInvariant(request.market, "invalid_resume_checkpoint", "Paid CLOSE journal has no market");
+  resumeInvariant(request.outcome === "YES" || request.outcome === "NO", "invalid_resume_checkpoint", "Paid CLOSE outcome is invalid");
+  const sharesRaw = parseDecimal(request.shares, 6, "resume CLOSE shares");
+  const minPriceRaw = parseDecimal(request.minPrice, 6, "resume CLOSE minimum price");
+  resumeInvariant(sharesRaw > 0n && sharesRaw % 1_000_000n === 0n, "invalid_resume_checkpoint", "Paid CLOSE shares are invalid");
+  resumeInvariant(minPriceRaw > 0n && minPriceRaw < 1_000_000n, "invalid_resume_checkpoint", "Paid CLOSE minimum price is invalid");
+  resumeInvariant(
+    String(stored.sourceIntentHash || "").toLowerCase() === sourcePosition.intentHash &&
+      String(stored.sourcePositionProofHash || "").toLowerCase() === sourcePosition.positionProofHash,
+    "invalid_resume_checkpoint",
+    "Paid CLOSE request source hashes differ from its source proof",
+  );
+  return { ...request, sharesRaw, minPriceRaw };
+}
+
+function bindResumeCard({ state, request, validated, verifiedSource }) {
+  const source = request.sourcePosition;
+  const signedSource = validated.intent?.source;
+  const preview = {
+    market: {
+      conditionId: verifiedSource.marketConditionId,
+      outcomeTokenId: verifiedSource.outcomeTokenId,
+    },
+    source: {
+      ...verifiedSource,
+      intentHash: source.intentHash,
+      positionProofHash: source.positionProofHash,
+      transactionHash: source.transactionHash,
+      orderId: source.orderId,
+    },
+  };
+  bindCloseCardToRequest(validated, preview, request, state.buyerWallet);
+  resumeInvariant(
+    verifiedSource.wallet === state.buyerWallet &&
+      verifiedSource.outcome === request.outcome &&
+      String(verifiedSource.outcomeTokenId) === String(validated.tokenId) &&
+      BigInt(verifiedSource.actualSharesRaw) >= request.sharesRaw &&
+      signedSource?.wallet === verifiedSource.wallet &&
+      String(signedSource?.marketConditionId || "").toLowerCase() === verifiedSource.marketConditionId &&
+      signedSource?.outcome === verifiedSource.outcome &&
+      String(signedSource?.outcomeTokenId || "") === verifiedSource.outcomeTokenId &&
+      String(signedSource?.actualSharesRaw || "") === verifiedSource.actualSharesRaw &&
+      signedSource?.intentVersion === verifiedSource.intentVersion &&
+      signedSource?.verificationMode === verifiedSource.verificationMode,
+    "source_substitution",
+    "Freshly verified source position cannot authorize this CLOSE",
+  );
+  resumeInvariant(
+    String(state.intentHash || "").toLowerCase() === validated.intentHash &&
+      String(state.sourceIntentHash || "").toLowerCase() === source.intentHash &&
+      String(state.sourcePositionProofHash || "").toLowerCase() === source.positionProofHash,
+    "invalid_resume_checkpoint",
+    "Paid CLOSE journal hashes differ from the signed card or source proof",
+  );
+}
+
+function validateResumeConsent({ state, validated, paymentProof, now }) {
+  const consent = asObject(state.tradeConsent);
+  const confirmedAt = Date.parse(String(consent?.confirmedAt || ""));
+  const expiresAt = Date.parse(String(validated.expiresAt || ""));
+  const issuedAt = Date.parse(String(validated.issuanceVerification?.issuedAt || ""));
+  const paymentAt = Number(BigInt(paymentProof.blockTimestamp) * 1_000n);
+  const argvHash = sha256(validated.executionCard.argv);
+  resumeInvariant(
+    consent?.version === "conviction-close-trade-consent-v1" &&
+      consent.intentHash === validated.intentHash &&
+      consent.executionArgvHash === argvHash &&
+      consent.paymentTx === state.paymentTx &&
+      consent.replayKey === state.replayKey &&
+      consent.expiresAt === validated.expiresAt &&
+      state.tradeConfirmedAt === consent.confirmedAt,
+    "invalid_trade_consent",
+    "Recorded trade consent is missing or does not bind the paid CLOSE",
+  );
+  resumeInvariant(
+    Number.isFinite(confirmedAt) && Number.isFinite(expiresAt) && Number.isFinite(issuedAt) &&
+      confirmedAt >= paymentAt && confirmedAt >= issuedAt && confirmedAt < expiresAt,
+    "invalid_trade_consent",
+    "Recorded trade consent is outside the paid card and payment window",
+  );
+  resumeInvariant(
+    expiresAt - now >= 15_000,
+    "insufficient_execution_window",
+    "Paid CLOSE card has too little time remaining for safe resume",
+  );
+  return { consent, confirmedAt, expiresAt, argvHash };
+}
+
+function requireExactResumeCheckpoint(state, journal) {
+  resumeInvariant(state?.mode === "close", "invalid_resume_checkpoint", "Journal is not a Conviction CLOSE journey");
+  resumeInvariant(resolve(String(state.journalPath || "")) === journal, "invalid_resume_checkpoint", "Journal identity does not match its file");
+  resumeInvariant(
+    state.stage === "trade_confirmed" && state.reconciliationRequired === true,
+    "invalid_resume_checkpoint",
+    "Only an exact paid-and-confirmed pre-execution CLOSE checkpoint can resume",
+  );
+  resumeInvariant(
+    !state.executionArgv && !state.executionArgvHash && !state.executionLockPath &&
+      !state.liveResult && !state.orderId && !state.settlementTx &&
+      !state.closeProofHash && !state.closePassportHash,
+    "ambiguous_execution",
+    "CLOSE may already have crossed the execution boundary; reconcile it instead",
+  );
+  resumeInvariant(
+    HASH_RE.test(String(state.paymentTx || "")) && asObject(state.paymentProof) &&
+      asObject(state.paidCard) && HASH_RE.test(String(state.intentHash || "")) &&
+      Number.isInteger(state.paidServiceResponse?.status) &&
+      state.paidServiceResponse.status >= 200 && state.paidServiceResponse.status < 300 &&
+      state.paidServiceResponse.paymentResponsePresent === true,
+    "invalid_resume_checkpoint",
+    "Paid CLOSE checkpoint is incomplete",
+  );
+  const requestedAt = Date.parse(String(state.paymentRequestedAt || ""));
+  resumeInvariant(Number.isFinite(requestedAt), "invalid_resume_checkpoint", "Paid CLOSE checkpoint has no payment freshness boundary");
+  resumeInvariant(
+    ADDRESS_RE.test(String(state.paymentPayer || "")) && state.paymentPayer === String(state.paymentPayer).toLowerCase(),
+    "invalid_resume_checkpoint",
+    "Paid CLOSE payer is invalid or non-canonical",
+  );
+  resumeInvariant(
+    ADDRESS_RE.test(String(state.buyerWallet || "")) && state.buyerWallet === String(state.buyerWallet).toLowerCase(),
+    "invalid_resume_checkpoint",
+    "Paid CLOSE seller is invalid or non-canonical",
+  );
+}
+
+/**
+ * Resume only the paid-and-confirmed, never-attempted CLOSE checkpoint. This
+ * path deliberately has no payment adapter: it can reverify a payment but can
+ * never create or submit another authorization.
+ */
+export async function resumePaidCloseJournal({
+  file,
+  trustedIssuers,
+  adapters,
+  now = Date.now,
+  stateDirectory = journalDirectory,
+  executionFile = join(stateDirectory, basename(executionLockFile)),
+  claimExecutionLockImpl = claimExecutionLock,
+} = {}) {
+  for (const name of [
+    "verifyPayment", "verifySourcePosition", "validateCloseCard", "ensureTradingMode",
+    "checkCloseReadiness", "dryRun", "validateCloseDryRun", "execute",
+    "buildCloseReceiptRequest", "fetchCloseProof", "validateCloseProof",
+  ]) {
+    resumeInvariant(typeof adapters?.[name] === "function", "invalid_adapter", `Missing resume adapter: ${name}`);
+  }
+
+  const journal = safeStatePath(file, "journal", stateDirectory);
+  const state = JSON.parse(await readFile(journal, "utf8"));
+  requireExactResumeCheckpoint(state, journal);
+  requireDistinctPaymentPayer(state.paymentPayer);
+  const request = resumeRequest(state);
+  const expectedReplayKey = closeReplayKey({ request, sellerWallet: state.buyerWallet });
+  resumeInvariant(state.replayKey === expectedReplayKey, "invalid_replay_key", "Paid CLOSE replay identity changed");
+  validateStoredPaymentAuthorization(state.paymentAuthorization, {
+    paymentPayer: state.paymentPayer,
+    service: POSITION_MANAGER_SERVICE,
+  });
+  await verifyJournalLockOwnership(state, {
+    stateDirectory,
+    journal,
+    fields: ["replayLockPath"],
+    requirePresent: true,
+  });
+
+  const freshPaymentResult = await adapters.verifyPayment({
+    paymentTx: state.paymentTx,
+    payer: state.paymentPayer,
+    payee: SERVICE_PAYEE,
+    asset: SERVICE_ASSET,
+    amountAtomic: POSITION_MANAGER_SERVICE.priceAtomic,
+    earliestAllowedTime: state.paymentRequestedAt,
+  });
+  const paymentProof = freshPaymentResult?.proof || freshPaymentResult;
+  resumeInvariant(
+    asObject(paymentProof) && sha256(paymentProof) === sha256(state.paymentProof),
+    "payment_proof_mismatch",
+    "Fresh X Layer payment proof differs from the paid checkpoint",
+  );
+
+  const verifiedSource = await adapters.verifySourcePosition(request.sourcePosition, { trustedIssuers });
+  let validated = await adapters.validateCloseCard(state.paidCard, {
+    trustedIssuers,
+    now: now(),
+  });
+  bindResumeCard({ state, request, validated, verifiedSource });
+  validateResumeConsent({ state, validated, paymentProof, now: now() });
+
+  // Recheck ownership immediately before acquiring the global execution lock.
+  await verifyJournalLockOwnership(state, {
+    stateDirectory,
+    journal,
+    fields: ["replayLockPath"],
+    requirePresent: true,
+  });
+
+  let lockClaimed = false;
+  let lockStateVerified = false;
+  let liveAttempted = false;
+  const preLockCheckpointHash = sha256(state);
+  try {
+    state.executionLockPath = await claimExecutionLockImpl({
+      journal,
+      directory: stateDirectory,
+      file: executionFile,
+    });
+    lockClaimed = true;
+    const lockedState = JSON.parse(await readFile(journal, "utf8"));
+    resumeInvariant(
+      sha256(lockedState) === preLockCheckpointHash,
+      "resume_checkpoint_changed",
+      "Paid CLOSE checkpoint changed while acquiring the execution lock",
+    );
+    requireExactResumeCheckpoint(lockedState, journal);
+    await verifyJournalLockOwnership(lockedState, {
+      stateDirectory,
+      journal,
+      fields: ["replayLockPath"],
+      requirePresent: true,
+    });
+    lockStateVerified = true;
+    state.stage = "resume_execution_lock_acquired";
+    state.resumeStartedAt = new Date(now()).toISOString();
+    await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
+
+    await adapters.ensureTradingMode({ sellerWallet: state.buyerWallet });
+    validated = await adapters.validateCloseCard(state.paidCard, {
+      trustedIssuers,
+      now: now(),
+    });
+    bindResumeCard({ state, request, validated, verifiedSource });
+    const consent = validateResumeConsent({ state, validated, paymentProof, now: now() });
+    const readiness = await adapters.checkCloseReadiness({
+      paymentPayer: state.paymentPayer,
+      sellerWallet: state.buyerWallet,
+      outcomeTokenId: validated.tokenId,
+      sharesRaw: validated.bounds.sharesRaw,
+    });
+    resumeInvariant(
+      String(readiness?.paymentPayer || "").toLowerCase() === state.paymentPayer,
+      "payment_wallet_mismatch",
+      "Active X Layer payer differs from the paid CLOSE journal",
+    );
+    requirePinnedCloseExecutionReadiness(readiness, {
+      wallet: state.buyerWallet,
+      tokenId: validated.tokenId,
+      sharesRaw: BigInt(validated.bounds.sharesRaw),
+    });
+    const dryRun = await adapters.dryRun(validated.executionCard.argv);
+    await adapters.validateCloseDryRun(state.paidCard, dryRun, {
+      trustedIssuers,
+      now: now(),
+    });
+
+    // The durable marker is written before the first possibly-live call. Any
+    // crash or error after this point is ambiguous and is never auto-retried.
+    state.stage = "execution_attempted";
+    state.executionArgv = [...validated.executionCard.argv];
+    state.executionArgvHash = consent.argvHash;
+    state.executionAttemptedAt = new Date(now()).toISOString();
+    state.reconciliationRequired = true;
+    await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
+    liveAttempted = true;
+
+    const liveResult = await adapters.execute(validated.executionCard.argv);
+    const receiptRequest = await adapters.buildCloseReceiptRequest(state.paidCard, liveResult, {
+      trustedIssuers,
+    });
+    resumeInvariant(
+      HASH_RE.test(String(receiptRequest?.transactionHash || "")) &&
+        HASH_RE.test(String(receiptRequest?.orderId || "")),
+      "ambiguous_execution",
+      "Live CLOSE result has no single verifiable settlement",
+    );
+    state.liveResult = liveResult;
+    state.orderId = String(receiptRequest.orderId).toLowerCase();
+    state.settlementTx = String(receiptRequest.transactionHash).toLowerCase();
+    state.stage = "live_result_received";
+    await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
+
+    const proofDocument = await adapters.fetchCloseProof(receiptRequest);
+    const proof = await adapters.validateCloseProof(state.paidCard, proofDocument, {
+      trustedIssuers,
+      expectedReceiptRequest: receiptRequest,
+    });
+    resumeInvariant(
+      String(proof?.transactionHash || "").toLowerCase() === state.settlementTx &&
+        String(proof?.orderId || "").toLowerCase() === state.orderId &&
+        HASH_RE.test(String(proof?.closeProofHash || "")) &&
+        HASH_RE.test(String(proof?.closePassportHash || "")),
+      "close_proof_mismatch",
+      "Verified CLOSE proof differs from the one live result",
+    );
+    resumeInvariant(
+      Date.parse(proof.settledAt) >= Math.floor(consent.confirmedAt / 1_000) * 1_000,
+      "settlement_before_confirmation",
+      "Verified CLOSE settlement predates the recorded trade consent",
+    );
+    state.closeProofHash = proof.closeProofHash;
+    state.closePassportHash = proof.closePassportHash;
+    state.stage = "resume_proof_verified";
+    await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
+
+    await verifyJournalLockOwnership(state, {
+      stateDirectory,
+      journal,
+      fields: ["replayLockPath", "executionLockPath"],
+      requirePresent: true,
+    });
+    const releasedLocks = await releaseReconciledLocks(state, {
+      stateDirectory,
+      journal,
+      fields: ["replayLockPath", "executionLockPath"],
+    });
+    state.stage = "complete_resumed";
+    state.reconciliationRequired = false;
+    state.resumedAt = new Date(now()).toISOString();
+    state.resumeError = null;
+    await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
+    return {
+      ok: true,
+      status: state.stage,
+      resumed: true,
+      journalPath: journal,
+      paymentTx: paymentProof.transactionHash,
+      intentHash: validated.intentHash,
+      orderId: proof.orderId,
+      settlementTx: proof.transactionHash,
+      closeProofHash: proof.closeProofHash,
+      closePassportHash: proof.closePassportHash,
+      releasedLocks,
+      ordersPlaced: 1,
+      timings: {
+        paidAt: Number(BigInt(paymentProof.blockTimestamp) * 1_000n),
+        confirmedAt: consent.confirmedAt,
+        provedAt: Date.parse(proof.settledAt),
+        paymentToProofMs: Date.parse(proof.settledAt) - Number(BigInt(paymentProof.blockTimestamp) * 1_000n),
+      },
+    };
+  } catch (error) {
+    state.reconciliationRequired = true;
+    state.resumeError = {
+      code: error?.code || "resume_failed",
+      at: new Date(now()).toISOString(),
+      executionAmbiguous: liveAttempted,
+    };
+    if (lockClaimed && !liveAttempted) {
+      try {
+        await releaseReconciledLocks(state, {
+          stateDirectory,
+          journal,
+          fields: ["executionLockPath"],
+        });
+        if (lockStateVerified) state.stage = "trade_confirmed";
+      } catch (releaseError) {
+        state.resumeError.lockReleaseError = releaseError?.code || "lock_release_failed";
+      }
+    }
+    if (lockClaimed && lockStateVerified) {
+      try {
+        await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
+      } catch {}
+    }
+    throw error;
+  }
+}
+
 export function normalizePluginReadiness({
   access,
   addresses,
@@ -1064,15 +1506,105 @@ export function validatePaymentChallenge(decoded, service = POSITION_CARD_SERVIC
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  if (options.command === "reconcile-close") {
+  if (options.command === "reconcile-close" || options.command === "resume-close") {
     const trustedIssuerDocument = JSON.parse(await readFile(options.issuerRegistry, "utf8"));
     const trustedIssuers = trustedIssuerRegistry(trustedIssuerDocument.issuers || trustedIssuerDocument);
     if (trustedIssuers.size === 0) {
       throw Object.assign(new Error("Pinned issuer registry is empty"), { code: "missing_trusted_issuer" });
     }
-    const result = await reconcileCloseJournal({
+    if (options.command === "reconcile-close") {
+      const result = await reconcileCloseJournal({
+        file: options.journal,
+        trustedIssuers,
+      });
+      stdout.write(`${JSON.stringify(result)}\n`);
+      return;
+    }
+
+    let selectedTradingMode = "";
+    const loadResumeReadiness = async ({ paymentPayer, sellerWallet }) => {
+      const [access, addresses, quickstart] = await Promise.all([
+        commandJson("polymarket-plugin", ["check-access"], "Polymarket access check"),
+        commandJson("onchainos", ["wallet", "addresses"], "Agentic Wallet addresses"),
+        commandJson("polymarket-plugin", ["quickstart"], "Polymarket readiness"),
+      ]);
+      const depositWallet = depositWalletFromQuickstart(quickstart);
+      const pUsdBalanceRaw = depositWallet ? await polygonPusdBalanceRaw(depositWallet) : "0";
+      const readiness = normalizePluginReadiness({
+        access,
+        addresses,
+        quickstart,
+        selectedMode: selectedTradingMode,
+        pUsdBalanceRaw,
+      });
+      resumeInvariant(
+        readiness.paymentPayer === paymentPayer && readiness.buyerWallet === sellerWallet,
+        "trading_wallet_mismatch",
+        "Active payer or deposit wallet differs from the paid CLOSE journal",
+      );
+      return readiness;
+    };
+    const result = await resumePaidCloseJournal({
       file: options.journal,
       trustedIssuers,
+      adapters: {
+        verifyPayment: (expected) => fetchAndVerifyX402Payment(expected),
+        verifySourcePosition: (source, verificationOptions) => verifySourcePosition(source, verificationOptions),
+        validateCloseCard: (card, validationOptions) => validateCloseCard(card, validationOptions),
+        ensureTradingMode: async () => {
+          const switched = await commandJson(
+            "polymarket-plugin",
+            ["switch-mode", "--mode", "deposit-wallet"],
+            "Polymarket trading-mode selection",
+          );
+          const value = switched?.data || switched;
+          resumeInvariant(value?.mode === "deposit-wallet", "wrong_trading_mode", "Polymarket did not select DEPOSIT_WALLET mode");
+          selectedTradingMode = value.mode;
+          return value;
+        },
+        checkCloseReadiness: async ({ paymentPayer, sellerWallet, outcomeTokenId }) => {
+          const [readiness, position] = await Promise.all([
+            loadResumeReadiness({ paymentPayer, sellerWallet }),
+            fetchPositionSnapshot(sellerWallet, outcomeTokenId),
+          ]);
+          const completeOpenOrders = await fetchAllOpenOrders({
+            signerAddress: paymentPayer,
+            depositWallet: sellerWallet,
+            outcomeTokenId: position.outcomeTokenId,
+          });
+          resumeInvariant(completeOpenOrders.complete === true, "incomplete_open_orders", "Polymarket open-order pagination is incomplete");
+          const reservations = summarizeOpenSellReservations(
+            normalizeOpenOrders(completeOpenOrders.orders),
+            position.outcomeTokenId,
+          );
+          return {
+            ...readiness,
+            outcomeTokenId: position.outcomeTokenId,
+            outcomeBalanceRaw: position.balanceRaw,
+            positionBlockNumber: position.blockNumber,
+            positionBlockHash: position.blockHash,
+            approvedForExchange: position.approvedForExchange,
+            reservedSharesRaw: reservations.reservedSharesRaw,
+            openSellOrderCount: reservations.openSellOrderCount,
+          };
+        },
+        dryRun: (executionArgv) => commandJson(
+          "polymarket-plugin",
+          [...executionArgv, "--dry-run"],
+          "Resumed Polymarket dry run",
+        ),
+        validateCloseDryRun: (card, dryRun, validationOptions) => validateClosePluginPreview(card, dryRun, validationOptions),
+        execute: (executionArgv) => commandJson("polymarket-plugin", executionArgv, "Resumed Polymarket live order"),
+        buildCloseReceiptRequest: (card, liveResult, validationOptions) => buildCloseReceiptRequest(card, liveResult, validationOptions),
+        fetchCloseProof: (receiptRequest) => fetchAndVerifyClose(receiptRequest.transactionHash, {
+          intent: receiptRequest.intent,
+          intentHash: receiptRequest.intentHash,
+          orderId: receiptRequest.orderId,
+          issuance: receiptRequest.issuance,
+          trustedIssuers,
+        }),
+        validateCloseProof: (card, proof, validationOptions) => validateCloseProof(card, proof, validationOptions),
+      },
     });
     stdout.write(`${JSON.stringify(result)}\n`);
     return;
@@ -1129,8 +1661,10 @@ async function main() {
         outcome: options.side,
         shares: options.shares,
         minPrice: options.minPrice,
+        rationale: options.rationale,
         sourceIntentHash: sourcePosition.intentHash,
         sourcePositionProofHash: sourcePosition.positionProofHash,
+        sourcePosition,
       }
     : {
         market: options.market,
@@ -1140,6 +1674,7 @@ async function main() {
       };
   checkpoint.paymentPayer = options.paymentPayer;
   checkpoint.buyerWallet = tradingWallet;
+  checkpoint.sourcePosition = sourcePosition || null;
   checkpoint.sourceIntentHash = sourcePosition?.intentHash || null;
   checkpoint.sourcePositionProofHash = sourcePosition?.positionProofHash || null;
   let latestReadiness;
@@ -1213,7 +1748,7 @@ async function main() {
   const readline = createInterface({ input: stdin, output: options.json ? stderr : stdout });
   let paymentConsentUsed = false;
   let selectedTradingMode = "";
-  const confirm = async (kind) => {
+  const confirm = async (kind, context = {}) => {
     if (kind === "payment") {
       if (paymentConsentUsed) return false;
       paymentConsentUsed = true;
@@ -1227,6 +1762,19 @@ async function main() {
     const accepted = answer.trim() === "confirm live mode";
     if (accepted) {
       checkpoint.tradeConfirmedAt = new Date().toISOString();
+      if (closeMode) {
+        checkpoint.tradeConsent = {
+          version: "conviction-close-trade-consent-v1",
+          intentHash: context.validated.intentHash,
+          executionArgvHash: sha256(context.validated.executionCard.argv),
+          paymentTx: checkpoint.paymentTx,
+          replayKey: checkpoint.replayKey,
+          confirmedAt: checkpoint.tradeConfirmedAt,
+          expiresAt: context.validated.expiresAt,
+        };
+        checkpoint.stage = "trade_confirmed";
+        checkpoint.reconciliationRequired = true;
+      }
       await writeReconciliationJournal(checkpoint);
     }
     return accepted;
@@ -1333,6 +1881,11 @@ async function main() {
       return json;
     },
     requestPaymentChallenge: async () => {
+      if (closeMode) {
+        checkpoint.paymentRequestedAt = new Date().toISOString();
+        checkpoint.stage = "payment_challenge_requested";
+        await writeReconciliationJournal(checkpoint);
+      }
       const { response, json } = await postJson(`${options.origin}${service.path}`, requestBody);
       const encoded = response.headers.get("payment-required");
       if (response.status !== 402 || !encoded) {
@@ -1604,8 +2157,8 @@ if (isMain()) {
   try {
     await main();
   } catch (error) {
-    const reconciliationCommand = process.argv[2] === "reconcile-close";
-    if (!reconciliationCommand) {
+    const stateCommand = process.argv[2] === "reconcile-close" || process.argv[2] === "resume-close";
+    if (!stateCommand) {
       checkpoint.reconciliationRequired = Boolean(
         executionAttempted ||
         (checkpoint.replayLockPath && checkpoint.stage !== "complete"),
@@ -1616,7 +2169,7 @@ if (isMain()) {
       ok: false,
       code: error?.code || "buyer_journey_failed",
       message: error?.message || "Buyer journey failed",
-      ...(reconciliationCommand ? {} : {
+      ...(stateCommand ? {} : {
         ordersPlaced: executionAttempted ? "unknown" : 0,
         reconciliationRequired: checkpoint.reconciliationRequired,
         journalPath,

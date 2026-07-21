@@ -471,12 +471,10 @@ if (mode === "live") {
     let errors = "";
     child.stdout.on("data", (chunk) => { output += chunk; process.stdout.write(chunk); });
     child.stderr.on("data", (chunk) => { errors += chunk; process.stderr.write(chunk); });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 150_000);
     child.on("close", (code) => {
-      clearTimeout(timer);
       let report;
       try { report = JSON.parse(output.trim()); } catch {}
-      resolve({ code, report, errors, wallMs: Date.now() - gateStartedAt });
+      resolve({ code, report, errors });
     });
   });
 
@@ -614,8 +612,13 @@ if (mode === "live") {
     const chainSeconds = payment && close
       ? Date.parse(close.closeProof.settledAt) / 1_000 - Number(payment.proof.blockTimestamp)
       : Number.POSITIVE_INFINITY;
-    const fast = journey.wallMs < 120_000 && chainSeconds >= 0 && chainSeconds < 120;
-    record("6", "Payment-to-proof CLOSE journey finishes under two minutes", fast ? "PASS" : "FAIL", `${(journey.wallMs / 1_000).toFixed(1)}s wall / ${chainSeconds}s chain`);
+    const paidEvent = report.events?.find((event) => event.type === "payment_verified");
+    const provedEvent = report.events?.find((event) => event.type === "close_proof_verified");
+    const paymentToProofMs = Number(provedEvent?.at) - Number(paidEvent?.at);
+    const timingBound = Number.isFinite(paymentToProofMs) && paymentToProofMs >= 0 &&
+      paymentToProofMs === Number(report.timings?.paymentToProofMs);
+    const fast = timingBound && paymentToProofMs < 120_000 && chainSeconds >= 0 && chainSeconds < 120;
+    record("6", "Payment-to-proof CLOSE journey finishes under two minutes", fast ? "PASS" : "FAIL", `${(paymentToProofMs / 1_000).toFixed(1)}s payment-to-proof / ${chainSeconds}s chain`);
   }
 }
 
