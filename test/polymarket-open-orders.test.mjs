@@ -51,6 +51,7 @@ test("complete open-order client follows every opaque cursor and pins the select
   assert.equal(calls[1].url.searchParams.get("next_cursor"), "MTAw");
   assert.equal(calls[0].init.headers.POLY_ADDRESS, SIGNER);
   assert.match(calls[0].init.headers.POLY_SIGNATURE, /^[A-Za-z0-9_-]+=*$/);
+  assert.equal(calls[0].init.redirect, "error");
 });
 
 test("complete open-order client fails closed on missing, repeated, or invalid pagination", async () => {

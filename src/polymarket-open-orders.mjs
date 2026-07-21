@@ -140,6 +140,7 @@ export async function fetchAllOpenOrders({
       response = await fetchImpl(`${origin}${ORDERS_PATH}?${query}`, {
         method: "GET",
         headers,
+        redirect: "error",
         signal: AbortSignal.timeout(10_000),
       });
       body = await response.json();
