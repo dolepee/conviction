@@ -155,7 +155,7 @@ Expected signed/proof formats:
 | OPEN | `conviction-intent-v4` | `conviction-receipt-v4` | `conviction-position-proof-v3` | `conviction-position-passport-v1` |
 | CLOSE | `conviction-exit-intent-v1` | `conviction-close-receipt-v1` | `conviction-close-proof-v1` | `conviction-close-passport-v1` |
 | TAKE_PROFIT placement | `conviction-take-profit-intent-v1` | authenticated exact CLOB order | `conviction-resting-order-proof-v1` | `conviction-take-profit-passport-v1` |
-| TAKE_PROFIT fill | same signed intent/passport | authenticated trade contributions plus Polygon receipts | versioned aggregate fill proof | pinned TAKE_PROFIT passport plus fill-proof hash |
+| TAKE_PROFIT fill | same signed intent/passport | authenticated trade contributions plus Polygon receipts | `conviction-take-profit-fill-proof-v1` | pinned TAKE_PROFIT passport plus fill-proof hash |
 
 ## Execution-vector rules
 
@@ -217,7 +217,7 @@ node scripts/take-profit-orchestrator.mjs tp-status --journal <path> --issuer-re
 node scripts/take-profit-orchestrator.mjs cancel-tp --journal <path> --issuer-registry config/trusted-issuer.production.json --json
 ```
 
-`tp-status` is read-only and requires no payment. It fetches the exact pinned order, complete associated authenticated trades, and independent Polygon receipts. Partial fills may span multiple trades and transactions; aggregate them once, bind every contribution to the pinned maker/taker order, token, wallet, target, signed quantity cap, gross, fee, and net credit, and reject duplicates or incomplete pagination.
+`tp-status` is read-only and requires no payment. It fetches the exact pinned order, complete associated authenticated trades, and independent Polygon receipts. Partial fills may span multiple trades and transactions; aggregate them once, require the post-only order as the unique maker contribution, bind every contribution to the token, wallet, target, signed quantity cap, gross, fee, and net credit, and reject duplicates or incomplete pagination. Preserve active/canceled/expired remainder state. A proof is explicitly provisional until Polygon's finalized head covers every included settlement block; rerun status to upgrade it rather than presenting provisional evidence as final.
 
 `cancel-tp` is not read-only. Require a new exact `confirm cancel take profit`, cancel only the pinned order ID, then re-fetch it to detect a fill/cancel race. A cancel acknowledgement is not terminal proof. Preserve journals and reservation locks for `UNKNOWN`, pending-chain-proof, partial, or ambiguous states. There is no broad cancel, amendment, monitor daemon, recurring strategy, stop loss, or re-entry.
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  attachTakeProfitFillProof,
   claimTakeProfitReservation,
   parseTakeProfitArgs,
   requirePinnedTakeProfitExecutionReadiness,
@@ -158,4 +159,85 @@ test("locked TAKE_PROFIT readiness fails closed on every identity and reservatio
       (error) => error?.code === code,
     );
   }
+});
+
+test("TAKE_PROFIT status wires the exact CLOB trade set into independent Polygon fill proof", async () => {
+  const snapshotHash = HASH("8");
+  const orderId = HASH("9");
+  const binding = {
+    signerAddress: PAYER,
+    depositWallet: WALLET,
+    orderId,
+    marketConditionId: CONDITION,
+    outcomeTokenId: TOKEN,
+  };
+  const snapshot = { exact: "authenticated-order-snapshot" };
+  const status = {
+    version: "conviction-take-profit-status-v1",
+    status: "PARTIAL_PENDING_CHAIN_PROOF",
+    snapshotHash,
+    settlementProofRequired: true,
+  };
+  const journal = { exact: "armed-journal" };
+  const trustedIssuers = new Map([["issuer", {}]]);
+  const recovered = { version: "conviction-polymarket-associated-trades-v1" };
+  let tradeCalls = 0;
+  let proofCalls = 0;
+  const times = [1_700_000_000_000, 1_700_000_000_100];
+  const result = await attachTakeProfitFillProof({
+    journal,
+    binding,
+    trustedIssuers,
+    snapshot,
+    status,
+  }, {
+    now: () => times.shift(),
+    fetchTradeContributions: async (input) => {
+      tradeCalls += 1;
+      assert.equal(input.signerAddress, PAYER);
+      assert.equal(input.depositWallet, WALLET);
+      assert.equal(input.orderId, orderId);
+      assert.equal(input.marketConditionId, CONDITION);
+      assert.equal(input.outcomeTokenId, TOKEN);
+      assert.equal(input.exactOrderSnapshot, snapshot);
+      assert.equal(input.now(), 1_700_000_000_000);
+      return recovered;
+    },
+    verifyAggregateFill: async (input, options) => {
+      proofCalls += 1;
+      assert.equal(input.journal, journal);
+      assert.equal(input.orderSnapshot, snapshot);
+      assert.equal(input.tradeContributions, recovered);
+      assert.equal(options.trustedIssuers, trustedIssuers);
+      assert.equal(options.now, 1_700_000_000_100);
+      const proof = {
+        version: "conviction-take-profit-fill-proof-v1",
+        status: "PARTIALLY_FILLED_ACTIVE_PROVISIONAL",
+        orderId,
+        wallet: WALLET,
+        outcomeTokenId: TOKEN,
+        exactOrderSnapshotHash: snapshotHash,
+        finality: { finalized: false },
+        lifecycle: { orderTerminal: false },
+      };
+      return { ok: true, proof, proofHash: HASH("7") };
+    },
+  });
+  assert.equal(tradeCalls, 1);
+  assert.equal(proofCalls, 1);
+  assert.equal(result.version, "conviction-take-profit-status-with-fill-v1");
+  assert.equal(result.status, "PARTIALLY_FILLED_ACTIVE_PROVISIONAL");
+  assert.equal(result.finalized, false);
+  assert.equal(result.followUpRequired, true);
+  assert.equal(result.orderStatus, status);
+  assert.equal(result.fillProofHash, HASH("7"));
+});
+
+test("TAKE_PROFIT status does not fetch trades or Polygon receipts before a match", async () => {
+  const status = { status: "ARMED", settlementProofRequired: false };
+  const result = await attachTakeProfitFillProof({ status }, {
+    fetchTradeContributions: async () => assert.fail("trade recovery must not run"),
+    verifyAggregateFill: async () => assert.fail("fill verifier must not run"),
+  });
+  assert.equal(result, status);
 });

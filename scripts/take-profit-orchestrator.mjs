@@ -15,6 +15,7 @@ import { formatDecimal, parseDecimal } from "../src/decimal.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchPositionSnapshot } from "../src/position-client.mjs";
 import { fetchAllOpenOrders, fetchExactOrder } from "../src/polymarket-open-orders.mjs";
+import { fetchExactAssociatedTradeContributions } from "../src/polymarket-trades.mjs";
 import { verifySourcePosition } from "../src/source-position.mjs";
 import {
   POSITION_MANAGER_SERVICE,
@@ -22,6 +23,7 @@ import {
   SERVICE_PAYEE,
 } from "../src/service-payment.mjs";
 import { fetchAndVerifyX402Payment } from "../src/x402-payment-verifier.mjs";
+import { fetchAndVerifyTakeProfitAggregateFill } from "../src/take-profit-fill-verifier.mjs";
 import {
   claimExecutionLock,
   normalizeOpenOrders,
@@ -76,6 +78,7 @@ function usage() {
     "",
     "The flow separately requires `confirm payment`, then `confirm live mode`.",
     "It places one post-only GTD order and returns an authenticated ARMED proof.",
+    "`tp-status` automatically proves any matched shares from CLOB trades and Polygon receipts.",
   ].join("\n");
 }
 
@@ -293,16 +296,85 @@ async function exactLifecycleSnapshot(binding) {
   });
 }
 
+export async function attachTakeProfitFillProof({
+  journal,
+  binding,
+  trustedIssuers,
+  snapshot,
+  status,
+} = {}, {
+  now = Date.now,
+  fetchTradeContributions = fetchExactAssociatedTradeContributions,
+  verifyAggregateFill = fetchAndVerifyTakeProfitAggregateFill,
+} = {}) {
+  if (status?.settlementProofRequired !== true) return status;
+  fail(snapshot && typeof snapshot === "object", "missing_order_snapshot", "Matched TAKE_PROFIT status has no exact-order snapshot");
+  const tradeFetchedAt = Number(now());
+  fail(Number.isFinite(tradeFetchedAt), "invalid_trade_clock", "TAKE_PROFIT trade-recovery clock is invalid");
+  const tradeContributions = await fetchTradeContributions({
+    signerAddress: binding.signerAddress,
+    depositWallet: binding.depositWallet,
+    orderId: binding.orderId,
+    marketConditionId: binding.marketConditionId,
+    outcomeTokenId: binding.outcomeTokenId,
+    exactOrderSnapshot: snapshot,
+    now: () => tradeFetchedAt,
+  });
+  const verified = await verifyAggregateFill({
+    journal,
+    orderSnapshot: snapshot,
+    tradeContributions,
+  }, {
+    trustedIssuers,
+    now: Number(now()),
+  });
+  const proof = verified?.proof;
+  fail(
+    verified?.ok === true && proof?.version === "conviction-take-profit-fill-proof-v1" &&
+      /^0x[0-9a-f]{64}$/.test(String(verified?.proofHash || "")) &&
+      proof.orderId === binding.orderId && proof.wallet === binding.depositWallet &&
+      proof.outcomeTokenId === binding.outcomeTokenId &&
+      proof.exactOrderSnapshotHash === status.snapshotHash,
+    "invalid_take_profit_fill_proof",
+    "TAKE_PROFIT fill verifier returned an inconsistent proof",
+  );
+  const finalized = proof.finality?.finalized === true;
+  const orderTerminal = proof.lifecycle?.orderTerminal === true;
+  return Object.freeze({
+    ok: true,
+    version: "conviction-take-profit-status-with-fill-v1",
+    status: proof.status,
+    verificationSource: "authenticated-clob-plus-independent-polygon-receipts",
+    onChain: true,
+    finalized,
+    followUpRequired: !finalized || !orderTerminal,
+    orderStatus: status,
+    fillProof: proof,
+    fillProofHash: verified.proofHash,
+  });
+}
+
 export async function runTakeProfitStatusCli(options, {
   now = Date.now,
   stateDirectory = STATE_DIRECTORY,
+  fetchTradeContributions = fetchExactAssociatedTradeContributions,
+  verifyAggregateFill = fetchAndVerifyTakeProfitAggregateFill,
 } = {}) {
   const context = await loadLifecycleContext(options, { stateDirectory });
   try {
     const snapshot = await exactLifecycleSnapshot(context.binding);
-    return buildTakeProfitStatus(context.journal, snapshot, {
+    const status = buildTakeProfitStatus(context.journal, snapshot, {
       trustedIssuers: context.trustedIssuers,
       now: now(),
+    });
+    return attachTakeProfitFillProof({
+      ...context,
+      snapshot,
+      status,
+    }, {
+      now,
+      fetchTradeContributions,
+      verifyAggregateFill,
     });
   } catch (error) {
     if (!["order_not_found", "order_unavailable"].includes(error?.code)) throw error;
@@ -319,6 +391,8 @@ export async function runTakeProfitStatusCli(options, {
 export async function runTakeProfitCancelCli(options, {
   now = Date.now,
   stateDirectory = STATE_DIRECTORY,
+  fetchTradeContributions = fetchExactAssociatedTradeContributions,
+  verifyAggregateFill = fetchAndVerifyTakeProfitAggregateFill,
 } = {}) {
   const context = await loadLifecycleContext(options, { stateDirectory });
   const beforeSnapshot = await exactLifecycleSnapshot(context.binding);
@@ -360,8 +434,9 @@ export async function runTakeProfitCancelCli(options, {
     await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
 
     let outcome;
+    let afterSnapshot;
     try {
-      const afterSnapshot = await exactLifecycleSnapshot(context.binding);
+      afterSnapshot = await exactLifecycleSnapshot(context.binding);
       outcome = buildTakeProfitCancelOutcome({
         journal: context.journal,
         beforeSnapshot,
@@ -384,16 +459,34 @@ export async function runTakeProfitCancelCli(options, {
         now: now(),
       });
     }
-    context.journal.latestLifecycleStatus = outcome.status;
+    const verifiedOutcome = afterSnapshot && outcome.settlementProofRequired === true
+      ? await attachTakeProfitFillProof({
+        ...context,
+        snapshot: afterSnapshot,
+        status: outcome,
+      }, {
+        now,
+        fetchTradeContributions,
+        verifyAggregateFill,
+      })
+      : outcome;
+    context.journal.latestLifecycleStatus = verifiedOutcome.status;
     context.journal.cancelOutcome = outcome;
-    const safelyTerminalWithoutSettlement = outcome.orderTerminal === true && outcome.settlementProofRequired === false;
-    context.journal.reconciliationRequired = !safelyTerminalWithoutSettlement;
+    if (verifiedOutcome.version === "conviction-take-profit-status-with-fill-v1") {
+      context.journal.latestFillProof = verifiedOutcome.fillProof;
+      context.journal.latestFillProofHash = verifiedOutcome.fillProofHash;
+    }
+    const safelyResolved = outcome.orderTerminal === true && (
+      outcome.settlementProofRequired === false ||
+      (verifiedOutcome.finalized === true && verifiedOutcome.fillProof?.lifecycle?.orderTerminal === true)
+    );
+    context.journal.reconciliationRequired = !safelyResolved;
     await settleExecutionLock(context.journal, {
       liveAttempted: true,
-      proofVerified: safelyTerminalWithoutSettlement,
+      proofVerified: safelyResolved,
     });
     await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
-    return { ...outcome, journalPath: context.journalPath };
+    return { ...verifiedOutcome, journalPath: context.journalPath };
   } catch (error) {
     context.journal.reconciliationRequired = executionAttempted;
     context.journal.cancelError = {
