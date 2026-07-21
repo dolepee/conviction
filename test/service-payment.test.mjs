@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
 import test from "node:test";
 
-import { createPaidIntentHandler, createServiceApp } from "../api/service.js";
+import {
+  createPaidIntentHandler,
+  createServiceApp,
+  PAID_SERVICE_QUOTE_TTL_MS,
+} from "../api/service.js";
+import { createEnvironmentIntentIssuer } from "../src/intent-issuer.mjs";
 import {
   readFacilitatorCredentials,
   SERVICE_ASSET,
@@ -15,10 +21,20 @@ import {
 } from "../src/service-payment.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
+const TEST_ISSUER_KEY_PAIR = generateKeyPairSync("ed25519");
+const TEST_ISSUER_PRIVATE_KEY_B64 = TEST_ISSUER_KEY_PAIR.privateKey
+  .export({ format: "der", type: "pkcs8" })
+  .toString("base64");
+const TEST_ISSUER_PUBLIC_KEY_B64 = TEST_ISSUER_KEY_PAIR.publicKey
+  .export({ format: "der", type: "spki" })
+  .toString("base64");
 const TEST_ENVIRONMENT = Object.freeze({
   OKX_API_KEY: "test-api-key",
   OKX_SECRET_KEY: "test-secret-key",
   OKX_PASSPHRASE: "test-passphrase",
+  CONVICTION_ISSUER_KEY_ID: "conviction-test-2026-07",
+  CONVICTION_ISSUER_PRIVATE_KEY_B64: TEST_ISSUER_PRIVATE_KEY_B64,
+  CONVICTION_ISSUER_PUBLIC_KEY_B64: TEST_ISSUER_PUBLIC_KEY_B64,
 });
 
 const FACILITATOR = Object.freeze({
@@ -135,6 +151,7 @@ test("pins the listing payment to one exact X Layer amount and payee", () => {
     asset: SERVICE_ASSET,
     extra: { name: "USD₮0", version: "1" },
   });
+  assert.equal(PAID_SERVICE_QUOTE_TTL_MS, 300_000);
 });
 
 test("fails closed when any facilitator credential is absent", () => {
@@ -221,6 +238,33 @@ test("missing server configuration is a 503 and never a free compile", async () 
     assert.equal(body.error.code, "payment_service_unavailable");
     assert.equal(response.headers.get("payment-required"), null);
   });
+});
+
+test("missing or mismatched issuer trust fails before presenting a payment challenge", async () => {
+  const configurations = [
+    { ...TEST_ENVIRONMENT, CONVICTION_ISSUER_PUBLIC_KEY_B64: "" },
+    {
+      ...TEST_ENVIRONMENT,
+      CONVICTION_ISSUER_PUBLIC_KEY_B64: generateKeyPairSync("ed25519").publicKey
+        .export({ format: "der", type: "spki" })
+        .toString("base64"),
+    },
+  ];
+  for (const environment of configurations) {
+    const app = createServiceApp(environment, {
+      facilitatorClient: FACILITATOR,
+      logger: quietLogger(),
+    });
+    await withServer(app, async (origin) => {
+      const response = await fetch(`${origin}/api/service`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("payment-required"), null);
+    });
+  }
 });
 
 test("unpaid malformed and oversized JSON receive a challenge before parsing", async () => {
@@ -578,6 +622,9 @@ test("even a throwing logger cannot break a paid response after settlement", asy
 test("the paid route bypasses public preview limits only after payment verification", async () => {
   const facilitator = trackedFacilitator();
   const compileHandler = createPaidIntentHandler({
+    issueIntentImpl: createEnvironmentIntentIssuer(TEST_ENVIRONMENT, {
+      now: () => Date.parse("2026-07-21T02:00:11.000Z"),
+    }),
     compileOptions: {
       now: Date.parse("2026-07-21T02:00:10.000Z"),
       maxSnapshotAgeMs: 30_000,
@@ -616,7 +663,10 @@ test("the paid route bypasses public preview limits only after payment verificat
       }),
     });
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).ok, true);
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.intent.version, "conviction-intent-v4");
+    assert.equal(body.issuance.version, "conviction-issuance-v1");
   });
 
   assert.equal(facilitator.calls.verify, 1);

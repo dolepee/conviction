@@ -1,0 +1,10 @@
+{
+  "issuers": [
+    {
+      "keyId": "conviction-preview-2026-07",
+      "algorithm": "Ed25519",
+      "publicKeySpki": "MCowBQYDK2VwAyEALYGHN1KLGCGDcauHrjXhciVTImGjSrT1it/M4vOy21g=",
+      "fingerprint": "sha256:bf6b7e2ca3ca8605a1549a5847c3f763d77da4923bebed4a93d64af5b96db0d1"
+    }
+  ]
+}

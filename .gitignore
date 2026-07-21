@@ -8,5 +8,6 @@ __pycache__/
 coverage/
 dist/
 output/
+acceptance-report.json
 .vercel/
 .vercel

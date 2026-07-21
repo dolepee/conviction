@@ -89,7 +89,7 @@ assert.match(privacy, /IP-shaped client identifier/i);
 assert.match(privacy, /Never submit a seed phrase/i);
 assert.match(terms, /ready-to-sign bounded position card/i);
 assert.match(terms, /Neither response is a fill/i);
-assert.ok(html.includes("/assets/conviction-sample-position-card.json"), "sample paid position card is not linked");
+assert.ok(html.includes("/assets/conviction-sample-position-card.json"), "historical position card is not linked");
 assert.ok(html.includes("/assets/conviction-review-deliverable.json"), "controlled proof dossier is not linked");
 assert.equal(samplePositionCard.cardStatus, "historical-expired-do-not-execute");
 assert.equal(samplePositionCard.scope.noTransactionSignedOrBroadcast, true);

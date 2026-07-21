@@ -140,7 +140,7 @@
               target="_blank"
               rel="noreferrer"
             >Inspect block 90,598,011 <span aria-hidden="true">↗</span></a>
-            <a class="text-link" href="/assets/conviction-sample-position-card.json" download>Sample paid position card (JSON)</a>
+            <a class="text-link" href="/assets/conviction-sample-position-card.json" download>Historical v3 position card (JSON)</a>
             <a class="text-link" href="/assets/conviction-review-deliverable.json" download>Controlled proof dossier (JSON)</a>
           </div>
         </div>
@@ -331,8 +331,8 @@
           </p>
           <p>
             Polymarket V2 applies venue fees at match time rather than inside the signed order. Conviction therefore
-            derives a conservative fee reserve, requires the dedicated wallet balance to cap exposure, and verifies
-            principal, fee, and total debit independently after settlement.
+            derives a current fee reserve, rechecks it immediately before execution, and verifies principal, fee,
+            and total debit independently after settlement. The venue fee is not misrepresented as signed.
           </p>
         </div>
       </section>

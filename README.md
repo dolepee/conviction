@@ -17,8 +17,8 @@ The controlled house transaction bought exactly **5 YES shares** for **1.35 pUSD
 - Position-proof hash: `0x63fceb5a55d1f061ab139f3f69fb6f3568620e17b516c6d19c42289d0686c244`
 - Verified invariants: successful Polygon receipt, standard V2 exchange, exact pUSD debit, exact YES-token receipt, exact venue fee, matching order ID, and every original position-card bound.
 
-The [sample paid position card](assets/conviction-sample-position-card.json) is an expired,
-non-executable example of what the listed `0.05 USD₮0` service returns before execution. The
+The [historical position card](assets/conviction-sample-position-card.json) is an expired,
+non-executable v3 artifact retained for reproducibility; the current paid route issues signed v4 cards. The
 [controlled proof dossier](assets/conviction-review-deliverable.json) is separate post-fill evidence;
 it is not the paid service output.
 
@@ -29,7 +29,7 @@ The reference intent expired before settlement, so the dossier does not claim th
 
 1. The buyer pastes one Polymarket market. Conviction reads both YES and NO books without requesting a wallet.
 2. The buyer selects the outcome, fee-inclusive pUSD risk budget, and maximum price. A wallet-free preview shows the objective exposure.
-3. Only after reviewing those bounds does the buyer bind a dedicated deposit wallet and receive a five-minute position card plus a secure dry-run prompt.
+3. Only after reviewing those bounds does the buyer bind their configured deposit wallet and receive a five-minute signed position card plus a secure dry-run prompt.
 4. The official Polymarket plugin previews the exact request in the buyer's Agentic Wallet and requires a separate live confirmation before any write.
 5. Conviction derives principal, fee, total debit, and shares from Polygon events and binds them to the original intent, wallet, selected token, economic bounds, order ID, exchange, and chain.
 
@@ -96,7 +96,7 @@ The gate checks JavaScript and Python syntax, deterministic YES/NO intent compil
 
 New Polymarket deposit-wallet setup currently grants max pUSD allowances and blanket ERC-1155 approvals to official Polymarket exchange contracts. Conviction discloses this before execution and recommends a dedicated low-balance wallet. The current official plugin has no revoke command.
 
-Polymarket V2 applies fees at match time rather than in the signed order. Conviction's fee ceiling is therefore enforced before execution by keeping the dedicated wallet balance at or below the requested budget, then checked after settlement against the fee recorded in the selected `OrderFilled` event. Gas is separate.
+Polymarket V2 signs the token, principal, shares, and price but applies operator-set fees at match time. Conviction rechecks the current venue fee immediately before execution, reserves that fee in the displayed total, and verifies the actual settlement afterward. A reusable wallet may hold more than this order needs; that balance does not authorize another order, but the venue fee itself is not part of the V2 signature. Gas is separate.
 
 Never send Conviction a seed phrase, private key, bearer token, CLOB credential, reusable signature, or raw transaction authorization.
 

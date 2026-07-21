@@ -1,7 +1,7 @@
 {
-  "version": "conviction-sample-paid-output-v1",
-  "artifactType": "sample-paid-pre-execution-output",
-  "label": "Sample paid pre-execution output - expired; do not execute",
+  "version": "conviction-sample-legacy-card-v1",
+  "artifactType": "historical-pre-execution-card",
+  "label": "Historical v3 pre-execution card - expired; do not execute",
   "cardStatus": "historical-expired-do-not-execute",
   "service": {
     "name": "Bounded YES/NO Position Card",
@@ -10,7 +10,7 @@
     "paymentNetwork": "X Layer (eip155:196)"
   },
   "scope": {
-    "description": "The response field below is schema-faithful to a successful POST /api/service JSON body.",
+    "description": "The response field below preserves the historical unsigned v3 card used before signed v4 issuance.",
     "noPaymentRepresented": true,
     "noTransactionSignedOrBroadcast": true,
     "placeholderWallet": true,
@@ -123,8 +123,9 @@
       ],
       "requiresUserConfirmation": true,
       "nonCustodial": true,
-      "requiresDedicatedBalanceCap": true,
-      "maximumFundingBalance": "1.232",
+      "requiresSufficientBalance": true,
+      "authorizationScope": "single-bounded-order",
+      "maximumAuthorizedDebit": "1.232",
       "expiresAt": "2026-07-21T12:17:47.095Z"
     },
     "disclosures": [
@@ -133,15 +134,15 @@
       "The 1.232 pUSD input is a total-debit ceiling; the compiled principal is 1.12 pUSD and the maximum venue fee is 0.112 pUSD.",
       "The order principal is cent-aligned with a whole-share quantity so the official V2 plugin's live precision pass cannot rewrite the reviewed order.",
       "Maximum loss includes the venue-fee reserve; actual FAK debit may be lower on a partial fill.",
-      "Polymarket V2 applies fees at match time rather than in the signed order. Keep the dedicated wallet balance at or below the requested budget; Conviction verifies the actual fee and total debit after settlement.",
+      "Polymarket V2 applies fees at match time rather than in the signed order. Conviction limits the exact order and verifies the actual fee and total debit after settlement; unrelated wallet balance is not authorization to spend more.",
       "New deposit-wallet users must review Polymarket's five-approval setup before trading."
     ]
   },
   "reviewNotes": [
     "This public sample used real read-only venue data and a placeholder wallet; it was not submitted for execution.",
     "The snapshot and execution card are expired and must not be used to place an order.",
-    "A live paid call returns the same response schema with fresh market data and the buyer-supplied wallet.",
-    "The paid service delivers this pre-execution card only. Post-fill evidence is a separate artifact.",
+    "The current paid service returns a signed v4 card, not this historical unsigned v3 artifact.",
+    "Post-fill evidence is a separate artifact.",
     "No seed phrase, private key, credential, reusable signature, or payment authorization appears in this file."
   ]
 }

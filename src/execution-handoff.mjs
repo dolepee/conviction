@@ -26,9 +26,9 @@ export function executionRequest(compilation) {
     compilation?.intent?.order?.maximumTotalDebit,
     "maximum total debit",
   );
-  const maximumFundingBalance = requireValue(
-    compilation?.executionCard?.maximumFundingBalance,
-    "maximum funding balance",
+  const maximumAuthorizedDebit = requireValue(
+    compilation?.executionCard?.maximumAuthorizedDebit,
+    "maximum authorized debit",
   );
   const outcomeTokenId = requireValue(
     compilation?.intent?.market?.outcomeTokenId,
@@ -41,11 +41,11 @@ export function executionRequest(compilation) {
     `Intent hash: ${intentHash}`,
     `Expires at: ${expiresAt}`,
     `Expected Polygon deposit wallet: ${wallet}`,
-    `Maximum funding balance: ${maximumFundingBalance} pUSD`,
+    `Maximum authorized debit: ${maximumAuthorizedDebit} pUSD`,
     `Expected outcome token: ${outcomeTokenId}`,
     `Maximum fee-inclusive total debit: ${maximumDebit} pUSD`,
     "",
-    "Run read-only region, access, wallet, balance, and approval checks first. Stop if the region is restricted, the card expired, the active wallet differs, or the balance is above the stated cap.",
+    "Run read-only region, access, wallet, balance, and approval checks first. Stop if the region is restricted, the card expired, the active wallet differs, or available pUSD is below the maximum authorized debit.",
     `Then preview exactly: polymarket-plugin ${argv.join(" ")} --dry-run`,
     "Compare the resolved market, outcome token, amount, price, and order type with this card. Show the preview and every approval warning. Only a separate, fresh user message after that preview may authorize the identical command without --dry-run.",
   ].join("\n");
