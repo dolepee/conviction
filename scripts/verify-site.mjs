@@ -38,6 +38,7 @@ for (const required of [
   'rel="manifest"',
   'class="skip-link"',
   'id="proof"',
+  'id="manage"',
   'id="try"',
   'id="verify"',
   'id="market-form"',
@@ -87,8 +88,10 @@ assert.ok(html.includes('href="/terms.html"'), "footer does not expose service t
 assert.match(privacy, /no application database/i);
 assert.match(privacy, /IP-shaped client identifier/i);
 assert.match(privacy, /Never submit a seed phrase/i);
-assert.match(terms, /ready-to-sign bounded position card/i);
-assert.match(terms, /Neither response is a fill/i);
+assert.match(terms, /ready-to-sign bounded OPEN card/i);
+assert.match(terms, /post-only GTD TAKE_PROFIT card/i);
+assert.match(terms, /paying 0\.05 or 0\.10 USD₮0 never authorizes a trade/i);
+assert.match(terms, /Neither response alone is a fill/i);
 assert.ok(html.includes("/assets/conviction-sample-position-card.json"), "historical position card is not linked");
 assert.ok(html.includes("/assets/conviction-review-deliverable.json"), "controlled proof dossier is not linked");
 assert.equal(samplePositionCard.cardStatus, "historical-expired-do-not-execute");
