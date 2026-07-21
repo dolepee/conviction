@@ -83,9 +83,9 @@
         <article class="fill-ticket" aria-labelledby="ticket-title">
           <div class="ticket-topline">
             <span>LIVE EXECUTION / 001</span>
-            <span class="verified-mark">Verified</span>
+            <span class="verified-mark">Retrospectively verified</span>
           </div>
-          <h2 id="ticket-title">Controlled house proof: one bounded YES fill.</h2>
+          <h2 id="ticket-title">Controlled house fill: retrospectively checked against every bound.</h2>
           <div class="ticket-direction">
             <span class="yes-orb">YES</span>
             <div>
@@ -102,7 +102,7 @@
           <div class="ticket-proof">
             <span>Settlement</span>
             <code>0x25d2…fb8a</code>
-            <span aria-label="All receipt checks passed">5/5 checks</span>
+            <span aria-label="All position-proof checks passed">7/7 checks</span>
           </div>
         </article>
       </section>
@@ -128,6 +128,11 @@
             Conviction re-reads Polygon instead of trusting a success message. Substituting the wallet,
             market token, amount, shares, exchange, order ID, or chain makes verification fail closed.
           </p>
+          <p>
+            The paid service returns the pre-execution position card, not a claimed fill. The controlled
+            proof dossier is a separate retrospective check of one house-confirmed execution; its reference
+            intent expired before settlement and is not presented as the source of that fill.
+          </p>
           <div class="proof-links">
             <a
               class="text-link"
@@ -135,18 +140,21 @@
               target="_blank"
               rel="noreferrer"
             >Inspect block 90,598,011 <span aria-hidden="true">↗</span></a>
-            <a class="text-link" href="/assets/conviction-review-deliverable.json" download>Download the sample deliverable</a>
+            <a class="text-link" href="/assets/conviction-sample-position-card.json" download>Sample paid position card (JSON)</a>
+            <a class="text-link" href="/assets/conviction-review-deliverable.json" download>Controlled proof dossier (JSON)</a>
           </div>
         </div>
-        <div class="receipt-ledger" role="group" aria-label="Verified receipt checks">
-          <div><span>01</span><strong>Transaction succeeded</strong><b>PASS</b></div>
-          <div><span>02</span><strong>Standard V2 exchange</strong><b>PASS</b></div>
-          <div><span>03</span><strong>Exact 1.35 pUSD paid</strong><b>PASS</b></div>
-          <div><span>04</span><strong>Exact 5 YES received</strong><b>PASS</b></div>
-          <div><span>05</span><strong>Order ID bound</strong><b>PASS</b></div>
+        <div class="receipt-ledger" role="group" aria-label="Verified position-proof checks">
+          <div><span>01</span><strong>Canonical intent hash</strong><b>PASS</b></div>
+          <div><span>02</span><strong>Selected outcome token</strong><b>PASS</b></div>
+          <div><span>03</span><strong>Principal within maximum</strong><b>PASS</b></div>
+          <div><span>04</span><strong>Venue fee within maximum</strong><b>PASS</b></div>
+          <div><span>05</span><strong>Total debit within maximum</strong><b>PASS</b></div>
+          <div><span>06</span><strong>Average price within maximum</strong><b>PASS</b></div>
+          <div><span>07</span><strong>Receipt settlement matched</strong><b>PASS</b></div>
           <footer>
-            <span>Receipt hash</span>
-            <code>0x1746d89ea5c08c5edc214fcca3baf5b3bc6ce7b4ea9d02427dd88035cd4373b3</code>
+            <span>Current v3 receipt hash</span>
+            <code>0x8b51f365e655afe066383c0b405fc4d978a9c08cba76be7680630b34548a13d0</code>
           </footer>
         </div>
       </section>
@@ -161,7 +169,7 @@
           </p>
         </div>
         <ol class="journey-progress" aria-label="Position-card steps">
-          <li class="is-current" data-step="market"><span>1</span> Market</li>
+          <li class="is-current" data-step="market" aria-current="step"><span>1</span> Market</li>
           <li data-step="bounds"><span>2</span> Bounds</li>
           <li data-step="wallet"><span>3</span> Wallet</li>
           <li data-step="handoff"><span>4</span> Dry run</li>
@@ -212,12 +220,20 @@
               </fieldset>
               <div class="field-row">
                 <label for="spend-input">Total risk, fees included (pUSD)
-                  <input id="spend-input" name="spend" inputmode="decimal" placeholder="1.20" required />
+                  <input
+                    id="spend-input"
+                    name="spend"
+                    inputmode="decimal"
+                    placeholder="Shown after market lookup"
+                    aria-describedby="spend-help"
+                    required
+                  />
                 </label>
                 <label for="max-price-input">Maximum price
                   <input id="max-price-input" name="maxPrice" inputmode="decimal" aria-describedby="price-help" required />
                 </label>
               </div>
+              <p class="field-help" id="spend-help">After market lookup, Conviction suggests the selected side's live fee-inclusive viable minimum. You may set a higher total-risk bound; changing the price cap can change the exact requirement.</p>
               <p class="field-help" id="price-help">Maximum price starts at the live best ask. Review it before continuing.</p>
               <button class="button button-primary" type="submit">Preview exact bounds</button>
               <p class="form-status" id="preview-status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -240,7 +256,7 @@
                 required
               />
               <p class="field-help" id="wallet-help">Use the dedicated low-balance Polygon deposit wallet that will hold the position.</p>
-              <label for="rationale-input">Private note for your dossier <span class="optional">Optional</span></label>
+              <label for="rationale-input">Optional dossier note</label>
               <textarea
                 id="rationale-input"
                 name="rationale"
@@ -250,7 +266,7 @@
                 placeholder="Why you chose this side; leave blank if you prefer."
                 aria-describedby="rationale-help"
               ></textarea>
-              <p class="field-help" id="rationale-help">If provided, use 20–500 characters. Never paste keys, credentials, signatures, or authorizations.</p>
+              <p class="field-help" id="rationale-help">If provided, this note is sent to Conviction's server to create the dossier. Use 20–500 characters; never paste keys, credentials, signatures, or authorizations.</p>
               <button class="button button-primary" type="submit">Create wallet-bound card</button>
               <p class="form-status" id="form-status" role="status" aria-live="polite" aria-atomic="true"></p>
             </form>
@@ -280,7 +296,7 @@
           <form id="verification-form" class="intent-form">
             <label for="dossier-input">Intent dossier <span class="optional">Optional after compiling above</span></label>
             <input id="dossier-input" name="dossier" type="file" accept="application/json,.json" aria-describedby="dossier-help" />
-            <p class="field-help" id="dossier-help">Loaded only in this browser; it is not uploaded as a file.</p>
+            <p class="field-help" id="dossier-help">The file is read in this browser; its intent fields, not the file itself, are sent to Conviction for Polygon receipt verification.</p>
             <label for="transaction-input">Polygon transaction hash</label>
             <input id="transaction-input" name="transactionHash" placeholder="0x…" autocomplete="off" spellcheck="false" required />
             <label for="order-id-input">Polymarket order ID</label>

@@ -35,7 +35,7 @@ Never send a seed phrase, private key, bearer token, CLOB credential, reusable s
 Conviction returns:
 
 - canonical market condition, both binary tokens, and the selected outcome token;
-- live best bid/ask, spread, bounded ask depth, resolution timing, and a 30-second expiry;
+- live best bid/ask, spread, bounded ask depth, resolution timing, and an explicit expiry;
 - maximum order principal, conservative venue-fee reserve, maximum total debit/loss, full-fill payout, fee-adjusted profit, all-in break-even price, and shares at the cap;
 - deterministic intent hash;
 - machine-readable official-plugin arguments;

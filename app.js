@@ -11,6 +11,8 @@ const previewForm = document.querySelector("#preview-form");
 const intentForm = document.querySelector("#intent-form");
 const verificationForm = document.querySelector("#verification-form");
 const marketInput = document.querySelector("#market-input");
+const spendInput = document.querySelector("#spend-input");
+const spendHelp = document.querySelector("#spend-help");
 const maxPriceInput = document.querySelector("#max-price-input");
 const empty = document.querySelector("#compiled-empty");
 const previewResult = document.querySelector("#preview-result");
@@ -64,6 +66,23 @@ let marketLookup = null;
 let previewRequest = null;
 let currentCompilation = null;
 let expiryTimer = null;
+let autoSuggestedSpend = null;
+
+const requestStages = Object.fromEntries(
+  ["market", "preview", "intent", "receipt"].map((stage) => [
+    stage,
+    { epoch: 0, controller: null },
+  ]),
+);
+
+const idleButtonLabels = new Map([
+  [marketForm, "Check live market"],
+  [previewForm, "Preview exact bounds"],
+  [intentForm, "Create wallet-bound card"],
+  [verificationForm, "Verify my fill"],
+]);
+
+const defaultSpendHelp = "After market lookup, Conviction suggests the selected side's live fee-inclusive viable minimum. You may set a higher total-risk bound; changing the price cap can change the exact requirement.";
 
 document.querySelector("#year").textContent = String(new Date().getFullYear());
 
@@ -134,11 +153,50 @@ function failureMessage(error) {
   return error.message;
 }
 
-async function postJson(path, body) {
+function invalidateRequest(stage) {
+  const state = requestStages[stage];
+  state.controller?.abort();
+  state.controller = null;
+  state.epoch += 1;
+}
+
+function beginRequest(stage) {
+  invalidateRequest(stage);
+  const state = requestStages[stage];
+  state.controller = new AbortController();
+  return { epoch: state.epoch, signal: state.controller.signal };
+}
+
+function isCurrentRequest(stage, request) {
+  return requestStages[stage].epoch === request.epoch;
+}
+
+function completeRequest(stage, request) {
+  if (isCurrentRequest(stage, request)) requestStages[stage].controller = null;
+}
+
+function setFormIdle(form) {
+  form.removeAttribute("aria-busy");
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = false;
+  button.textContent = idleButtonLabels.get(form);
+}
+
+function cancelFormRequest(stage, form) {
+  invalidateRequest(stage);
+  setFormIdle(form);
+}
+
+function isDiscardedRequest(error, stage, request) {
+  return error?.name === "AbortError" || !isCurrentRequest(stage, request);
+}
+
+async function postJson(path, body, signal) {
   const response = await fetch(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   const payload = await response.json();
   if (!response.ok || !payload.ok) {
@@ -157,6 +215,8 @@ function setStep(step) {
     const position = order.indexOf(item.dataset.step);
     item.classList.toggle("is-current", position === current);
     item.classList.toggle("is-complete", position < current);
+    if (position === current) item.setAttribute("aria-current", "step");
+    else item.removeAttribute("aria-current");
   }
 }
 
@@ -172,7 +232,36 @@ function resetCompiledCard() {
   compiledResult.replaceChildren();
 }
 
+function clearVerificationResult() {
+  verificationResult.hidden = true;
+  verificationResult.replaceChildren();
+}
+
+function resetVerification() {
+  cancelFormRequest("receipt", verificationForm);
+  clearFieldErrors(verificationForm);
+  clearVerificationResult();
+  verificationStatus.textContent = "";
+}
+
+function clearAutoSuggestedSpend() {
+  if (autoSuggestedSpend !== null && spendInput.value === autoSuggestedSpend) {
+    spendInput.value = "";
+  }
+  autoSuggestedSpend = null;
+  spendInput.placeholder = "Shown after market lookup";
+  spendHelp.textContent = defaultSpendHelp;
+}
+
 function resetAfterMarket() {
+  cancelFormRequest("market", marketForm);
+  cancelFormRequest("preview", previewForm);
+  cancelFormRequest("intent", intentForm);
+  resetVerification();
+  clearFieldErrors(marketForm);
+  clearFieldErrors(previewForm);
+  clearFieldErrors(intentForm);
+  clearAutoSuggestedSpend();
   marketLookup = null;
   previewRequest = null;
   resetCompiledCard();
@@ -188,6 +277,11 @@ function resetAfterMarket() {
 }
 
 function resetAfterBounds() {
+  cancelFormRequest("preview", previewForm);
+  cancelFormRequest("intent", intentForm);
+  resetVerification();
+  clearFieldErrors(previewForm);
+  clearFieldErrors(intentForm);
   previewRequest = null;
   resetCompiledCard();
   intentForm.hidden = true;
@@ -199,6 +293,9 @@ function resetAfterBounds() {
 }
 
 function resetAfterWallet() {
+  cancelFormRequest("intent", intentForm);
+  resetVerification();
+  clearFieldErrors(intentForm);
   resetCompiledCard();
   formStatus.textContent = "";
   if (previewRequest) setStep("wallet");
@@ -212,6 +309,32 @@ function syncOutcomePrice() {
   if (!marketLookup) return;
   const quote = marketLookup.outcomes[selectedOutcome()];
   maxPriceInput.value = quote?.bestAsk || "";
+}
+
+function syncOutcomeMinimum() {
+  if (!marketLookup) return;
+  const outcome = selectedOutcome();
+  const quote = marketLookup.outcomes[outcome];
+  const minimum = quote?.minimumMarketableBudget;
+  if (!minimum) {
+    if (autoSuggestedSpend !== null && spendInput.value === autoSuggestedSpend) {
+      spendInput.value = "";
+    }
+    autoSuggestedSpend = null;
+    spendInput.placeholder = "Enter total risk";
+    spendHelp.textContent = `${outcome} has no live viable minimum because no ask is currently available.`;
+    return;
+  }
+
+  if (!spendInput.value.trim() || spendInput.value === autoSuggestedSpend) {
+    spendInput.value = minimum.minimumTotalBudget;
+    autoSuggestedSpend = minimum.minimumTotalBudget;
+  }
+  spendInput.placeholder = `Minimum ${minimum.minimumTotalBudget}`;
+  const feeDetail = minimum.maximumFeeAtMinimum === "0"
+    ? "with no venue fee at this snapshot"
+    : `including up to ${minimum.maximumFeeAtMinimum} pUSD venue fee`;
+  spendHelp.textContent = `Live viable minimum for ${outcome} at best ask ${quote.bestAsk}: ${minimum.minimumTotalBudget} pUSD total for ${minimum.minimumShares} shares, ${feeDetail}. You may set a higher total-risk bound; preview recomputes the requirement if you change the price cap.`;
 }
 
 function renderMarketLookup(payload) {
@@ -237,6 +360,7 @@ function renderMarketLookup(payload) {
   marketResult.hidden = false;
   previewForm.hidden = false;
   syncOutcomePrice();
+  syncOutcomeMinimum();
 }
 
 function exposureMarkup(data, title) {
@@ -382,11 +506,17 @@ function downloadJson(filename, value) {
 }
 
 marketInput.addEventListener("input", resetAfterMarket);
+spendInput.addEventListener("input", () => {
+  if (spendInput.value !== autoSuggestedSpend) autoSuggestedSpend = null;
+});
 for (const control of previewForm.elements) {
   control.addEventListener("input", resetAfterBounds);
 }
 for (const control of intentForm.elements) {
   control.addEventListener("input", resetAfterWallet);
+}
+for (const control of verificationForm.elements) {
+  control.addEventListener(control.type === "file" ? "change" : "input", resetVerification);
 }
 
 document.querySelector("#load-example").addEventListener("click", () => {
@@ -399,23 +529,28 @@ marketForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   clearFieldErrors(marketForm);
   resetAfterMarket();
+  const request = beginRequest("market");
   const button = marketForm.querySelector('button[type="submit"]');
   button.disabled = true;
   marketForm.setAttribute("aria-busy", "true");
   button.textContent = "Reading market…";
   marketStatus.textContent = "Resolving both live outcome books. No wallet is involved.";
   try {
-    marketLookup = await postJson("/api/market", { market: marketInput.value });
-    renderMarketLookup(marketLookup);
+    const payload = await postJson("/api/market", { market: marketInput.value }, request.signal);
+    if (!isCurrentRequest("market", request)) return;
+    marketLookup = payload;
+    renderMarketLookup(payload);
     setStep("bounds");
     marketStatus.textContent = "Market found. Choose the side and economic bounds below.";
   } catch (error) {
+    if (isDiscardedRequest(error, "market", request)) return;
     marketStatus.textContent = failureMessage(error);
     markFieldErrors(error, "market-status");
   } finally {
-    marketForm.removeAttribute("aria-busy");
-    button.disabled = false;
-    button.textContent = "Check live market";
+    if (isCurrentRequest("market", request)) {
+      setFormIdle(marketForm);
+      completeRequest("market", request);
+    }
   }
 });
 
@@ -423,6 +558,7 @@ previewForm.addEventListener("change", (event) => {
   if (event.target.name === "outcome") {
     resetAfterBounds();
     syncOutcomePrice();
+    syncOutcomeMinimum();
   }
 });
 
@@ -430,6 +566,9 @@ previewForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   clearFieldErrors(previewForm);
   resetCompiledCard();
+  cancelFormRequest("intent", intentForm);
+  resetVerification();
+  const request = beginRequest("preview");
   const button = previewForm.querySelector('button[type="submit"]');
   const data = Object.fromEntries(new FormData(previewForm));
   previewRequest = {
@@ -443,19 +582,22 @@ previewForm.addEventListener("submit", async (event) => {
   button.textContent = "Computing exposure…";
   previewStatus.textContent = `Reading a fresh ${data.outcome.toUpperCase()} book and checking the cap.`;
   try {
-    const payload = await postJson("/api/preview", previewRequest);
+    const payload = await postJson("/api/preview", previewRequest, request.signal);
+    if (!isCurrentRequest("preview", request)) return;
     renderPreview(payload);
     intentForm.hidden = false;
     setStep("wallet");
     previewStatus.textContent = "Read-only bounds passed. Add your wallet only if you want a final card.";
   } catch (error) {
+    if (isDiscardedRequest(error, "preview", request)) return;
     previewRequest = null;
     previewStatus.textContent = failureMessage(error);
     markFieldErrors(error, "preview-status");
   } finally {
-    previewForm.removeAttribute("aria-busy");
-    button.disabled = false;
-    button.textContent = "Preview exact bounds";
+    if (isCurrentRequest("preview", request)) {
+      setFormIdle(previewForm);
+      completeRequest("preview", request);
+    }
   }
 });
 
@@ -463,6 +605,8 @@ intentForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   clearFieldErrors(intentForm);
   resetCompiledCard();
+  resetVerification();
+  const request = beginRequest("intent");
   const button = intentForm.querySelector('button[type="submit"]');
   const data = Object.fromEntries(new FormData(intentForm));
   button.disabled = true;
@@ -470,17 +614,21 @@ intentForm.addEventListener("submit", async (event) => {
   button.textContent = "Creating fresh card…";
   formStatus.textContent = "Re-reading the live book and binding the exact wallet. Nothing will be signed.";
   try {
-    currentCompilation = await postJson("/api/intent", { ...previewRequest, ...data });
-    renderCompiled(currentCompilation);
+    const payload = await postJson("/api/intent", { ...previewRequest, ...data }, request.signal);
+    if (!isCurrentRequest("intent", request)) return;
+    currentCompilation = payload;
+    renderCompiled(payload);
     setStep("handoff");
     formStatus.textContent = "Fresh card created. Confirm the displayed bounds to reveal the dry-run handoff.";
   } catch (error) {
+    if (isDiscardedRequest(error, "intent", request)) return;
     formStatus.textContent = failureMessage(error);
     markFieldErrors(error, "form-status");
   } finally {
-    intentForm.removeAttribute("aria-busy");
-    button.disabled = false;
-    button.textContent = "Create wallet-bound card";
+    if (isCurrentRequest("intent", request)) {
+      setFormIdle(intentForm);
+      completeRequest("intent", request);
+    }
   }
 });
 
@@ -500,6 +648,7 @@ async function artifactForVerification() {
 function renderVerification(payload) {
   const proof = payload.positionProof;
   const checks = Object.entries(proof.checks || {});
+  verificationResult.hidden = false;
   verificationResult.innerHTML = `
     <div class="verification-proof">
       <div class="result-top"><span>POSITION PROOF</span><b>VERIFIED ON POLYGON</b></div>
@@ -528,6 +677,8 @@ function renderVerification(payload) {
 verificationForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   clearFieldErrors(verificationForm);
+  clearVerificationResult();
+  const request = beginRequest("receipt");
   const button = verificationForm.querySelector('button[type="submit"]');
   const data = Object.fromEntries(new FormData(verificationForm));
   button.disabled = true;
@@ -536,20 +687,25 @@ verificationForm.addEventListener("submit", async (event) => {
   verificationStatus.textContent = "Fetching the receipt and checking every selected-token and economic bound.";
   try {
     const artifact = await artifactForVerification();
+    if (!isCurrentRequest("receipt", request)) return;
     const payload = await postJson("/api/receipt", {
       transactionHash: data.transactionHash,
       orderId: data.orderId,
       intent: artifact.intent,
       intentHash: artifact.intentHash,
-    });
+    }, request.signal);
+    if (!isCurrentRequest("receipt", request)) return;
     renderVerification(payload);
     verificationStatus.textContent = "Fill verified independently from Polygon events.";
   } catch (error) {
+    if (isDiscardedRequest(error, "receipt", request)) return;
+    clearVerificationResult();
     verificationStatus.textContent = failureMessage(error);
     markFieldErrors(error, "verification-status");
   } finally {
-    verificationForm.removeAttribute("aria-busy");
-    button.disabled = false;
-    button.textContent = "Verify my fill";
+    if (isCurrentRequest("receipt", request)) {
+      setFormIdle(verificationForm);
+      completeRequest("receipt", request);
+    }
   }
 });

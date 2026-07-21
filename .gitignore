@@ -7,5 +7,6 @@ __pycache__/
 .DS_Store
 coverage/
 dist/
+output/
 .vercel/
 .vercel

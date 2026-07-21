@@ -1,6 +1,9 @@
 import { ConvictionError, invariant } from "../src/errors.mjs";
 import { formatDecimal, parseDecimal } from "../src/decimal.mjs";
+import { minimumMarketableBudget } from "../src/intent-compiler.mjs";
 import { resolveMarket } from "../src/market-client.mjs";
+import { createPublicApiGuard, PublicApiError } from "../src/public-api-guard.mjs";
+import { createShortCache } from "../src/short-cache.mjs";
 
 function send(response, status, body) {
   response.status(status).setHeader("content-type", "application/json; charset=utf-8");
@@ -21,6 +24,7 @@ function bestLevel(levels, direction) {
 function outcomeSummary(market) {
   const ask = bestLevel(market.asks, "ask");
   const bid = bestLevel(market.bids, "bid");
+  const minimum = ask ? minimumMarketableBudget(ask.price, market.feeBps) : null;
   return {
     available: Boolean(ask),
     bestAsk: ask ? formatDecimal(parseDecimal(ask.price, 6, "ask price"), 6) : null,
@@ -28,10 +32,15 @@ function outcomeSummary(market) {
     tickSize: market.tickSize,
     minimumOrderSize: market.minOrderSize,
     feeBps: market.feeBps,
+    minimumMarketableBudget: minimum,
   };
 }
 
-export function createMarketHandler({ resolveMarketImpl = resolveMarket } = {}) {
+export function createMarketHandler({
+  resolveMarketImpl = resolveMarket,
+  publicGuard = createPublicApiGuard(),
+  cache = createShortCache(),
+} = {}) {
   return async function handler(request, response) {
     if (request.method !== "POST") {
       response.setHeader("allow", "POST");
@@ -39,36 +48,51 @@ export function createMarketHandler({ resolveMarketImpl = resolveMarket } = {}) 
     }
     try {
       const body = request.body && typeof request.body === "object" ? request.body : {};
-      const [yes, no] = await Promise.all([
-        resolveMarketImpl(body.market, { outcome: "yes" }),
-        resolveMarketImpl(body.market, { outcome: "no" }),
-      ]);
-      invariant(
-        yes.conditionId === no.conditionId &&
-          yes.yesTokenId === no.yesTokenId &&
-          yes.noTokenId === no.noTokenId,
-        "market_source_mismatch",
-        "YES and NO market snapshots disagree",
-      );
-      return send(response, 200, {
-        ok: true,
-        market: {
-          source: "polymarket",
-          conditionId: yes.conditionId,
-          slug: yes.slug,
-          question: yes.question,
-          endDate: yes.endDate,
-          active: yes.active,
-          closed: yes.closed,
-          acceptingOrders: yes.acceptingOrders,
-        },
-        outcomes: {
-          YES: outcomeSummary(yes),
-          NO: outcomeSummary(no),
-        },
-        readOnly: true,
-      });
+      // Preserve case so caching can never make an otherwise-invalid market
+      // reference inherit the result of a different accepted input.
+      const key = JSON.stringify([String(body.market || "").trim()]);
+      const result = await publicGuard.run(request, () => cache.get(key, async () => {
+        const [yes, no] = await Promise.all([
+          resolveMarketImpl(body.market, { outcome: "yes" }),
+          resolveMarketImpl(body.market, { outcome: "no" }),
+        ]);
+        invariant(
+          yes.conditionId === no.conditionId &&
+            yes.yesTokenId === no.yesTokenId &&
+            yes.noTokenId === no.noTokenId,
+          "market_source_mismatch",
+          "YES and NO market snapshots disagree",
+        );
+        return {
+          ok: true,
+          market: {
+            source: "polymarket",
+            conditionId: yes.conditionId,
+            slug: yes.slug,
+            question: yes.question,
+            endDate: yes.endDate,
+            active: yes.active,
+            closed: yes.closed,
+            acceptingOrders: yes.acceptingOrders,
+          },
+          outcomes: {
+            YES: outcomeSummary(yes),
+            NO: outcomeSummary(no),
+          },
+          readOnly: true,
+        };
+      }));
+      return send(response, 200, result);
     } catch (error) {
+      if (error instanceof PublicApiError) {
+        if (error.details?.retryAfterSeconds) {
+          response.setHeader("retry-after", String(error.details.retryAfterSeconds));
+        }
+        return send(response, error.status, {
+          ok: false,
+          error: { code: error.code, message: error.message, details: error.details },
+        });
+      }
       if (error instanceof ConvictionError) {
         const upstream = error.code === "market_api_error";
         return send(response, upstream ? 502 : 422, {

@@ -1,44 +1,181 @@
 {
-  "version": "conviction-review-deliverable-v1",
-  "label": "Controlled house proof — inspect only",
+  "version": "conviction-controlled-post-fill-proof-v2",
+  "artifactType": "controlled-post-fill-evidence",
+  "label": "Controlled house proof - inspect only",
+  "proofStatus": "historical-retrospective-bounds-match",
   "cardStatus": "historical-expired-do-not-execute",
-  "summary": "A bounded YES position card matched to an independently verified Polygon fill.",
   "positionCard": {
+    "artifactRole": "historical-card-summary-only",
     "intentHash": "0xd4f3012ecd894e2184ac7c0717297c2aac21f57abf690f8301619949ab966f1d",
-    "market": {
-      "source": "polymarket",
-      "conditionId": "0x5db999fad322cea2914535aae5517060c3f80ad6d8c0231cde2124a434d16846",
-      "question": "Will the U.S. invade Iran before 2027?",
-      "selectedOutcome": "YES",
-      "selectedOutcomeTokenId": "55115078421062885512539156303747803058407616201213034911037320915726138659123"
-    },
-    "buyerDepositWallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
-    "order": {
-      "side": "BUY",
-      "orderType": "FAK",
-      "requestedFeeInclusiveBudget": "1.35 pUSD",
-      "maximumOrderPrincipal": "1.35 pUSD",
-      "maximumVenueFee": "0 pUSD",
-      "maximumTotalDebitAndLoss": "1.35 pUSD",
-      "maximumPrice": "0.27",
-      "fullFillSharesAtCap": "5 YES"
-    },
     "browserSignedOrBroadcast": false,
     "requiresSeparateWalletConfirmation": true
   },
   "verifiedPositionProof": {
+    "artifactRole": "post-fill-summary-only",
     "version": "conviction-position-proof-v2",
     "positionProofHash": "0x63fceb5a55d1f061ab139f3f69fb6f3568620e17b516c6d19c42289d0686c244",
+    "receiptHashVersion": "conviction-receipt-v3",
     "receiptHash": "0x8b51f365e655afe066383c0b405fc4d978a9c08cba76be7680630b34548a13d0",
     "transactionHash": "0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a",
-    "transactionExplorer": "https://polygonscan.com/tx/0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a",
+    "checks": {
+      "canonicalIntentHash": true,
+      "selectedOutcomeToken": true,
+      "orderPrincipalWithinMaximum": true,
+      "venueFeeWithinMaximum": true,
+      "totalDebitWithinMaximum": true,
+      "averagePriceWithinMaximum": true,
+      "receiptSettlementMatched": true
+    }
+  },
+  "relationshipToPaidService": {
+    "isPaidServiceOutput": false,
+    "explanation": "This file is a separate retrospective bounds check for one controlled house fill. The paid 0.05 USD₮0 service delivers only a fresh pre-execution position card.",
+    "samplePaidOutput": "https://conviction-bay.vercel.app/assets/conviction-sample-position-card.json"
+  },
+  "summary": {
+    "description": "The verifier matched one house-controlled Polygon fill to the canonical wallet, market token, amount, fee, shares, and price bounds below.",
+    "controlledHouseProof": true,
+    "externalTraction": false,
+    "financialPerformanceClaim": false,
+    "expiredCardMustNotBeExecuted": true,
+    "browserSignedOrBroadcast": false,
+    "requiresSeparateBuyerWalletConfirmation": true,
+    "provesIntentPredatedTransaction": false,
+    "provesReferenceCardWasExecutionSource": false
+  },
+  "historicalMarketContentNotice": "The canonical intent below retains the original market wording and user-authored rationale solely so its hash can be reproduced. They are not a recommendation, a product default, or a current execution request.",
+  "hashes": {
+    "intentHash": "0xd4f3012ecd894e2184ac7c0717297c2aac21f57abf690f8301619949ab966f1d",
+    "receiptHashVersion": "conviction-receipt-v3",
+    "receiptHash": "0x8b51f365e655afe066383c0b405fc4d978a9c08cba76be7680630b34548a13d0",
+    "positionProofHash": "0x63fceb5a55d1f061ab139f3f69fb6f3568620e17b516c6d19c42289d0686c244"
+  },
+  "canonicalIntent": {
+    "version": "conviction-intent-v3",
+    "chainId": 137,
+    "market": {
+      "source": "polymarket",
+      "conditionId": "0x5db999fad322cea2914535aae5517060c3f80ad6d8c0231cde2124a434d16846",
+      "slug": "will-the-us-invade-iran-before-2027",
+      "question": "Will the U.S. invade Iran before 2027?",
+      "description": "Canonical live-market regression fixture.",
+      "resolutionSource": "Official market rules",
+      "endDate": "2026-12-31T00:00:00Z",
+      "outcome": "YES",
+      "outcomeTokenId": "55115078421062885512539156303747803058407616201213034911037320915726138659123",
+      "counterOutcomeTokenId": "1910830010387565971650098373488592514702818137344973088263643820608151819241",
+      "outcomes": {
+        "YES": {
+          "tokenId": "55115078421062885512539156303747803058407616201213034911037320915726138659123"
+        },
+        "NO": {
+          "tokenId": "1910830010387565971650098373488592514702818137344973088263643820608151819241"
+        }
+      },
+      "negRisk": false,
+      "exchange": "0xe111180000d2663c0091e4f400237545b87b996b",
+      "collateral": "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"
+    },
+    "order": {
+      "side": "BUY",
+      "outcome": "YES",
+      "outcomeTokenId": "55115078421062885512539156303747803058407616201213034911037320915726138659123",
+      "orderType": "FAK",
+      "requestedBudget": "1.35",
+      "requestedBudgetRaw": "1350000",
+      "maximumSpend": "1.35",
+      "maximumSpendRaw": "1350000",
+      "maximumOrderPrincipal": "1.35",
+      "maximumOrderPrincipalRaw": "1350000",
+      "maximumFee": "0",
+      "maximumFeeRaw": "0",
+      "maximumTotalDebit": "1.35",
+      "maximumTotalDebitRaw": "1350000",
+      "unusedBudget": "0",
+      "maxPrice": "0.27",
+      "fullFillSharesAtCap": "5",
+      "fullFillSharesAtCapRaw": "5000000",
+      "feeBps": 0,
+      "feeSource": "polymarket_clob_maker_base_fee",
+      "feeReserveMethod": "ceil(orderPrincipal*feeBps/10000)",
+      "feeEnforcement": "dedicated-wallet-balance-cap-plus-post-settlement-verification",
+      "principalPrecision": "v2-cent-aligned-whole-shares"
+    },
+    "buyer": {
+      "wallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe"
+    },
+    "rationale": "I expect this event to resolve YES and will not pay above 27 cents.",
+    "snapshot": {
+      "capturedAt": "2026-07-21T02:00:00.000Z",
+      "expiresAt": "2026-07-21T02:00:30.000Z",
+      "bestAsk": "0.27",
+      "bestBid": "0.26",
+      "spread": "0.01",
+      "boundedAskDepth": "79249.18"
+    },
+    "exposure": {
+      "maximumLoss": "1.35",
+      "fullFillPayoutAtCap": "5",
+      "grossProfitAtCap": "3.65",
+      "grossBreakEvenPrice": "0.27",
+      "priceCapCushion": "0",
+      "boundedLiquidityCoverageBps": "158498360",
+      "feesIncluded": true,
+      "maximumFee": "0",
+      "maximumTotalDebit": "1.35",
+      "unusedBudget": "0",
+      "assumesFullFillAtCap": true,
+      "secondsToResolution": 14076000
+    }
+  },
+  "receiptProof": {
+    "version": "conviction-receipt-v3",
+    "chainId": 137,
+    "transactionHash": "0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a",
+    "blockNumber": 90598011,
+    "exchange": "0xe111180000d2663c0091e4f400237545b87b996b",
+    "wallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+    "orderId": "0xbad8f143b0e71f0cf78f3ec268d22e5cffa8b8e9ef7f0821ac720eac94ebf42c",
+    "outcome": "YES",
+    "outcomeTokenId": "55115078421062885512539156303747803058407616201213034911037320915726138659123",
+    "principalRaw": "1350000",
+    "feeRaw": "0",
+    "totalDebitRaw": "1350000",
+    "sharesRaw": "5000000",
+    "checks": {
+      "transactionSucceeded": true,
+      "standardExchangeV2": true,
+      "exactCollateralTransfer": true,
+      "exactOutcomeTransfer": true,
+      "exactVenueFee": true,
+      "exactOrderFill": true
+    }
+  },
+  "positionProof": {
+    "version": "conviction-position-proof-v2",
+    "intentHash": "0xd4f3012ecd894e2184ac7c0717297c2aac21f57abf690f8301619949ab966f1d",
+    "receiptHash": "0x8b51f365e655afe066383c0b405fc4d978a9c08cba76be7680630b34548a13d0",
+    "transactionHash": "0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a",
     "blockNumber": 90598011,
     "orderId": "0xbad8f143b0e71f0cf78f3ec268d22e5cffa8b8e9ef7f0821ac720eac94ebf42c",
-    "actualFill": {
-      "orderPrincipal": "1.35 pUSD",
-      "venueFee": "0 pUSD",
-      "totalDebit": "1.35 pUSD",
-      "sharesReceived": "5 YES",
+    "marketConditionId": "0x5db999fad322cea2914535aae5517060c3f80ad6d8c0231cde2124a434d16846",
+    "outcome": "YES",
+    "outcomeTokenId": "55115078421062885512539156303747803058407616201213034911037320915726138659123",
+    "wallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+    "bounds": {
+      "requestedBudgetRaw": "1350000",
+      "maximumOrderPrincipalRaw": "1350000",
+      "maximumFeeRaw": "0",
+      "maximumTotalDebitRaw": "1350000",
+      "maxPrice": "0.27"
+    },
+    "fill": {
+      "actualSpendRaw": "1350000",
+      "actualOrderPrincipalRaw": "1350000",
+      "actualFeeRaw": "0",
+      "actualTotalDebitRaw": "1350000",
+      "actualSharesRaw": "5000000",
+      "averagePriceCeiling": "0.27",
       "allInAveragePriceCeiling": "0.27"
     },
     "checks": {
@@ -51,9 +188,46 @@
       "receiptSettlementMatched": true
     }
   },
+  "chainEvidence": {
+    "chainId": 137,
+    "network": "Polygon",
+    "transactionHash": "0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a",
+    "transactionExplorer": "https://polygonscan.com/tx/0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a",
+    "rpcMethod": "eth_getTransactionReceipt",
+    "rpcParams": [
+      "0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a"
+    ],
+    "expectedStatus": "0x1",
+    "blockNumber": 90598011,
+    "blockTimestamp": "2026-07-21T02:46:54.000Z",
+    "referenceIntentExpiresAt": "2026-07-21T02:00:30.000Z",
+    "temporalLimitation": "The settlement occurred after the reference intent expired. This artifact proves a retrospective match to its economic and identity bounds, not that this reference intent was the live execution source or existed before settlement."
+  },
+  "reproduction": {
+    "repository": "https://github.com/dolepee/conviction",
+    "verifierCommit": "8a33b144bca597012a8dd0b0e15bca86ef30109a",
+    "verifierSource": "https://github.com/dolepee/conviction/blob/8a33b144bca597012a8dd0b0e15bca86ef30109a/src/receipt-verifier.mjs",
+    "canonicalHashSource": "https://github.com/dolepee/conviction/blob/8a33b144bca597012a8dd0b0e15bca86ef30109a/src/canonical.mjs",
+    "hashMethod": "SHA-256 over the canonical JSON representation implemented by src/canonical.mjs",
+    "steps": [
+      "Fetch the transaction receipt from any Polygon JSON-RPC endpoint with eth_getTransactionReceipt and chainEvidence.rpcParams.",
+      "Run verifyPositionProof with chainId 137, that receipt, canonicalIntent, hashes.intentHash, and positionProof.orderId.",
+      "Require the returned receipt proof version and all three hashes to equal the values in hashes.",
+      "Require every boolean in receiptProof.checks and positionProof.checks to be true."
+    ],
+    "expected": {
+      "intentHash": "0xd4f3012ecd894e2184ac7c0717297c2aac21f57abf690f8301619949ab966f1d",
+      "receiptProofVersion": "conviction-receipt-v3",
+      "receiptHash": "0x8b51f365e655afe066383c0b405fc4d978a9c08cba76be7680630b34548a13d0",
+      "positionProofVersion": "conviction-position-proof-v2",
+      "positionProofHash": "0x63fceb5a55d1f061ab139f3f69fb6f3568620e17b516c6d19c42289d0686c244"
+    }
+  },
   "reviewNotes": [
-    "This is a controlled house proof, not external traction or financial performance.",
-    "The historical card is expired and must not be submitted for execution.",
-    "No wallet connection, plugin installation, approval, signature, or payment is needed to inspect this file."
+    "No wallet connection, plugin installation, approval, signature, payment, or account is needed to inspect or reproduce this public evidence.",
+    "The house deposit-wallet address, transaction hash, order ID, condition ID, and token ID are public identifiers; no secret or reusable authorization is included.",
+    "The current fee-aware receipt schema is conviction-receipt-v3. The older v2 receipt hash for this transaction is intentionally omitted to avoid ambiguity.",
+    "This evidence proves that one controlled on-chain fill conforms to the stated bounds; it does not prove external usage, revenue, market accuracy, profit, or pre-transaction commitment.",
+    "The intent hash proves deterministic content integrity only. The settlement timestamp is later than the reference intent expiry, so this dossier must not be presented as pre-transaction attestation or proof that the card caused the fill."
   ]
 }

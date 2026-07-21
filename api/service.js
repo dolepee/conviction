@@ -4,9 +4,18 @@ import { createIntentHandler } from "./intent.js";
 import { createPaymentGate, SERVICE_PATH } from "../src/service-payment.mjs";
 
 export const PAID_SERVICE_QUOTE_TTL_MS = 120_000;
-const paidIntentHandler = createIntentHandler({
-  compileOptions: { maxSnapshotAgeMs: 30_000, quoteTtlMs: PAID_SERVICE_QUOTE_TTL_MS },
-});
+export function createPaidIntentHandler(options = {}) {
+  return createIntentHandler({
+    ...options,
+    compileOptions: options.compileOptions ?? {
+      maxSnapshotAgeMs: 30_000,
+      quoteTtlMs: PAID_SERVICE_QUOTE_TTL_MS,
+    },
+    publicAccess: false,
+  });
+}
+
+const paidIntentHandler = createPaidIntentHandler();
 
 export function createServiceApp(
   environment = process.env,

@@ -24,6 +24,30 @@ function gcd(a, b) {
   return a;
 }
 
+export function minimumMarketableBudget(maxPrice, feeBpsValue) {
+  const priceRaw = parseDecimal(maxPrice, 6, "maxPrice");
+  invariant(priceRaw > 0n && priceRaw < PRICE_SCALE, "invalid_price", "maxPrice must be between 0 and 1");
+  const feeBps = Number(feeBpsValue);
+  invariant(
+    Number.isInteger(feeBps) && feeBps >= 0 && feeBps <= Number(BPS_SCALE),
+    "invalid_market_fee",
+    "Market fee rate is invalid",
+  );
+  const shareQuantum = V2_PRINCIPAL_STEP_RAW / gcd(priceRaw, V2_PRINCIPAL_STEP_RAW);
+  const minimumUnalignedWholeShares = ceilDiv(MARKETABLE_BUY_MIN_PRINCIPAL_RAW, priceRaw);
+  const minimumWholeShares = ceilDiv(minimumUnalignedWholeShares, shareQuantum) * shareQuantum;
+  const minimumPrincipalRaw = minimumWholeShares * priceRaw;
+  const minimumFeeRaw = ceilDiv(minimumPrincipalRaw * BigInt(feeBps), BPS_SCALE);
+  const minimumTotalDebitRaw = minimumPrincipalRaw + minimumFeeRaw;
+  return {
+    minimumOrderPrincipal: formatDecimal(minimumPrincipalRaw, 6),
+    maximumFeeAtMinimum: formatDecimal(minimumFeeRaw, 6),
+    minimumTotalBudget: formatDecimal(minimumTotalDebitRaw, 6),
+    minimumShares: minimumWholeShares.toString(),
+    principalPrecision: "v2-cent-aligned-whole-shares",
+  };
+}
+
 function normalizeOutcome(value) {
   const outcome = String(value || "").trim().toUpperCase();
   invariant(
@@ -119,22 +143,19 @@ function compileBoundedOrder(
     "budget_calculation_error",
     "Compiled order exceeds the requested total spend budget",
   );
-  const minimumUnalignedWholeShares = ceilDiv(MARKETABLE_BUY_MIN_PRINCIPAL_RAW, priceRaw);
-  const minimumWholeShares = ceilDiv(minimumUnalignedWholeShares, shareQuantum) * shareQuantum;
-  const minimumPrincipalRaw = minimumWholeShares * priceRaw;
-  const minimumFeeRaw = ceilDiv(minimumPrincipalRaw * feeBpsRaw, BPS_SCALE);
-  const minimumTotalDebitRaw = minimumPrincipalRaw + minimumFeeRaw;
+  const minimum = minimumMarketableBudget(formatDecimal(priceRaw, 6), feeBps);
+  const minimumPrincipalRaw = parseDecimal(
+    minimum.minimumOrderPrincipal,
+    6,
+    "minimumOrderPrincipal",
+  );
   invariant(
-    orderPrincipalRaw >= MARKETABLE_BUY_MIN_PRINCIPAL_RAW,
+    orderPrincipalRaw >= minimumPrincipalRaw,
     "marketable_order_below_minimum",
     "Total spend budget cannot fund Conviction's cent-aligned whole-share marketable BUY after fees",
     {
       requestedBudget: formatDecimal(requestedBudgetRaw, 6),
-      minimumOrderPrincipal: formatDecimal(minimumPrincipalRaw, 6),
-      maximumFeeAtMinimum: formatDecimal(minimumFeeRaw, 6),
-      minimumTotalBudget: formatDecimal(minimumTotalDebitRaw, 6),
-      minimumShares: minimumWholeShares.toString(),
-      principalPrecision: "v2-cent-aligned-whole-shares",
+      ...minimum,
     },
   );
   invariant(

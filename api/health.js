@@ -7,7 +7,7 @@ export default function handler(request, response) {
   return response.status(200).json({
     ok: true,
     product: "Conviction",
-    version: "0.3.3",
+    version: "0.3.4",
     execution: "non-custodial",
     supported: { venue: "Polymarket", clob: "V2", outcomes: ["YES", "NO"], orderType: "FAK" },
   });

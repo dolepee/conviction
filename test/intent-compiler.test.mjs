@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { compileIntent, compilePreview } from "../src/intent-compiler.mjs";
+import {
+  compileIntent,
+  compilePreview,
+  minimumMarketableBudget,
+} from "../src/intent-compiler.mjs";
 import { ConvictionError } from "../src/errors.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
@@ -112,6 +116,23 @@ test("keeps the rationale optional but validates it when present", () => {
     () => compileIntent({ ...REQUEST, rationale: "too short" }, LIVE_MARKET_SNAPSHOT, { now: NOW }),
     "invalid_rationale",
   );
+});
+
+test("reports the exact viable fee-inclusive minimum at a selected price", () => {
+  assert.deepEqual(minimumMarketableBudget("0.27", 0), {
+    minimumOrderPrincipal: "1.08",
+    maximumFeeAtMinimum: "0",
+    minimumTotalBudget: "1.08",
+    minimumShares: "4",
+    principalPrecision: "v2-cent-aligned-whole-shares",
+  });
+  assert.deepEqual(minimumMarketableBudget("0.88", 1000), {
+    minimumOrderPrincipal: "1.76",
+    maximumFeeAtMinimum: "0.176",
+    minimumTotalBudget: "1.936",
+    minimumShares: "2",
+    principalPrecision: "v2-cent-aligned-whole-shares",
+  });
 });
 
 test("compiles NO from the canonical NO token and selected order book", () => {

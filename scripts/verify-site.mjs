@@ -1,13 +1,18 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+import { sha256 } from "../src/canonical.mjs";
+
 const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 const css = await readFile(new URL("../styles.css", import.meta.url), "utf8");
 const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
 const privacy = await readFile(new URL("../privacy.html", import.meta.url), "utf8");
 const terms = await readFile(new URL("../terms.html", import.meta.url), "utf8");
-const sampleDeliverable = JSON.parse(
+const controlledProof = JSON.parse(
   await readFile(new URL("../assets/conviction-review-deliverable.json", import.meta.url), "utf8"),
+);
+const samplePositionCard = JSON.parse(
+  await readFile(new URL("../assets/conviction-sample-position-card.json", import.meta.url), "utf8"),
 );
 const manifest = JSON.parse(
   await readFile(new URL("../manifest.webmanifest", import.meta.url), "utf8"),
@@ -78,13 +83,32 @@ assert.equal(/id="wallet-input"[^>]*\svalue=/.test(html), false, "wallet input m
 assert.ok(html.includes('href="/privacy.html"'), "footer does not expose privacy terms");
 assert.ok(html.includes('href="/terms.html"'), "footer does not expose service terms");
 assert.match(privacy, /no application database/i);
+assert.match(privacy, /IP-shaped client identifier/i);
 assert.match(privacy, /Never submit a seed phrase/i);
 assert.match(terms, /ready-to-sign bounded position card/i);
 assert.match(terms, /Neither response is a fill/i);
-assert.ok(html.includes("/assets/conviction-review-deliverable.json"), "sample deliverable is not linked");
-assert.equal(sampleDeliverable.cardStatus, "historical-expired-do-not-execute");
-assert.equal(sampleDeliverable.positionCard.browserSignedOrBroadcast, false);
-assert.ok(Object.values(sampleDeliverable.verifiedPositionProof.checks).every(Boolean));
+assert.ok(html.includes("/assets/conviction-sample-position-card.json"), "sample paid position card is not linked");
+assert.ok(html.includes("/assets/conviction-review-deliverable.json"), "controlled proof dossier is not linked");
+assert.equal(samplePositionCard.cardStatus, "historical-expired-do-not-execute");
+assert.equal(samplePositionCard.scope.noTransactionSignedOrBroadcast, true);
+assert.equal(samplePositionCard.scope.postFillVerificationIncluded, false);
+assert.equal(samplePositionCard.response.executionCard.requiresUserConfirmation, true);
+assert.equal(sha256(samplePositionCard.response.intent), samplePositionCard.response.intentHash);
+assert.equal(controlledProof.relationshipToPaidService.isPaidServiceOutput, false);
+assert.equal(controlledProof.cardStatus, "historical-expired-do-not-execute");
+assert.equal(controlledProof.summary.provesIntentPredatedTransaction, false);
+assert.equal(controlledProof.summary.provesReferenceCardWasExecutionSource, false);
+assert.equal(sha256(controlledProof.canonicalIntent), controlledProof.hashes.intentHash);
+assert.equal(sha256(controlledProof.receiptProof), controlledProof.hashes.receiptHash);
+assert.equal(sha256(controlledProof.positionProof), controlledProof.hashes.positionProofHash);
+assert.ok(Object.values(controlledProof.receiptProof.checks).every(Boolean));
+assert.ok(Object.values(controlledProof.positionProof.checks).every(Boolean));
+assert.ok(html.includes(controlledProof.hashes.receiptHash), "current v3 receipt hash is not shown");
+assert.equal(
+  html.includes("0x1746d89ea5c08c5edc214fcca3baf5b3bc6ce7b4ea9d02427dd88035cd4373b3"),
+  false,
+  "legacy v2 receipt hash must not be presented as the current proof",
+);
 assert.equal(manifest.name, "Conviction");
 assert.equal(manifest.start_url, "/");
 assert.ok(manifest.icons.some((icon) => icon.sizes === "192x192"));

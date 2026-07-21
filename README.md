@@ -8,15 +8,22 @@ It is deliberately narrow: standard Polymarket V2 binary markets, YES or NO buys
 
 ## Live proof
 
-The canonical house proof bought exactly **5 YES shares** for **1.35 pUSD** at a maximum price of **0.27**.
+The controlled house transaction bought exactly **5 YES shares** for **1.35 pUSD** at a price of **0.27**. The verifier retrospectively matches that fill to the canonical wallet, token, amount, fee, shares, and price bounds below.
 
 - Polygon settlement: [`0x25d2a555…fb8a`](https://polygonscan.com/tx/0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a)
 - Polymarket order: `0xbad8f143b0e71f0cf78f3ec268d22e5cffa8b8e9ef7f0821ac720eac94ebf42c`
 - Receipt block: `90,598,011`
-- Deterministic receipt hash: `0x1746d89ea5c08c5edc214fcca3baf5b3bc6ce7b4ea9d02427dd88035cd4373b3`
-- Verified invariants: successful Polygon receipt, standard V2 exchange, exact pUSD payment, exact YES-token receipt, and matching order ID.
+- Current fee-aware receipt hash: `0x8b51f365e655afe066383c0b405fc4d978a9c08cba76be7680630b34548a13d0`
+- Position-proof hash: `0x63fceb5a55d1f061ab139f3f69fb6f3568620e17b516c6d19c42289d0686c244`
+- Verified invariants: successful Polygon receipt, standard V2 exchange, exact pUSD debit, exact YES-token receipt, exact venue fee, matching order ID, and every original position-card bound.
+
+The [sample paid position card](assets/conviction-sample-position-card.json) is an expired,
+non-executable example of what the listed `0.05 USD₮0` service returns before execution. The
+[controlled proof dossier](assets/conviction-review-deliverable.json) is separate post-fill evidence;
+it is not the paid service output.
 
 This is a controlled house proof, not external traction or financial performance.
+The reference intent expired before settlement, so the dossier does not claim that the intent predated or caused the fill. It proves deterministic retrospective verification of the fill against those bounds.
 
 ## Product loop
 
