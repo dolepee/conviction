@@ -21,18 +21,54 @@ function bestLevel(levels, direction) {
   });
 }
 
+function marketableSuggestion(levels, feeBps) {
+  if (!Array.isArray(levels) || levels.length === 0) return null;
+  const asks = levels
+    .map((level) => {
+      const priceRaw = parseDecimal(level.price, 6, "ask price");
+      const sizeRaw = parseDecimal(level.size, 6, "ask size");
+      invariant(sizeRaw > 0n, "invalid_market_data", "Ask size must be positive");
+      return { priceRaw, sizeRaw };
+    })
+    .sort((left, right) => {
+      if (left.priceRaw === right.priceRaw) return 0;
+      return left.priceRaw < right.priceRaw ? -1 : 1;
+    });
+
+  let cumulativeDepthRaw = 0n;
+  for (let index = 0; index < asks.length;) {
+    const candidatePriceRaw = asks[index].priceRaw;
+    while (index < asks.length && asks[index].priceRaw === candidatePriceRaw) {
+      cumulativeDepthRaw += asks[index].sizeRaw;
+      index += 1;
+    }
+    const suggestedMaxPrice = formatDecimal(candidatePriceRaw, 6);
+    const minimum = minimumMarketableBudget(suggestedMaxPrice, feeBps);
+    const requiredSharesRaw = parseDecimal(
+      minimum.minimumShares,
+      6,
+      "minimum marketable shares",
+    );
+    if (cumulativeDepthRaw >= requiredSharesRaw) {
+      return { suggestedMaxPrice, minimum };
+    }
+  }
+  return null;
+}
+
 function outcomeSummary(market) {
   const ask = bestLevel(market.asks, "ask");
   const bid = bestLevel(market.bids, "bid");
-  const minimum = ask ? minimumMarketableBudget(ask.price, market.feeBps) : null;
+  const suggestion = marketableSuggestion(market.asks, market.feeBps);
   return {
     available: Boolean(ask),
     bestAsk: ask ? formatDecimal(parseDecimal(ask.price, 6, "ask price"), 6) : null,
     bestBid: bid ? formatDecimal(parseDecimal(bid.price, 6, "bid price"), 6) : null,
+    suggestedMaxPrice: suggestion?.suggestedMaxPrice || null,
     tickSize: market.tickSize,
     minimumOrderSize: market.minOrderSize,
     feeBps: market.feeBps,
-    minimumMarketableBudget: minimum,
+    minimumMarketableBudget: suggestion?.minimum || null,
   };
 }
 

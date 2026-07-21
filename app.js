@@ -309,7 +309,7 @@ function selectedOutcome() {
 function syncOutcomePrice() {
   if (!marketLookup) return;
   const quote = marketLookup.outcomes[selectedOutcome()];
-  maxPriceInput.value = quote?.bestAsk || "";
+  maxPriceInput.value = quote?.suggestedMaxPrice || "";
 }
 
 function syncOutcomeMinimum() {
@@ -323,7 +323,9 @@ function syncOutcomeMinimum() {
     }
     autoSuggestedSpend = null;
     spendInput.placeholder = "Enter total risk";
-    spendHelp.textContent = `${outcome} has no live viable minimum because no ask is currently available.`;
+    spendHelp.textContent = quote?.available
+      ? `${outcome} has live asks, but no quoted price level currently has enough bounded depth for the venue minimum. Set a deliberate cap or try again when depth improves.`
+      : `${outcome} has no live viable minimum because no ask is currently available.`;
     return;
   }
 
@@ -335,7 +337,10 @@ function syncOutcomeMinimum() {
   const feeDetail = minimum.maximumFeeAtMinimum === "0"
     ? "with no venue fee at this snapshot"
     : `including up to ${minimum.maximumFeeAtMinimum} pUSD venue fee`;
-  spendHelp.textContent = `Live viable minimum for ${outcome} at best ask ${quote.bestAsk}: ${minimum.minimumTotalBudget} pUSD total for ${minimum.minimumShares} shares, ${feeDetail}. You may set a higher total-risk bound; preview recomputes the requirement if you change the price cap.`;
+  const capDetail = quote.suggestedMaxPrice === quote.bestAsk
+    ? `best ask ${quote.bestAsk}`
+    : `depth-aware cap ${quote.suggestedMaxPrice} (best ask ${quote.bestAsk})`;
+  spendHelp.textContent = `Live viable minimum for ${outcome} at ${capDetail}: ${minimum.minimumTotalBudget} pUSD total for ${minimum.minimumShares} shares, ${feeDetail}. You may set a higher total-risk bound; preview recomputes the requirement if you change the price cap.`;
 }
 
 function renderMarketLookup(payload) {
