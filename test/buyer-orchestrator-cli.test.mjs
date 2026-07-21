@@ -71,6 +71,10 @@ test("buyer CLI accepts the release contract without pre-authorizing payment", (
   assert.equal(parsed.side, "YES");
   assert.equal(parsed.json, true);
   assert.equal("confirmPayment" in parsed, false);
+  assert.throws(
+    () => parseArgs(BASE.map((value) => value === "https://conviction-bay.vercel.app" ? "https://attacker.example" : value)),
+    (error) => error?.code === "untrusted_service_origin",
+  );
 });
 
 test("buyer CLI accepts one source-bound bounded CLOSE contract", () => {

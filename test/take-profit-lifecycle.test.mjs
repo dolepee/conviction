@@ -169,7 +169,7 @@ function snapshot(overrides = {}) {
       market: CONDITION_ID,
       assetId: TOKEN_ID,
       side: "SELL",
-      originalSize: "10",
+      originalSize: "10000000",
       sizeMatched: "0",
       price: "0.4",
       orderType: "GTD",
@@ -248,7 +248,7 @@ test("builds one exact, credential-bound ARMED status without exposing credentia
 
 test("classifies quantity before venue status so partial and full fills are never hidden", () => {
   const partial = buildTakeProfitStatus(fixtureJournal(), snapshot({
-    order: { sizeMatched: "4", associatedTrades: ["trade-partial"] },
+    order: { sizeMatched: "4000000", associatedTrades: ["trade-partial"] },
   }), options());
   assert.equal(partial.status, "PARTIAL_PENDING_CHAIN_PROOF");
   assert.equal(partial.order.matchedSharesRaw, "4000000");
@@ -256,18 +256,18 @@ test("classifies quantity before venue status so partial and full fills are neve
   assert.equal(partial.cancelEligible, true);
 
   const partialCanceled = buildTakeProfitStatus(fixtureJournal(), snapshot({
-    order: { status: "CANCELED", sizeMatched: "4", associatedTrades: ["trade-partial"] },
+    order: { status: "CANCELED", sizeMatched: "4000000", associatedTrades: ["trade-partial"] },
   }), options());
   assert.equal(partialCanceled.status, "PARTIAL_CANCELED_PENDING_CHAIN_PROOF");
   assert.equal(partialCanceled.cancellationObserved, true);
 
   const partialExpired = buildTakeProfitStatus(fixtureJournal(), snapshot({
-    order: { status: "EXPIRED", sizeMatched: "4", associatedTrades: ["trade-partial"] },
+    order: { status: "EXPIRED", sizeMatched: "4000000", associatedTrades: ["trade-partial"] },
   }), options());
   assert.equal(partialExpired.status, "PARTIAL_EXPIRED_PENDING_CHAIN_PROOF");
 
   const filled = buildTakeProfitStatus(fixtureJournal(), snapshot({
-    order: { status: "CANCELED", sizeMatched: "10", associatedTrades: ["trade-full"] },
+    order: { status: "CANCELED", sizeMatched: "10000000", associatedTrades: ["trade-full"] },
   }), options());
   assert.equal(filled.status, "FILLED_PENDING_CHAIN_PROOF");
   assert.equal(filled.order.remainingSharesRaw, "0");
@@ -280,7 +280,10 @@ test("rejects stale, unauthenticated, substituted, or regressed exact-order snap
     [snapshot({ signerAddress: "0x3333333333333333333333333333333333333333" }), "order_wallet_mismatch", NOW],
     [snapshot({ order: { id: `0x${"c".repeat(64)}` } }), "order_identity_mismatch", NOW],
     [snapshot({ order: { assetId: "42" } }), "order_token_mismatch", NOW],
-    [snapshot({ order: { sizeMatched: "11" } }), "invalid_order_response", NOW],
+    [snapshot({ order: { sizeMatched: "10000001" } }), "invalid_order_response", NOW],
+    [snapshot({ order: { originalSize: "10" } }), "order_size_mismatch", NOW],
+    [snapshot({ order: { originalSize: "10.0" } }), "invalid_order_response", NOW],
+    [snapshot({ order: { sizeMatched: 1_000_000 } }), "invalid_order_response", NOW],
     [snapshot({ fetchedAt: "2026-07-21T02:00:12.000Z" }), "order_snapshot_regression", NOW],
     [snapshot(), "stale_order_snapshot", NOW + 20_000],
   ];
@@ -337,7 +340,7 @@ test("cancel request rejects reused/near-match consent and every non-cancelable 
     { status: "CANCELED" },
     { status: "EXPIRED" },
     { status: "MYSTERY" },
-    { status: "MATCHED", sizeMatched: "10", associatedTrades: ["trade-full"] },
+    { status: "MATCHED", sizeMatched: "10000000", associatedTrades: ["trade-full"] },
   ]) {
     assert.throws(
       () => buildTakeProfitCancelRequest({
@@ -359,7 +362,7 @@ test("post-cancel exact recheck reports partial/full fill races instead of decla
     cancelResult,
     afterSnapshot: snapshot({
       fetchedAt: "2026-07-21T02:00:15.000Z",
-      order: { status: "CANCELED", sizeMatched: "3", associatedTrades: ["trade-race"] },
+      order: { status: "CANCELED", sizeMatched: "3000000", associatedTrades: ["trade-race"] },
     }),
   }, options(NOW + 1_000));
   assert.equal(partial.status, "PARTIAL_CANCELED_PENDING_CHAIN_PROOF");
@@ -373,7 +376,7 @@ test("post-cancel exact recheck reports partial/full fill races instead of decla
     cancelResult,
     afterSnapshot: snapshot({
       fetchedAt: "2026-07-21T02:00:15.000Z",
-      order: { status: "MATCHED", sizeMatched: "10", associatedTrades: ["trade-race-full"] },
+      order: { status: "MATCHED", sizeMatched: "10000000", associatedTrades: ["trade-race-full"] },
     }),
   }, options(NOW + 1_000));
   assert.equal(filled.status, "FILLED_PENDING_CHAIN_PROOF");
@@ -398,7 +401,7 @@ test("cancel acknowledgement alone never turns 404, UNKNOWN, or still-LIVE into 
 
   const missingAfterKnownPartial = buildTakeProfitCancelOutcome({
     journal: fixtureJournal(),
-    beforeSnapshot: snapshot({ order: { sizeMatched: "2", associatedTrades: ["trade-before"] } }),
+    beforeSnapshot: snapshot({ order: { sizeMatched: "2000000", associatedTrades: ["trade-before"] } }),
     cancelResult,
     afterLookupErrorCode: "order_not_found",
     observedAt: "2026-07-21T02:00:15.000Z",
@@ -444,9 +447,9 @@ test("cancel outcome rejects cross-order responses and matched-quantity regressi
   assert.throws(
     () => buildTakeProfitCancelOutcome({
       journal: fixtureJournal(),
-      beforeSnapshot: snapshot({ order: { sizeMatched: "4", associatedTrades: ["trade-before"] } }),
+      beforeSnapshot: snapshot({ order: { sizeMatched: "4000000", associatedTrades: ["trade-before"] } }),
       cancelResult: { ok: true, data: { canceled: [ORDER_ID], not_canceled: {} } },
-      afterSnapshot: snapshot({ fetchedAt: "2026-07-21T02:00:15.000Z", order: { status: "CANCELED", sizeMatched: "3", associatedTrades: ["trade-before"] } }),
+      afterSnapshot: snapshot({ fetchedAt: "2026-07-21T02:00:15.000Z", order: { status: "CANCELED", sizeMatched: "3000000", associatedTrades: ["trade-before"] } }),
     }, options(NOW + 1_000)),
     (error) => error?.code === "order_fill_regression",
   );

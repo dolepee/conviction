@@ -157,7 +157,7 @@ function fixtureJournal() {
   };
 }
 
-function orderSnapshot({ matched = "10", status = "MATCHED", trades = [TRADE_1, TRADE_2] } = {}) {
+function orderSnapshot({ matched = "10000000", status = "MATCHED", trades = [TRADE_1, TRADE_2] } = {}) {
   return {
     version: "conviction-polymarket-order-snapshot-v1",
     verificationSource: "authenticated-polymarket-clob",
@@ -172,7 +172,7 @@ function orderSnapshot({ matched = "10", status = "MATCHED", trades = [TRADE_1, 
       market: LIVE_MARKET_SNAPSHOT.conditionId,
       assetId: LIVE_MARKET_SNAPSHOT.yesTokenId,
       side: "SELL",
-      originalSize: "10",
+      originalSize: "10000000",
       sizeMatched: matched,
       price: "0.4",
       orderType: "GTD",
@@ -382,7 +382,7 @@ test("proves a partial fill against proportional gross, fee, and net bounds", ()
     contributions: [contribution({ tradeId: TRADE_1, transactionHash: TX_1, shares: "4", price: "0.45" })],
   });
   const result = verifyTakeProfitAggregateFill(input({
-    orderSnapshot: orderSnapshot({ matched: "4", status: "LIVE", trades: [TRADE_1] }),
+    orderSnapshot: orderSnapshot({ matched: "4000000", status: "LIVE", trades: [TRADE_1] }),
     tradeContributions: contributions,
     settlements: [settlementFixtures()[0]],
   }), options());
@@ -405,15 +405,15 @@ test("preserves active, canceled, and expired partial-order lifecycle state", ()
   };
   const active = verifyTakeProfitAggregateFill(input({
     ...base,
-    orderSnapshot: orderSnapshot({ matched: "4", status: "LIVE", trades: [TRADE_1] }),
+    orderSnapshot: orderSnapshot({ matched: "4000000", status: "LIVE", trades: [TRADE_1] }),
   }), options());
   const canceled = verifyTakeProfitAggregateFill(input({
     ...base,
-    orderSnapshot: orderSnapshot({ matched: "4", status: "CANCELED", trades: [TRADE_1] }),
+    orderSnapshot: orderSnapshot({ matched: "4000000", status: "CANCELED", trades: [TRADE_1] }),
   }), options());
   const expired = verifyTakeProfitAggregateFill(input({
     ...base,
-    orderSnapshot: orderSnapshot({ matched: "4", status: "EXPIRED", trades: [TRADE_1] }),
+    orderSnapshot: orderSnapshot({ matched: "4000000", status: "EXPIRED", trades: [TRADE_1] }),
   }), options());
   assert.equal(active.proof.status, "PARTIALLY_FILLED_ACTIVE");
   assert.equal(active.proof.lifecycle.cancelEligible, true);
@@ -489,7 +489,7 @@ test("reconciles valid per-trade integer flooring and records nonzero V2 metadat
     block: block({ number: "0x101", hash: BLOCK_1, timestamp: "1784599560" }),
   };
   const result = verifyTakeProfitAggregateFill(input({
-    orderSnapshot: orderSnapshot({ matched: "0.000003", status: "LIVE", trades: [TRADE_1] }),
+    orderSnapshot: orderSnapshot({ matched: "3", status: "LIVE", trades: [TRADE_1] }),
     tradeContributions: contributions,
     settlements: [settlement],
   }), options());
@@ -534,7 +534,7 @@ test("fails closed on duplicate trade, transaction, settlement, or receipt-log e
   duplicateTrade.transactionHashes = [TX_1];
   errorCode(
     () => verifyTakeProfitAggregateFill(input({
-      orderSnapshot: orderSnapshot({ matched: "4", trades: [TRADE_1] }),
+      orderSnapshot: orderSnapshot({ matched: "4000000", trades: [TRADE_1] }),
       tradeContributions: duplicateTrade,
       settlements: [settlementFixtures()[0]],
     }), options()),
@@ -702,7 +702,7 @@ test("fails closed on overfill, crossed target, trade-proceeds mismatch, and exc
   ];
   errorCode(
     () => verifyTakeProfitAggregateFill(input({
-      orderSnapshot: orderSnapshot({ matched: "0.000002", status: "LIVE" }),
+      orderSnapshot: orderSnapshot({ matched: "2", status: "LIVE" }),
       tradeContributions: roundingTrades,
       settlements: roundingSettlements,
     }), options()),
@@ -713,7 +713,7 @@ test("fails closed on overfill, crossed target, trade-proceeds mismatch, and exc
 test("fails closed when exact-order matched shares or associated trades do not reconcile", () => {
   errorCode(
     () => verifyTakeProfitAggregateFill(input({
-      orderSnapshot: orderSnapshot({ matched: "9" }),
+      orderSnapshot: orderSnapshot({ matched: "9000000" }),
     }), options()),
     "order_matched_shares_mismatch",
   );

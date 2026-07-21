@@ -1,6 +1,6 @@
 # Conviction ASP Listing and Target Catalog
 
-Status: Conviction ASP `#7034` was created and submitted for marketplace review on 2026-07-21 with the single service recorded below. The paid route is deployed, and an exact `0.05 USD₮0` controlled house payment settled successfully before delivering the bounded card. Do not create or resubmit the identity unless OKX returns a rejection requiring a specific change.
+Status: Conviction ASP `#7034` was created and submitted for marketplace review on 2026-07-21 with the single service recorded below; `Listing under review` is the last confirmed state from that date, not a live status assertion. The paid route is deployed, and an exact `0.05 USD₮0` controlled house payment settled successfully before delivering the bounded card. Do not create or resubmit the identity unless OKX returns a rejection requiring a specific change.
 
 Registration transaction: `0x29fa8a07669fd30b3953e02c148dbb17827b179cd55058f2214bad0df4e78fa6`
 
@@ -78,5 +78,5 @@ Use the canonical request in `docs/SERVICE_CONTRACT.md`. The paid response must 
 - Listing validation: passed once before creation
 - Agent creation: complete as `#7034`
 - Activation submission: complete
-- Marketplace state: `Listing under review`
+- Marketplace state last confirmed 2026-07-21: `Listing under review`
 - Public listing: pending OKX approval

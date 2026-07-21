@@ -3,13 +3,17 @@ import { createHmac } from "node:crypto";
 import { formatDecimal, parseDecimal } from "./decimal.mjs";
 import { ConvictionError, invariant } from "./errors.mjs";
 import { loadDepositWalletCredentials } from "./polymarket-open-orders.mjs";
+import {
+  parsePolymarketShareAtoms,
+  POLYMARKET_SHARE_DECIMALS,
+} from "./polymarket-quantities.mjs";
 
 const CLOB_ORIGIN = "https://clob.polymarket.com";
-const TRADES_PATH = "/trades";
+const TRADES_PATH = "/data/trades";
 const LAST_CURSOR = "LTE=";
 const MAX_ASSOCIATED_TRADES = 100;
 const FETCH_CONCURRENCY = 4;
-const SHARE_DECIMALS = 6;
+const SHARE_DECIMALS = POLYMARKET_SHARE_DECIMALS;
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 const HASH_RE = /^0x[0-9a-f]{64}$/;
 const TOKEN_ID_RE = /^(?:0|[1-9][0-9]*)$/;
@@ -68,6 +72,17 @@ function canonicalStatus(value) {
 function positiveDecimal(value, label) {
   const raw = parseDecimal(value, SHARE_DECIMALS, label);
   invariant(raw > 0n, "invalid_trade_amount", `${label} must be positive`);
+  return Object.freeze({
+    raw,
+    formatted: formatDecimal(raw, SHARE_DECIMALS),
+  });
+}
+
+function positiveShareAtoms(value, label) {
+  const raw = parsePolymarketShareAtoms(value, label, {
+    code: "invalid_trade_amount",
+    positive: true,
+  });
   return Object.freeze({
     raw,
     formatted: formatDecimal(raw, SHARE_DECIMALS),
@@ -153,6 +168,18 @@ function validateExactOrderSnapshot(snapshotInput, {
     "Exact-order snapshot is bound to another outcome token",
   );
   canonicalSide(order.side);
+  const originalSizeRaw = parsePolymarketShareAtoms(order.originalSize, "Snapshot original size", {
+    code: "invalid_trade_order_snapshot",
+    positive: true,
+  });
+  const sizeMatchedRaw = parsePolymarketShareAtoms(order.sizeMatched, "Snapshot matched size", {
+    code: "invalid_trade_order_snapshot",
+  });
+  invariant(
+    sizeMatchedRaw <= originalSizeRaw,
+    "invalid_trade_order_snapshot",
+    "Exact-order snapshot has an impossible matched size",
+  );
 
   invariant(Array.isArray(order.associatedTrades), "invalid_trade_order_snapshot", "Exact order omitted associated trades");
   invariant(
@@ -250,7 +277,7 @@ function extractContribution(body, {
   if (takerMatch) {
     invariant(traderSide === "TAKER", "trade_role_mismatch", "Pinned taker order was not attributed to the authenticated taker");
     canonicalSide(trade.side);
-    size = positiveDecimal(trade.size, "Taker matched shares");
+    size = positiveShareAtoms(trade.size, "Taker matched shares");
     price = canonicalPrice(trade.price);
     orderRole = "TAKER";
   } else {
@@ -273,7 +300,7 @@ function extractContribution(body, {
       "Maker contribution is for another outcome token",
     );
     canonicalSide(maker.side);
-    size = positiveDecimal(maker.matched_amount, "Maker matched shares");
+    size = positiveShareAtoms(maker.matched_amount, "Maker matched shares");
     price = canonicalPrice(maker.price);
     orderRole = "MAKER";
   }

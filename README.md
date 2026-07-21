@@ -161,6 +161,14 @@ node scripts/take-profit-orchestrator.mjs cancel-tp \
   --issuer-registry config/trusted-issuer.production.json --json
 ```
 
+If cancellation races a fill or Polygon evidence is not finalized yet, the global execution lock remains. Reconcile it without another payment, placement, or cancellation; the command releases only an owner-verified lock after a terminal zero-fill status or a terminal finalized fill proof:
+
+```sh
+node scripts/take-profit-orchestrator.mjs reconcile-tp \
+  --journal <private-take-profit-journey.json> \
+  --issuer-registry config/trusted-issuer.production.json --json
+```
+
 The runners serialize the final wallet/configuration window and keep owner-only reconciliation journals outside Git. If a CLOSE process loses an execution response, never retry it under another market spelling or payer. Resume or reconcile the recorded journey without paying again:
 
 ```sh
@@ -183,7 +191,9 @@ The public [privacy](https://conviction-bay.vercel.app/privacy.html) and [terms]
 npm run gate
 ```
 
-The gate checks JavaScript and Python syntax, deterministic YES/NO OPEN/CLOSE/TAKE_PROFIT compilation, outcome-specific market resolution, server-computed exposure and proceeds, stale/price/liquidity/rounding refusal paths, source, intent, token, order, trade, and receipt substitution, exact x402 challenges, payment/trade-consent separation, post-only placement, authenticated ARMED proof, lifecycle status, exact cancellation, aggregate Polygon fill verification, launch-surface markers, and A2A secret-refusal behavior. Gate C stays visibly undecided until a fresh buyer explicitly authorizes its live payment and GTD order.
+The local release gate checks JavaScript and Python syntax, deterministic YES/NO OPEN/CLOSE/TAKE_PROFIT compilation, outcome-specific market resolution, server-computed exposure and proceeds, stale/price/liquidity/rounding refusal paths, source, intent, token, order, trade, and receipt substitution, exact x402 challenges, payment/trade-consent separation, post-only placement, authenticated ARMED proof, lifecycle status, exact cancellation, aggregate Polygon fill verification, launch-surface markers, and A2A secret-refusal behavior. It runs Gates A, B, and C in offline mode, where adversarial mutations must fail with zero orders.
+
+Offline success is not live acceptance. The tracked runtime reports leave all three live gates explicitly undecided until a fresh buyer authorizes each applicable service payment and trade: exact bounds plus one confirmation, buyer-wallet execution (or authenticated ARMED placement), same-journey proof, and payment-to-proof under two minutes. No local test or dry probe is presented as satisfying those live requirements.
 
 ## Operational boundary
 
@@ -193,7 +203,7 @@ Polymarket V2 signs the token, principal, shares, and price but applies operator
 
 A CLOSE card is bound to a prior independently reverified OPEN proof, but that source proof is provenance rather than an on-chain lot identifier. It is not consumed by a close. Conviction therefore treats the fresh wallet balance and approval as the sale authority, rechecks both before submission, and verifies the exact outcome-token debit and net pUSD credit afterward.
 
-A TAKE_PROFIT reserves selected-token shares in a venue-hosted order and may fill partially across more than one Polygon transaction. Conviction never submits another selected-token SELL while its complete authenticated reservation snapshot is nonzero. It treats unknown order state, missing trade attribution, missing receipts, and fill/cancel races as unresolved. There is no background daemon, recurring strategy, automatic re-entry, hidden price change, or broad cancel.
+A TAKE_PROFIT reserves selected-token shares in a venue-hosted order and may fill partially across more than one Polygon transaction. Conviction never submits another selected-token SELL while its complete authenticated reservation snapshot is nonzero. It treats unknown order state, missing trade attribution, missing receipts, and fill/cancel races as unresolved. A retained cancel execution lock is released only by `reconcile-tp` after owner-verified terminal state and, for any fill, finalized Polygon proof. There is no background daemon, recurring strategy, automatic re-entry, hidden price change, or broad cancel.
 
 Never send Conviction a seed phrase, private key, bearer token, CLOB credential, reusable signature, or raw transaction authorization.
 
@@ -204,7 +214,7 @@ Never send Conviction a seed phrase, private key, bearer token, CLOB credential,
 - TAKE_PROFIT source: bounded placement, ARMED proof, exact status/cancel, authenticated trade recovery, and aggregate Polygon fill verification implemented; fresh live Gate C remains consent-gated
 - Public web surface: OPEN preview/manual verifier deployed; managed-position copy is part of this v0.4 release
 - Paid OKX.AI service endpoint: deployed; exact `0.05 USD₮0` payment settled and bounded card delivered with 118 seconds remaining ([X Layer transaction](https://www.oklink.com/xlayer/tx/0xb86bec4537095d4ef771a975fbf73196565f1a6d947ceb953e0d930480ed0eaf))
-- OKX.AI ASP: Conviction `#7034` registered with one `0.05 USDT` service and currently under marketplace review; external buyer proof remains pending
+- OKX.AI ASP: Conviction `#7034` registered with one `0.05 USDT` service; `Listing under review` was last confirmed 2026-07-21, and external buyer proof remains pending
 
 The paid call is a controlled house proof between house wallets. It proves the
 machine-payment and delivery path, not external revenue or traction.

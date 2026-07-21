@@ -1,6 +1,7 @@
 import { sha256 } from "../../../src/canonical.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID } from "../../../src/constants.mjs";
 import { parseDecimal } from "../../../src/decimal.mjs";
+import { parsePolymarketShareAtoms } from "../../../src/polymarket-quantities.mjs";
 import {
   trustedIssuerRegistry,
   verifyIntentIssuance,
@@ -393,8 +394,15 @@ function validateExactOrderSnapshot(validated, live, snapshotInput) {
   fail(lower(order.market) === lower(validated.intent.market.conditionId), "order_market_mismatch", "Authenticated CLOB order belongs to another market");
   fail(String(order.assetId) === validated.tokenId, "order_token_mismatch", "Authenticated CLOB order belongs to another outcome token");
   fail(order.side === "SELL" && order.orderType === "GTD", "order_type_mismatch", "Authenticated order is not a GTD SELL");
-  sameDecimal(order.originalSize, BigInt(validated.bounds.sharesRaw), "authenticated original size");
-  sameDecimal(order.sizeMatched, 0n, "authenticated matched size");
+  const originalSizeRaw = parsePolymarketShareAtoms(order.originalSize, "authenticated original size", {
+    code: "take_profit_economics_mismatch",
+    positive: true,
+  });
+  const sizeMatchedRaw = parsePolymarketShareAtoms(order.sizeMatched, "authenticated matched size", {
+    code: "take_profit_economics_mismatch",
+  });
+  fail(originalSizeRaw === BigInt(validated.bounds.sharesRaw), "take_profit_economics_mismatch", "Authenticated original size disagrees with the take-profit card");
+  fail(sizeMatchedRaw === 0n, "take_profit_economics_mismatch", "Authenticated matched size is not zero");
   sameDecimal(order.price, parseDecimal(validated.bounds.targetPrice, 6, "card target price"), "authenticated target price");
   fail(String(order.expiration) === validated.bounds.venueExpiresAtUnix, "order_expiry_mismatch", "Authenticated order expiry differs from the signed venue expiry");
   if (order.outcome) fail(String(order.outcome).toUpperCase() === validated.outcome, "outcome_mismatch", "Authenticated order outcome differs from the card");
@@ -406,7 +414,7 @@ function validateExactOrderSnapshot(validated, live, snapshotInput) {
   const fetchedAtMs = timestamp(snapshot.fetchedAt, "snapshot.fetchedAt");
   fail(BigInt(Math.floor(fetchedAtMs / 1_000)) >= createdAtSeconds, "invalid_order_proof", "Order snapshot predates order creation");
   fail(fetchedAtMs < timestamp(validated.bounds.venueExpiresAt, "order.venueExpiresAt"), "order_proof_after_expiry", "An expired GTD order cannot be proved ARMED");
-  return { snapshot, order, createdAtSeconds };
+  return { snapshot, order, createdAtSeconds, originalSizeRaw };
 }
 
 export function buildTakeProfitOrderProof(cardInput, liveResultInput, snapshotInput, {
@@ -452,7 +460,7 @@ export function buildTakeProfitOrderProof(cardInput, liveResultInput, snapshotIn
       status: exact.order.status,
       side: exact.order.side,
       orderType: exact.order.orderType,
-      originalSharesRaw: parseDecimal(exact.order.originalSize, 6, "authenticated original size").toString(),
+      originalSharesRaw: exact.originalSizeRaw.toString(),
       matchedSharesRaw: "0",
       price: exact.order.price,
       expiration: exact.order.expiration,
@@ -496,8 +504,13 @@ export function buildTakeProfitOrderProof(cardInput, liveResultInput, snapshotIn
 export function classifyTakeProfitOrderSnapshot(snapshotInput) {
   const snapshot = record(snapshotInput, "take-profit order snapshot");
   const order = record(snapshot.order, "take-profit order snapshot.order");
-  const originalRaw = parseDecimal(order.originalSize, 6, "order original size");
-  const matchedRaw = parseDecimal(order.sizeMatched, 6, "order matched size");
+  const originalRaw = parsePolymarketShareAtoms(order.originalSize, "order original size", {
+    code: "invalid_order_response",
+    positive: true,
+  });
+  const matchedRaw = parsePolymarketShareAtoms(order.sizeMatched, "order matched size", {
+    code: "invalid_order_response",
+  });
   fail(originalRaw > 0n && matchedRaw >= 0n && matchedRaw <= originalRaw, "invalid_order_response", "Take-profit order quantities are invalid");
   const status = String(order.status || "").toUpperCase();
   if (matchedRaw === originalRaw) return "FILLED_PENDING_CHAIN_PROOF";

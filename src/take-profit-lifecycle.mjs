@@ -2,6 +2,10 @@ import { sha256 } from "./canonical.mjs";
 import { formatDecimal, parseDecimal } from "./decimal.mjs";
 import { invariant } from "./errors.mjs";
 import {
+  parsePolymarketShareAtoms,
+  POLYMARKET_SHARE_DECIMALS,
+} from "./polymarket-quantities.mjs";
+import {
   trustedIssuerRegistry,
   verifyIntentIssuance,
 } from "./intent-issuer.mjs";
@@ -10,7 +14,7 @@ const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 const HASH_RE = /^0x[0-9a-f]{64}$/;
 const TOKEN_ID_RE = /^(?:0|[1-9][0-9]*)$/;
 const UINT_RE = /^(?:0|[1-9][0-9]*)$/;
-const SHARE_DECIMALS = 6;
+const SHARE_DECIMALS = POLYMARKET_SHARE_DECIMALS;
 const DEFAULT_MAX_SNAPSHOT_AGE_MS = 15_000;
 const MAX_FUTURE_SKEW_MS = 1_000;
 const CANCEL_CONFIRMATION_MAX_AGE_MS = 120_000;
@@ -327,8 +331,13 @@ function validateFreshExactOrderSnapshot(binding, snapshotInput, {
     invariant(String(order.outcome).toUpperCase() === binding.outcome, "order_outcome_mismatch", "Order snapshot is for another outcome");
   }
 
-  const originalRaw = parseDecimal(order.originalSize, SHARE_DECIMALS, "Order original size");
-  const matchedRaw = parseDecimal(order.sizeMatched, SHARE_DECIMALS, "Order matched size");
+  const originalRaw = parsePolymarketShareAtoms(order.originalSize, "Order original size", {
+    code: "invalid_order_response",
+    positive: true,
+  });
+  const matchedRaw = parsePolymarketShareAtoms(order.sizeMatched, "Order matched size", {
+    code: "invalid_order_response",
+  });
   invariant(originalRaw === binding.exactSharesRaw, "order_size_mismatch", "Order original size differs from the ARMED passport");
   invariant(matchedRaw >= 0n && matchedRaw <= originalRaw, "invalid_order_response", "Order matched size is invalid");
   sameDecimal(order.price, binding.targetPriceRaw, "order_price_mismatch", "Order target price");

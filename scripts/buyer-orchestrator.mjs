@@ -21,10 +21,13 @@ import { fetchAndVerifyClose } from "../src/exit-receipt-verifier.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchPositionSnapshot } from "../src/position-client.mjs";
 import { fetchAllOpenOrders } from "../src/polymarket-open-orders.mjs";
+import { parsePolymarketShareAtoms } from "../src/polymarket-quantities.mjs";
 import { verifySourcePosition } from "../src/source-position.mjs";
 import {
   POSITION_CARD_SERVICE,
   POSITION_MANAGER_SERVICE,
+  pinnedServiceUrl,
+  requirePinnedServiceOrigin,
   SERVICE_ASSET,
   SERVICE_NETWORK,
   SERVICE_PAYEE,
@@ -45,6 +48,7 @@ import {
 } from "../skills/conviction-executor/scripts/conviction-exit-card.mjs";
 
 const execFileAsync = promisify(execFile);
+const PAYMENT_SIGNATURE_HEADER = "PAYMENT-SIGNATURE";
 let executionAttempted = false;
 const journalDirectory = join(homedir(), ".local", "state", "conviction", "reconciliation");
 const executionLockFile = join(journalDirectory, "polymarket-execution.lock.json");
@@ -101,12 +105,12 @@ export async function writeReconciliationJournal(value, { directory = journalDir
 function usage() {
   return [
     "Usage:",
-    "  node scripts/buyer-orchestrator.mjs open --origin <url> --market <slug-or-id>",
+    "  node scripts/buyer-orchestrator.mjs open --origin https://conviction-bay.vercel.app --market <slug-or-id>",
     "    --side YES|NO --budget <pUSD> --max-price <price>",
     "    --payment-payer <X-Layer-address> --buyer-wallet <Polygon-deposit-wallet>",
     "    --issuer-registry <issuers.json> [--json]",
     "",
-    "  node scripts/buyer-orchestrator.mjs close --origin <url> --market <slug-or-id>",
+    "  node scripts/buyer-orchestrator.mjs close --origin https://conviction-bay.vercel.app --market <slug-or-id>",
     "    --side YES|NO --shares <whole-shares> --min-price <price>",
     "    --payment-payer <X-Layer-address> --seller-wallet <Polygon-deposit-wallet>",
     "    --source-proof <open-result-or-proof.json> --issuer-registry <issuers.json>",
@@ -159,9 +163,10 @@ export function parseArgs(argv) {
   if (command !== "open" && command !== "close") {
     throw Object.assign(new Error(usage()), { code: "invalid_command" });
   }
+  const service = command === "open" ? POSITION_CARD_SERVICE : POSITION_MANAGER_SERVICE;
   const common = {
     command,
-    origin: take("--origin").replace(/\/$/, ""),
+    origin: requirePinnedServiceOrigin(take("--origin"), service),
     market: take("--market"),
     side: take("--side").toUpperCase(),
     paymentPayer: take("--payment-payer").toLowerCase(),
@@ -363,13 +368,13 @@ export function summarizeOpenSellReservations(input, outcomeTokenId) {
     if (side !== "SELL" || orderTokenId !== tokenId) continue;
 
     try {
-      const originalSize = String(order?.original_size ?? "");
-      const matchedSize = String(order?.size_matched ?? "0");
-      if (!/^(0|[1-9]\d*)$/.test(originalSize) || !/^(0|[1-9]\d*)$/.test(matchedSize)) {
-        throw new Error("sizes are not canonical atomic integers");
-      }
-      const originalRaw = BigInt(originalSize);
-      const matchedRaw = BigInt(matchedSize);
+      const originalRaw = parsePolymarketShareAtoms(order?.original_size, "Open SELL original size", {
+        code: "invalid_tool_output",
+        positive: true,
+      });
+      const matchedRaw = parsePolymarketShareAtoms(order?.size_matched, "Open SELL matched size", {
+        code: "invalid_tool_output",
+      });
       if (matchedRaw > originalRaw) throw new Error("matched size exceeds original size");
       const remainingRaw = originalRaw - matchedRaw;
       if (remainingRaw > 0n) {
@@ -1860,7 +1865,7 @@ async function main() {
       return latestCloseReadiness;
     },
     previewMarket: async () => {
-      const { response, json } = await postJson(`${options.origin}/api/preview`, requestBody);
+      const { response, json } = await postJson(pinnedServiceUrl(POSITION_CARD_SERVICE, "/api/preview"), requestBody);
       if (!response.ok || json?.ok !== true) {
         throw Object.assign(new Error(json?.error?.message || "Free bounds preview failed"), {
           code: json?.error?.code || "preview_failed",
@@ -1872,7 +1877,7 @@ async function main() {
       };
     },
     previewClose: async () => {
-      const { response, json } = await postJson(`${options.origin}/api/manage-preview`, requestBody);
+      const { response, json } = await postJson(pinnedServiceUrl(POSITION_MANAGER_SERVICE, "/api/manage-preview"), requestBody);
       if (!response.ok || json?.ok !== true) {
         throw Object.assign(new Error(json?.error?.message || "Free CLOSE preview failed"), {
           code: json?.error?.code || "preview_failed",
@@ -1886,7 +1891,7 @@ async function main() {
         checkpoint.stage = "payment_challenge_requested";
         await writeReconciliationJournal(checkpoint);
       }
-      const { response, json } = await postJson(`${options.origin}${service.path}`, requestBody);
+      const { response, json } = await postJson(pinnedServiceUrl(service), requestBody);
       const encoded = response.headers.get("payment-required");
       if (response.status !== 402 || !encoded) {
         throw Object.assign(new Error(json?.error?.message || "Service did not return an x402 challenge"), {
@@ -1926,7 +1931,6 @@ async function main() {
         throw error;
       }
       const data = signed?.data || signed;
-      const headerName = data.header_name || "PAYMENT-SIGNATURE";
       if (!data.authorization_header || String(data.wallet || "").toLowerCase() !== options.paymentPayer) {
         if (createdReplayLock) {
           await releaseCreatedReplayLock("payment_authorization_rejected_before_replay");
@@ -1946,8 +1950,16 @@ async function main() {
       }
       checkpoint.stage = "payment_authorization_created";
       await writeReconciliationJournal(checkpoint);
-      const { response, json } = await postJson(`${options.origin}${service.path}`, requestBody, {
-        headers: { [headerName]: data.authorization_header },
+      if (data.header_name && String(data.header_name).toUpperCase() !== PAYMENT_SIGNATURE_HEADER) {
+        checkpoint.stage = "payment_header_rejected_after_authorization";
+        checkpoint.reconciliationRequired = true;
+        await writeReconciliationJournal(checkpoint);
+        throw Object.assign(new Error("x402 signer returned an unexpected authorization header name"), {
+          code: "payment_header_mismatch",
+        });
+      }
+      const { response, json } = await postJson(pinnedServiceUrl(service), requestBody, {
+        headers: { [PAYMENT_SIGNATURE_HEADER]: data.authorization_header },
       });
       const paymentResponseRaw = response.headers.get("payment-response");
       checkpoint.paidServiceResponse = {
@@ -2076,7 +2088,7 @@ async function main() {
     buildReceiptRequest: async (card, result, validationOptions) => buildReceiptRequest(card, result, validationOptions),
     buildCloseReceiptRequest: async (card, result, validationOptions) => buildCloseReceiptRequest(card, result, validationOptions),
     fetchProof: async (body) => {
-      const { response, json } = await postJson(`${options.origin}/api/receipt`, body);
+      const { response, json } = await postJson(pinnedServiceUrl(POSITION_CARD_SERVICE, "/api/receipt"), body);
       if (!response.ok || json?.ok !== true) {
         throw Object.assign(new Error(json?.error?.message || "Receipt proof failed"), {
           code: json?.error?.code || "receipt_failed",

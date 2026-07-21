@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
-import { mkdir, open, readFile, rename, unlink, writeFile, chmod } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, rename, unlink, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, stderr } from "node:process";
@@ -19,6 +19,8 @@ import { fetchExactAssociatedTradeContributions } from "../src/polymarket-trades
 import { verifySourcePosition } from "../src/source-position.mjs";
 import {
   POSITION_MANAGER_SERVICE,
+  pinnedServiceUrl,
+  requirePinnedServiceOrigin,
   SERVICE_ASSET,
   SERVICE_PAYEE,
 } from "../src/service-payment.mjs";
@@ -32,6 +34,7 @@ import {
   parseJsonOutput,
   paymentAuthorizationMetadata,
   paymentTransaction,
+  releaseReconciledLocks,
   requireDistinctPaymentPayer,
   settleExecutionLock,
   summarizeOpenSellReservations,
@@ -53,6 +56,7 @@ import {
 } from "../src/take-profit-lifecycle.mjs";
 
 const execFileAsync = promisify(execFile);
+const PAYMENT_SIGNATURE_HEADER = "PAYMENT-SIGNATURE";
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 const HASH_RE = /^0x[0-9a-f]{64}$/;
 const STATE_DIRECTORY = join(homedir(), ".local", "state", "conviction", "reconciliation");
@@ -64,7 +68,7 @@ function fail(condition, code, message, details = undefined) {
 function usage() {
   return [
     "Usage:",
-    "  node scripts/take-profit-orchestrator.mjs take-profit --origin <url> --market <slug-or-id>",
+    "  node scripts/take-profit-orchestrator.mjs take-profit --origin https://conviction-bay.vercel.app --market <slug-or-id>",
     "    --side YES|NO --shares <whole-shares> --target-price <price>",
     "    --expires-at <UTC-ISO-second> --payment-payer <X-Layer-address>",
     "    --seller-wallet <Polygon-deposit-wallet> --source-proof <open-proof.json>",
@@ -74,6 +78,9 @@ function usage() {
     "    --issuer-registry <issuers.json> [--json]",
     "",
     "  node scripts/take-profit-orchestrator.mjs cancel-tp --journal <journey.json>",
+    "    --issuer-registry <issuers.json> [--json]",
+    "",
+    "  node scripts/take-profit-orchestrator.mjs reconcile-tp --journal <journey.json>",
     "    --issuer-registry <issuers.json> [--json]",
     "",
     "The flow separately requires `confirm payment`, then `confirm live mode`.",
@@ -102,7 +109,7 @@ export function parseTakeProfitArgs(argv) {
     rest.splice(index, 1);
     return true;
   };
-  if (command === "tp-status" || command === "cancel-tp") {
+  if (command === "tp-status" || command === "cancel-tp" || command === "reconcile-tp") {
     const parsed = {
       command,
       journal: take("--journal"),
@@ -115,7 +122,7 @@ export function parseTakeProfitArgs(argv) {
   fail(command === "take-profit", "invalid_command", usage());
   const parsed = {
     command,
-    origin: take("--origin").replace(/\/$/, ""),
+    origin: requirePinnedServiceOrigin(take("--origin"), POSITION_MANAGER_SERVICE),
     market: take("--market"),
     side: take("--side").toUpperCase(),
     shares: take("--shares"),
@@ -209,10 +216,19 @@ async function updateReservation(file, update) {
   return next;
 }
 
-async function commandJson(file, args, label) {
+async function commandJson(file, args, label, { deadlineEpochMs, clock = Date.now } = {}) {
+  const commandStartedAt = Number(clock());
+  const boundedTimeout = deadlineEpochMs === undefined
+    ? 60_000
+    : Math.min(60_000, Math.floor(Number(deadlineEpochMs) - commandStartedAt));
+  fail(
+    Number.isFinite(commandStartedAt) && Number.isFinite(boundedTimeout) && boundedTimeout > 0,
+    "placement_deadline_elapsed",
+    `${label} cannot start after the signed placement deadline`,
+  );
   try {
     const { stdout: output } = await execFileAsync(file, args, {
-      timeout: 60_000,
+      timeout: boundedTimeout,
       maxBuffer: 2 * 1024 * 1024,
       encoding: "utf8",
     });
@@ -221,6 +237,27 @@ async function commandJson(file, args, label) {
     if (error?.code && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw error;
     throw Object.assign(new Error(`${label} failed`), { code: "tool_failed" });
   }
+}
+
+export function requireTakeProfitLaunchWindow(card, {
+  now = Date.now,
+  minimumHeadroomMs = 15_000,
+} = {}) {
+  const observedAt = Number(now());
+  const placementDeadlineMs = Date.parse(String(card?.expiresAt || ""));
+  const venueDeadlineMs = Date.parse(String(card?.bounds?.venueExpiresAt || ""));
+  fail(
+    Number.isFinite(observedAt) && Number.isFinite(placementDeadlineMs) &&
+      placementDeadlineMs - observedAt >= minimumHeadroomMs,
+    "insufficient_execution_window",
+    "Signed TAKE_PROFIT card has too little time left for locked submission",
+  );
+  fail(
+    Number.isFinite(venueDeadlineMs) && venueDeadlineMs > observedAt,
+    "expired_venue_order",
+    "TAKE_PROFIT venue expiry has passed before locked submission",
+  );
+  return Object.freeze({ observedAt, placementDeadlineMs, venueDeadlineMs });
 }
 
 async function postJson(url, body, { headers = {} } = {}) {
@@ -267,14 +304,26 @@ async function fetchExactOrderWithPropagation(argumentsObject) {
   throw lastError;
 }
 
-function safeJournalPath(value, stateDirectory = STATE_DIRECTORY) {
-  const file = String(value || "");
-  fail(file.startsWith(`${stateDirectory}/`) && basename(file).endsWith("-take-profit.json"), "invalid_state_path", "TAKE_PROFIT journal must be inside the private Conviction state directory");
+export async function safeTakeProfitJournalPath(value, stateDirectory = STATE_DIRECTORY) {
+  const requested = resolve(String(value || ""));
+  let root;
+  let file;
+  try {
+    [root, file] = await Promise.all([realpath(resolve(stateDirectory)), realpath(requested)]);
+  } catch {
+    fail(false, "invalid_state_path", "TAKE_PROFIT journal path does not resolve inside the private Conviction state directory");
+  }
+  const within = relative(root, file);
+  fail(
+    within && within !== ".." && !within.startsWith(`..${sep}`) && !isAbsolute(within) && basename(file).endsWith("-take-profit.json"),
+    "invalid_state_path",
+    "TAKE_PROFIT journal must be inside the private Conviction state directory",
+  );
   return file;
 }
 
 async function loadLifecycleContext(options, { stateDirectory = STATE_DIRECTORY } = {}) {
-  const journalPath = safeJournalPath(options.journal, stateDirectory);
+  const journalPath = await safeTakeProfitJournalPath(options.journal, stateDirectory);
   const [journalText, trustedText] = await Promise.all([
     readFile(journalPath, "utf8"),
     readFile(options.issuerRegistry, "utf8"),
@@ -386,6 +435,94 @@ export async function runTakeProfitStatusCli(options, {
       now: now(),
     });
   }
+}
+
+export function takeProfitReconciliationResolved(status) {
+  if (status?.version === "conviction-take-profit-status-with-fill-v1") {
+    return status.finalized === true && status.fillProof?.lifecycle?.orderTerminal === true;
+  }
+  return status?.orderTerminal === true && status?.settlementProofRequired === false;
+}
+
+export async function settleTakeProfitReconciliation({
+  context,
+  status,
+  stateDirectory = STATE_DIRECTORY,
+} = {}, {
+  now = Date.now,
+  releaseLocks = releaseReconciledLocks,
+  writeState = writeTakeProfitState,
+} = {}) {
+  if (!takeProfitReconciliationResolved(status)) {
+    return Object.freeze({
+      ...status,
+      journalPath: context.journalPath,
+      reconciliationRequired: true,
+      executionLockReleased: false,
+    });
+  }
+  const released = await releaseLocks(context.journal, {
+    stateDirectory,
+    journal: context.journalPath,
+    fields: ["executionLockPath"],
+  });
+  context.journal.latestLifecycleStatus = status.status;
+  if (status.version === "conviction-take-profit-status-with-fill-v1") {
+    context.journal.latestFillProof = status.fillProof;
+    context.journal.latestFillProofHash = status.fillProofHash;
+  }
+  context.journal.reconciliationRequired = false;
+  context.journal.reconciledAt = new Date(now()).toISOString();
+  await writeState(context.journal, { directory: stateDirectory, file: context.journalPath });
+  return Object.freeze({
+    ...status,
+    journalPath: context.journalPath,
+    reconciliationRequired: false,
+    executionLockReleased: released.length > 0,
+  });
+}
+
+export async function runTakeProfitReconcileCli(options, {
+  now = Date.now,
+  stateDirectory = STATE_DIRECTORY,
+  fetchTradeContributions = fetchExactAssociatedTradeContributions,
+  verifyAggregateFill = fetchAndVerifyTakeProfitAggregateFill,
+} = {}) {
+  const context = await loadLifecycleContext(options, { stateDirectory });
+  let status;
+  try {
+    const snapshot = await exactLifecycleSnapshot(context.binding);
+    const clobStatus = buildTakeProfitStatus(context.journal, snapshot, {
+      trustedIssuers: context.trustedIssuers,
+      now: now(),
+    });
+    status = await attachTakeProfitFillProof({
+      ...context,
+      snapshot,
+      status: clobStatus,
+    }, {
+      now,
+      fetchTradeContributions,
+      verifyAggregateFill,
+    });
+  } catch (error) {
+    if (!["order_not_found", "order_unavailable"].includes(error?.code)) throw error;
+    status = buildTakeProfitLookupFailureStatus(context.journal, {
+      errorCode: error.code,
+      observedAt: new Date(now()).toISOString(),
+    }, {
+      trustedIssuers: context.trustedIssuers,
+      now: now(),
+    });
+  }
+
+  return settleTakeProfitReconciliation({
+    context,
+    status,
+    stateDirectory,
+  }, {
+    now,
+  });
 }
 
 export async function runTakeProfitCancelCli(options, {
@@ -731,7 +868,7 @@ export async function runTakeProfitCli(options, {
     ensureTradingMode,
     checkReadiness: loadReadiness,
     previewTakeProfit: async () => {
-      const { response, json } = await postJson(`${options.origin}/api/manage-preview`, requestBody);
+      const { response, json } = await postJson(pinnedServiceUrl(POSITION_MANAGER_SERVICE, "/api/manage-preview"), requestBody);
       fail(response.ok && json?.ok === true, json?.error?.code || "preview_failed", json?.error?.message || "Free TAKE_PROFIT preview failed");
       return json;
     },
@@ -739,7 +876,7 @@ export async function runTakeProfitCli(options, {
     requestPaymentChallenge: async () => {
       state.paymentRequestedAt = new Date(now()).toISOString();
       await persist("payment_challenge_requested");
-      const { response, json } = await postJson(`${options.origin}${POSITION_MANAGER_SERVICE.path}`, requestBody);
+      const { response, json } = await postJson(pinnedServiceUrl(POSITION_MANAGER_SERVICE), requestBody);
       const encoded = response.headers.get("payment-required");
       fail(response.status === 402 && encoded, "invalid_payment_challenge", json?.error?.message || "Manager did not return an x402 challenge");
       const decoded = decodeHeader(encoded, "PAYMENT-REQUIRED");
@@ -781,9 +918,13 @@ export async function runTakeProfitCli(options, {
         throw error;
       }
       await persist("payment_authorization_created");
-      const headerName = data.header_name || "PAYMENT-SIGNATURE";
-      const { response, json } = await postJson(`${options.origin}${POSITION_MANAGER_SERVICE.path}`, requestBody, {
-        headers: { [headerName]: data.authorization_header },
+      if (data.header_name && String(data.header_name).toUpperCase() !== PAYMENT_SIGNATURE_HEADER) {
+        state.reconciliationRequired = true;
+        await persist("payment_header_rejected_after_authorization");
+        fail(false, "payment_header_mismatch", "x402 signer returned an unexpected authorization header name");
+      }
+      const { response, json } = await postJson(pinnedServiceUrl(POSITION_MANAGER_SERVICE), requestBody, {
+        headers: { [PAYMENT_SIGNATURE_HEADER]: data.authorization_header },
       });
       const paymentResponseRaw = response.headers.get("payment-response");
       state.paidServiceResponse = { status: response.status, paymentResponsePresent: Boolean(paymentResponseRaw) };
@@ -830,15 +971,40 @@ export async function runTakeProfitCli(options, {
           tokenId,
           sharesRaw: parseDecimal(argv[argv.indexOf("--shares") + 1], 6, "TAKE_PROFIT shares"),
         });
-        const lockedCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
-        const lockedDryRun = await commandJson("polymarket-plugin", [...argv, "--dry-run"], "Locked TAKE_PROFIT dry run");
+        let lockedCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
+        const preDryRunWindow = requireTakeProfitLaunchWindow(lockedCard, { now });
+        const lockedDryRun = await commandJson(
+          "polymarket-plugin",
+          [...argv, "--dry-run"],
+          "Locked TAKE_PROFIT dry run",
+          { deadlineEpochMs: preDryRunWindow.placementDeadlineMs, clock: now },
+        );
         validateTakeProfitPluginPreview(state.paidCard, lockedDryRun, { trustedIssuers, now: now() });
+        lockedCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
+        requireTakeProfitLaunchWindow(lockedCard, { now });
         fail(sha256(lockedCard.executionCard.argv) === state.tradeConsent.executionArgvHash, "trade_consent_mismatch", "Locked TAKE_PROFIT differs from the confirmed order");
         state.executionAttempted = true;
         state.reconciliationRequired = true;
         await persist("execution_attempted");
         executionAttempted = true;
-        const result = await commandJson("polymarket-plugin", argv, "Polymarket TAKE_PROFIT live order");
+        const launchCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
+        const launchWindow = requireTakeProfitLaunchWindow(launchCard, { now });
+        fail(sha256(launchCard.executionCard.argv) === state.tradeConsent.executionArgvHash, "trade_consent_mismatch", "Live TAKE_PROFIT differs from the confirmed order");
+        let result;
+        try {
+          result = await commandJson("polymarket-plugin", argv, "Polymarket TAKE_PROFIT live order", {
+            deadlineEpochMs: launchWindow.placementDeadlineMs,
+            clock: now,
+          });
+        } catch (error) {
+          if (error?.code === "placement_deadline_elapsed") {
+            executionAttempted = false;
+            state.executionAttempted = false;
+            state.reconciliationRequired = false;
+            await persist("execution_expired_before_launch");
+          }
+          throw error;
+        }
         state.liveResult = result;
         state.orderId = String((result?.data || result)?.order_id || "").toLowerCase();
         await persist("live_result_received");
@@ -913,6 +1079,8 @@ if (isMain()) {
     options = parseTakeProfitArgs(process.argv.slice(2));
     const result = options.command === "tp-status"
       ? await runTakeProfitStatusCli(options)
+      : options.command === "reconcile-tp"
+        ? await runTakeProfitReconcileCli(options)
       : options.command === "cancel-tp"
         ? await runTakeProfitCancelCli(options)
         : await runTakeProfitCli(options);

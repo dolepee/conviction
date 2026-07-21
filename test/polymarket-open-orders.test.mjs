@@ -29,11 +29,11 @@ function response(body, ok = true, status = 200) {
 function exactOrder(overrides = {}) {
   return {
     id: ORDER_ID,
-    status: "LIVE",
+    status: "ORDER_STATUS_LIVE",
     market: `0x${"b".repeat(64)}`,
     asset_id: TOKEN,
     side: "SELL",
-    original_size: "10",
+    original_size: "10000000",
     size_matched: "0",
     price: "0.2",
     order_type: "GTD",
@@ -53,13 +53,13 @@ test("complete open-order client follows every opaque cursor and pins the select
     {
       count: 1,
       limit: 500,
-      data: [{ id: "first", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT }],
+      data: [{ id: "first", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT, original_size: "10000000", size_matched: "0" }],
       next_cursor: "MTAw",
     },
     {
       count: 1,
       limit: 500,
-      data: [{ id: "second", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT }],
+      data: [{ id: "second", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT, original_size: "10000000", size_matched: "4000000" }],
       next_cursor: "LTE=",
     },
   ];
@@ -164,7 +164,7 @@ test("complete open-order client fails closed on missing, repeated, or invalid p
         return response({
           count: 1,
           limit: 500,
-          data: [{ id: "duplicate", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT }],
+          data: [{ id: "duplicate", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT, original_size: "10000000", size_matched: "0" }],
           next_cursor: duplicatePage === 1 ? "MTAw" : "",
         });
       },
@@ -198,6 +198,7 @@ test("exact-order client authenticates one canonical order without returning cre
   assert.equal(result.order.id, ORDER_ID);
   assert.equal(result.order.orderType, "GTD");
   assert.equal(result.order.status, "LIVE");
+  assert.equal(result.order.originalSize, "10000000");
   assert.equal(result.order.sizeMatched, "0");
   assert.equal(JSON.stringify(result).includes(CREDS.apiKey), false);
   assert.equal(JSON.stringify(result).includes(CREDS.secret), false);
@@ -235,6 +236,55 @@ test("exact-order client fails closed on missing or substituted identity", async
       (error) => error?.code === code,
     );
   }
+});
+
+test("order clients accept only canonical atomic share quantities", async () => {
+  for (const mutation of [
+    { original_size: 10_000_000 },
+    { original_size: "10.0" },
+    { original_size: "010000000" },
+    { original_size: " 10000000" },
+    { original_size: "1e7" },
+    { original_size: "0" },
+    { size_matched: "10000001" },
+    { size_matched: "0.0" },
+  ]) {
+    await assert.rejects(
+      fetchExactOrder({
+        signerAddress: SIGNER,
+        depositWallet: DEPOSIT,
+        orderId: ORDER_ID,
+        outcomeTokenId: TOKEN,
+        credentials: CREDS,
+        fetchImpl: async () => response(exactOrder(mutation)),
+      }),
+      (error) => error?.code === "invalid_order_response",
+    );
+  }
+
+  await assert.rejects(
+    fetchAllOpenOrders({
+      signerAddress: SIGNER,
+      depositWallet: DEPOSIT,
+      outcomeTokenId: TOKEN,
+      credentials: CREDS,
+      fetchImpl: async () => response({
+        count: 1,
+        limit: 500,
+        data: [{
+          id: "ambiguous-size",
+          status: "ORDER_STATUS_LIVE",
+          asset_id: TOKEN,
+          owner: CREDS.apiKey,
+          maker_address: DEPOSIT,
+          original_size: "10.0",
+          size_matched: "0",
+        }],
+        next_cursor: "",
+      }),
+    }),
+    (error) => error?.code === "invalid_open_orders_quantity",
+  );
 });
 
 test("credential loader binds an owner-only v2 entry to the selected deposit wallet", async () => {

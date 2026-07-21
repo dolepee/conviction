@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { ConvictionError, invariant } from "./errors.mjs";
+import { parsePolymarketShareAtoms } from "./polymarket-quantities.mjs";
 
 const CLOB_ORIGIN = "https://clob.polymarket.com";
 const ORDERS_PATH = "/data/orders";
@@ -14,6 +15,16 @@ const MAX_ORDERS = 100_000;
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 const TOKEN_ID_RE = /^(0|[1-9]\d*)$/;
 const ORDER_ID_RE = /^0x[0-9a-f]{64}$/;
+const SAFE_STATUS_RE = /^[A-Z0-9_]{1,64}$/;
+const CANONICAL_ORDER_STATUSES = new Map([
+  ["ORDER_STATUS_LIVE", "LIVE"],
+  ["ORDER_STATUS_OPEN", "OPEN"],
+  ["ORDER_STATUS_UNMATCHED", "UNMATCHED"],
+  ["ORDER_STATUS_MATCHED", "MATCHED"],
+  ["ORDER_STATUS_CANCELED", "CANCELED"],
+  ["ORDER_STATUS_CANCELLED", "CANCELED"],
+  ["ORDER_STATUS_EXPIRED", "EXPIRED"],
+]);
 
 function fail(code, message, details) {
   throw new ConvictionError(code, message, details);
@@ -60,6 +71,12 @@ function canonicalOrderId(value) {
   const orderId = String(value || "").toLowerCase();
   invariant(ORDER_ID_RE.test(orderId), "invalid_order_identity", "Polymarket order ID is invalid");
   return orderId;
+}
+
+function canonicalOrderStatus(value, code) {
+  const status = typeof value === "string" ? value.toUpperCase() : "";
+  invariant(SAFE_STATUS_RE.test(status), code, "Polymarket order status is invalid");
+  return CANONICAL_ORDER_STATUSES.get(status) || status;
 }
 
 export async function loadDepositWalletCredentials({
@@ -170,6 +187,7 @@ export async function fetchAllOpenOrders({
     ) {
       fail("incomplete_open_orders", "Polymarket returned inconsistent open-order page metadata");
     }
+    const normalizedPage = [];
     for (const order of body.data) {
       const returnedTokenId = String(order?.asset_id ?? order?.token_id ?? "");
       if (!TOKEN_ID_RE.test(returnedTokenId) || returnedTokenId !== outcomeTokenId) {
@@ -186,8 +204,26 @@ export async function fetchAllOpenOrders({
         fail("incomplete_open_orders", "Polymarket returned a missing or repeated open-order ID");
       }
       seenOrderIds.add(orderId);
+      const originalSizeRaw = parsePolymarketShareAtoms(order?.original_size, "Open-order original size", {
+        code: "invalid_open_orders_quantity",
+        positive: true,
+      });
+      const sizeMatchedRaw = parsePolymarketShareAtoms(order?.size_matched, "Open-order matched size", {
+        code: "invalid_open_orders_quantity",
+      });
+      invariant(
+        sizeMatchedRaw <= originalSizeRaw,
+        "invalid_open_orders_quantity",
+        "Open-order matched size exceeds its original size",
+      );
+      normalizedPage.push(Object.freeze({
+        ...order,
+        status: canonicalOrderStatus(order?.status, "invalid_open_orders_status"),
+        original_size: originalSizeRaw.toString(),
+        size_matched: sizeMatchedRaw.toString(),
+      }));
     }
-    orders.push(...body.data);
+    orders.push(...normalizedPage);
     if (orders.length > MAX_ORDERS) {
       fail("open_orders_limit", "Polymarket open-order verification exceeded its safe bound");
     }
@@ -285,6 +321,18 @@ export async function fetchExactOrder({
   if (!associatedTrades || associatedTrades.some((value) => !value || value !== value.trim())) {
     fail("invalid_order_response", "Polymarket returned invalid associated-trade metadata");
   }
+  const originalSizeRaw = parsePolymarketShareAtoms(body.original_size, "Order original size", {
+    code: "invalid_order_response",
+    positive: true,
+  });
+  const sizeMatchedRaw = parsePolymarketShareAtoms(body.size_matched, "Order matched size", {
+    code: "invalid_order_response",
+  });
+  invariant(
+    sizeMatchedRaw <= originalSizeRaw,
+    "invalid_order_response",
+    "Polymarket order matched size exceeds its original size",
+  );
 
   return Object.freeze({
     version: "conviction-polymarket-order-snapshot-v1",
@@ -296,12 +344,14 @@ export async function fetchExactOrder({
     credentialOwnerVerified: true,
     order: Object.freeze({
       id: orderId,
-      status: String(body.status || "").toUpperCase(),
+      status: canonicalOrderStatus(body.status, "invalid_order_response"),
       market: String(body.market || "").toLowerCase(),
       assetId: String(body.asset_id || ""),
       side: String(body.side || "").toUpperCase(),
-      originalSize: String(body.original_size ?? ""),
-      sizeMatched: String(body.size_matched ?? ""),
+      // These snapshot fields remain atomic integer strings. Human-readable
+      // formatting only happens after the lifecycle verifier has bound them.
+      originalSize: originalSizeRaw.toString(),
+      sizeMatched: sizeMatchedRaw.toString(),
       price: String(body.price ?? ""),
       orderType: String(body.order_type || "").toUpperCase(),
       expiration: String(body.expiration ?? ""),

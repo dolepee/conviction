@@ -120,7 +120,7 @@ function orderSnapshot(overrides = {}) {
       market: LIVE_MARKET_SNAPSHOT.conditionId,
       assetId: LIVE_MARKET_SNAPSHOT.yesTokenId,
       side: "SELL",
-      originalSize: "10",
+      originalSize: "10000000",
       sizeMatched: "0",
       price: "0.4",
       orderType: "GTD",
@@ -189,8 +189,11 @@ test("requires a fresh exact LIVE zero-match order after submission", () => {
     [{ order: { id: `0x${"c".repeat(64)}` } }, "order_identity_mismatch"],
     [{ depositWallet: "0x3333333333333333333333333333333333333333" }, "order_wallet_mismatch"],
     [{ order: { assetId: LIVE_MARKET_SNAPSHOT.noTokenId } }, "order_token_mismatch"],
-    [{ order: { status: "MATCHED", sizeMatched: "10", associatedTrades: ["trade"] } }, "take_profit_not_resting"],
-    [{ order: { sizeMatched: "1" } }, "take_profit_economics_mismatch"],
+    [{ order: { status: "MATCHED", sizeMatched: "10000000", associatedTrades: ["trade"] } }, "take_profit_not_resting"],
+    [{ order: { sizeMatched: "1000000" } }, "take_profit_economics_mismatch"],
+    [{ order: { originalSize: "10" } }, "take_profit_economics_mismatch"],
+    [{ order: { originalSize: "10.0" } }, "take_profit_economics_mismatch"],
+    [{ order: { sizeMatched: 0 } }, "take_profit_economics_mismatch"],
     [{ order: { price: "0.39" } }, "take_profit_economics_mismatch"],
     [{ order: { expiration: String(Number(VENUE_EXPIRES_UNIX) + 1) } }, "order_expiry_mismatch"],
     [{ order: { createdAt: String((NOW + 1_000) / 1_000) } }, "order_before_confirmation"],
@@ -210,12 +213,12 @@ test("requires a fresh exact LIVE zero-match order after submission", () => {
 
 test("classifies resting, partial, filled, canceled, expired, and unknown TP states", () => {
   assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot()), "ARMED");
-  assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({ order: { sizeMatched: "4" } })), "PARTIAL_PENDING_CHAIN_PROOF");
-  assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({ order: { status: "MATCHED", sizeMatched: "10" } })), "FILLED_PENDING_CHAIN_PROOF");
+  assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({ order: { sizeMatched: "4000000" } })), "PARTIAL_PENDING_CHAIN_PROOF");
+  assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({ order: { status: "MATCHED", sizeMatched: "10000000" } })), "FILLED_PENDING_CHAIN_PROOF");
   assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({ order: { status: "CANCELED" } })), "CANCELED");
   assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({ order: { status: "EXPIRED" } })), "EXPIRED");
-  assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({ order: { status: "CANCELED", sizeMatched: "4" } })), "PARTIAL_CANCELED_PENDING_CHAIN_PROOF");
-  assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({ order: { status: "EXPIRED", sizeMatched: "4" } })), "PARTIAL_EXPIRED_PENDING_CHAIN_PROOF");
+  assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({ order: { status: "CANCELED", sizeMatched: "4000000" } })), "PARTIAL_CANCELED_PENDING_CHAIN_PROOF");
+  assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({ order: { status: "EXPIRED", sizeMatched: "4000000" } })), "PARTIAL_EXPIRED_PENDING_CHAIN_PROOF");
   assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({
     fetchedAt: VENUE_EXPIRES_AT,
   })), "UNKNOWN");

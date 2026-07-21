@@ -15,6 +15,7 @@ import { runTakeProfitJourney } from "../src/buyer-orchestrator.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchExactOrder } from "../src/polymarket-open-orders.mjs";
+import { parsePolymarketShareAtoms } from "../src/polymarket-quantities.mjs";
 import { verifySourcePosition } from "../src/source-position.mjs";
 import {
   POSITION_MANAGER_SERVICE,
@@ -435,8 +436,8 @@ if (mode === "live") {
       const order = snapshot.order;
       const orderOk = order.status === "LIVE" && order.id === armed.orderId && order.market === armed.marketConditionId &&
         order.assetId === armed.outcomeTokenId && order.side === "SELL" && order.orderType === "GTD" &&
-        parseDecimal(order.originalSize, 6, "original size") === armed.exactSharesRaw &&
-        parseDecimal(order.sizeMatched, 6, "matched size") === 0n &&
+        parsePolymarketShareAtoms(order.originalSize, "original size") === armed.exactSharesRaw &&
+        parsePolymarketShareAtoms(order.sizeMatched, "matched size") === 0n &&
         parseDecimal(order.price, 6, "order price") === armed.targetPriceRaw;
       record("3", "One post-only GTD SELL is ARMED for the pinned seller wallet", orderOk ? "PASS" : "FAIL", armed.orderId);
       const proofOk = report.status === "ARMED" && report.orderId === armed.orderId &&
