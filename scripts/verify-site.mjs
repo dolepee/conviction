@@ -17,6 +17,10 @@ const samplePositionCard = JSON.parse(
 const manifest = JSON.parse(
   await readFile(new URL("../manifest.webmanifest", import.meta.url), "utf8"),
 );
+const socialImageSvg = await readFile(
+  new URL("../assets/conviction-og.svg", import.meta.url),
+  "utf8",
+);
 const robots = await readFile(new URL("../robots.txt", import.meta.url), "utf8");
 const vercel = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
 
@@ -116,8 +120,11 @@ assert.equal(
 );
 assert.equal(manifest.name, "Conviction");
 assert.equal(manifest.start_url, "/");
+assert.match(manifest.description, /OPEN and CLOSE fills plus post-only TAKE_PROFIT lifecycle proof/);
 assert.ok(manifest.icons.some((icon) => icon.sizes === "192x192"));
 assert.ok(manifest.icons.some((icon) => icon.sizes === "512x512"));
+assert.match(socialImageSvg, /6\/6 RECEIPT CHECKS/);
+assert.doesNotMatch(socialImageSvg, /5\/5 RECEIPT CHECKS/);
 assert.deepEqual(await readPngSize("../assets/conviction-icon-32.png"), { width: 32, height: 32 });
 assert.deepEqual(await readPngSize("../assets/apple-touch-icon.png"), { width: 180, height: 180 });
 assert.deepEqual(await readPngSize("../assets/conviction-icon-192.png"), { width: 192, height: 192 });

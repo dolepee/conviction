@@ -1,7 +1,7 @@
 {
   "name": "Conviction",
   "short_name": "Conviction",
-  "description": "Thesis-bound YES or NO execution with objective exposure checks and verifiable Polygon receipts.",
+  "description": "Bounded non-custodial YES or NO execution with verifiable Polygon OPEN and CLOSE fills plus post-only TAKE_PROFIT lifecycle proof.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
