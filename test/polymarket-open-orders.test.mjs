@@ -27,8 +27,18 @@ function response(body, ok = true, status = 200) {
 test("complete open-order client follows every opaque cursor and pins the selected token", async () => {
   const calls = [];
   const pages = [
-    { data: [{ id: "first", status: "ORDER_STATUS_LIVE", asset_id: TOKEN }], next_cursor: "MTAw" },
-    { data: [{ id: "second", status: "ORDER_STATUS_LIVE", asset_id: TOKEN }], next_cursor: "LTE=" },
+    {
+      count: 1,
+      limit: 500,
+      data: [{ id: "first", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT }],
+      next_cursor: "MTAw",
+    },
+    {
+      count: 1,
+      limit: 500,
+      data: [{ id: "second", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT }],
+      next_cursor: "LTE=",
+    },
   ];
   const result = await fetchAllOpenOrders({
     signerAddress: SIGNER,
@@ -56,8 +66,9 @@ test("complete open-order client follows every opaque cursor and pins the select
 
 test("complete open-order client fails closed on missing, repeated, or invalid pagination", async () => {
   for (const body of [
-    { data: [] },
-    { data: null, next_cursor: "" },
+    { count: 0, limit: 500, data: [] },
+    { count: 0, limit: 500, data: null, next_cursor: "" },
+    { count: 1, limit: 500, data: [], next_cursor: "" },
   ]) {
     await assert.rejects(
       fetchAllOpenOrders({
@@ -80,7 +91,7 @@ test("complete open-order client fails closed on missing, repeated, or invalid p
       credentials: CREDS,
       fetchImpl: async () => {
         calls += 1;
-        return response({ data: [], next_cursor: "same" });
+        return response({ count: 0, limit: 500, data: [], next_cursor: "same" });
       },
     }),
     (error) => error?.code === "incomplete_open_orders" && calls === 2,
@@ -93,12 +104,30 @@ test("complete open-order client fails closed on missing, repeated, or invalid p
       outcomeTokenId: TOKEN,
       credentials: CREDS,
       fetchImpl: async () => response({
-        data: [{ asset_id: "987654321" }],
+        count: 1,
+        limit: 500,
+        data: [{ id: "wrong-token", asset_id: "987654321", owner: CREDS.apiKey, maker_address: DEPOSIT }],
         next_cursor: "",
       }),
     }),
     (error) => error?.code === "open_orders_token_mismatch",
   );
+
+  for (const order of [
+    { id: "wrong-owner", asset_id: TOKEN, owner: "another-key", maker_address: DEPOSIT },
+    { id: "wrong-maker", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: "0x3333333333333333333333333333333333333333" },
+  ]) {
+    await assert.rejects(
+      fetchAllOpenOrders({
+        signerAddress: SIGNER,
+        depositWallet: DEPOSIT,
+        outcomeTokenId: TOKEN,
+        credentials: CREDS,
+        fetchImpl: async () => response({ count: 1, limit: 500, data: [order], next_cursor: "" }),
+      }),
+      (error) => error?.code === "open_orders_wallet_mismatch",
+    );
+  }
 });
 
 test("credential loader binds an owner-only v2 entry to the selected deposit wallet", async () => {

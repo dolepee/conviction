@@ -126,6 +126,7 @@ export async function fetchAllOpenOrders({
 
   const orders = [];
   const seenCursors = new Set();
+  const seenOrderIds = new Set();
   let cursor = "";
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     const query = new URLSearchParams({ asset_id: outcomeTokenId });
@@ -155,11 +156,28 @@ export async function fetchAllOpenOrders({
     if (!Object.hasOwn(body, "next_cursor") || typeof body.next_cursor !== "string") {
       fail("incomplete_open_orders", "Polymarket omitted the pagination completeness cursor");
     }
+    if (
+      !Number.isSafeInteger(body.count) || body.count < 0 || body.count !== body.data.length ||
+      !Number.isSafeInteger(body.limit) || body.limit <= 0 || body.count > body.limit
+    ) {
+      fail("incomplete_open_orders", "Polymarket returned inconsistent open-order page metadata");
+    }
     for (const order of body.data) {
       const returnedTokenId = String(order?.asset_id ?? order?.token_id ?? "");
       if (!TOKEN_ID_RE.test(returnedTokenId) || returnedTokenId !== outcomeTokenId) {
         fail("open_orders_token_mismatch", "Polymarket returned an order outside the selected outcome token");
       }
+      if (
+        String(order?.owner || "") !== auth.apiKey ||
+        String(order?.maker_address || "").toLowerCase() !== depositWallet
+      ) {
+        fail("open_orders_wallet_mismatch", "Polymarket returned an order outside the selected credential and deposit wallet");
+      }
+      const orderId = String(order?.id || "");
+      if (!orderId || seenOrderIds.has(orderId)) {
+        fail("incomplete_open_orders", "Polymarket returned a missing or repeated open-order ID");
+      }
+      seenOrderIds.add(orderId);
     }
     orders.push(...body.data);
     if (orders.length > MAX_ORDERS) {
