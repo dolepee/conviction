@@ -169,19 +169,29 @@ node scripts/take-profit-orchestrator.mjs reconcile-tp \
   --issuer-registry config/trusted-issuer.production.json --json
 ```
 
-The runners serialize the final wallet/configuration window and keep owner-only reconciliation journals outside Git. If a CLOSE process loses an execution response, never retry it under another market spelling or payer. Resume or reconcile the recorded journey without paying again:
+The runners wait until the second after live-trade confirmation, serialize the final wallet/configuration window, and keep owner-only reconciliation journals outside Git. A verified OPEN or CLOSE settlement must also have a Polygon block timestamp strictly later than the confirmation second.
+
+If an OPEN returns an ambiguous response, reconcile its recorded order read-only. A verified settlement releases only that journey's owner-verified execution lock. A zero-fill FAK releases it only when a fresh credential-owner-bound exact CLOB snapshot proves the signed order identity, canonical `CANCELED`/`EXPIRED` status, zero matched shares, no trades, and creation inside the signed post-confirmation window:
+
+```sh
+node scripts/buyer-orchestrator.mjs reconcile-open \
+  --journal "$CONVICTION_JOURNAL_PATH" \
+  --issuer-registry config/trusted-issuer.production.json --json
+```
+
+If a CLOSE process loses an execution response, never retry it under another market spelling or payer. A known pre-spawn refusal restores the existing paid-and-confirmed checkpoint while retaining its replay lock; continue only through `resume-close`, which reverifies the payment, card, source position, wallet, balance, approval, reservations, and dry run without paying again. Otherwise reconcile the recorded journey read-only:
 
 ```sh
 node scripts/buyer-orchestrator.mjs resume-close \
   --journal "$CONVICTION_JOURNAL_PATH" \
-  --issuer-registry config/trusted-issuer.production.json
+  --issuer-registry config/trusted-issuer.production.json --json
 
 node scripts/buyer-orchestrator.mjs reconcile-close \
   --journal "$CONVICTION_JOURNAL_PATH" \
-  --issuer-registry config/trusted-issuer.production.json
+  --issuer-registry config/trusted-issuer.production.json --json
 ```
 
-The command releases a replay lock only after independently verifying the recorded settlement, or after proving that no execution began and the signed card expired. Ambiguous executions remain locked for manual reconciliation.
+`reconcile-close` releases its owner-verified replay and execution locks only after independently verifying the recorded settlement, proving an exact terminal zero-fill FOK through the same authenticated CLOB checks, or proving that no execution began and the signed card expired. Ambiguous evidence remains locked for manual reconciliation; never delete a lock to force progress.
 
 The public [privacy](https://conviction-bay.vercel.app/privacy.html) and [terms](https://conviction-bay.vercel.app/terms.html) pages state exactly what is processed, what the paid service delivers, and which wallet and approval steps remain third-party operations.
 

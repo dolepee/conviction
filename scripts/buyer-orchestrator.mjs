@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { chmod, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -20,8 +21,9 @@ import { parseDecimal } from "../src/decimal.mjs";
 import { fetchAndVerifyClose } from "../src/exit-receipt-verifier.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchPositionSnapshot } from "../src/position-client.mjs";
-import { fetchAllOpenOrders } from "../src/polymarket-open-orders.mjs";
+import { fetchAllOpenOrders, fetchExactOrder } from "../src/polymarket-open-orders.mjs";
 import { parsePolymarketShareAtoms } from "../src/polymarket-quantities.mjs";
+import { fetchAndVerifyPosition } from "../src/receipt-verifier.mjs";
 import { verifySourcePosition } from "../src/source-position.mjs";
 import {
   POSITION_CARD_SERVICE,
@@ -34,17 +36,20 @@ import {
   SERVICE_PAYMENT_TIMEOUT_SECONDS,
 } from "../src/service-payment.mjs";
 import { fetchAndVerifyX402Payment } from "../src/x402-payment-verifier.mjs";
+import { verifyTerminalZeroFillOrder } from "../src/terminal-zero-fill.mjs";
 import {
   buildReceiptRequest,
   validateCard,
   validatePluginPreview,
   validateProof,
+  validateTerminalZeroOpenResult,
 } from "../skills/conviction-executor/scripts/conviction-card.mjs";
 import {
   buildCloseReceiptRequest,
   validateCloseCard,
   validateClosePluginPreview,
   validateCloseProof,
+  validateTerminalZeroCloseResult,
 } from "../skills/conviction-executor/scripts/conviction-exit-card.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -64,6 +69,9 @@ const checkpoint = {
   orderId: null,
   settlementTx: null,
   positionProofHash: null,
+  positionPassportHash: null,
+  terminalZeroFillProof: null,
+  terminalZeroFillProofHash: null,
   closeProofHash: null,
   closePassportHash: null,
   sourceIntentHash: null,
@@ -119,6 +127,9 @@ function usage() {
     "  node scripts/buyer-orchestrator.mjs reconcile-close --journal <journey.json>",
     "    --issuer-registry <issuers.json> [--json]",
     "",
+    "  node scripts/buyer-orchestrator.mjs reconcile-open --journal <journey.json>",
+    "    --issuer-registry <issuers.json> [--json]",
+    "",
     "  node scripts/buyer-orchestrator.mjs resume-close --journal <journey.json>",
     "    --issuer-registry <issuers.json> [--json]",
     "",
@@ -150,7 +161,7 @@ export function parseArgs(argv) {
     rest.splice(index, 1);
     return true;
   };
-  if (command === "reconcile-close" || command === "resume-close") {
+  if (command === "reconcile-open" || command === "reconcile-close" || command === "resume-close") {
     const parsed = {
       command,
       journal: take("--journal"),
@@ -607,6 +618,28 @@ export function requireExecutionLaunchWindow(card, {
   return Object.freeze({ observedAt, deadlineEpochMs });
 }
 
+export async function waitForStrictlyPostConfirmationSecond(confirmedAt, {
+  now = Date.now,
+  sleep = (milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
+} = {}) {
+  const confirmedAtMs = Date.parse(String(confirmedAt || ""));
+  const observedAt = Number(now());
+  if (!Number.isFinite(confirmedAtMs) || !Number.isFinite(observedAt)) {
+    throw Object.assign(new Error("Trade-confirmation clock is invalid"), { code: "invalid_trade_consent" });
+  }
+  const earliestLaunchAt = Math.floor(confirmedAtMs / 1_000) * 1_000 + 1_000;
+  if (observedAt < earliestLaunchAt) {
+    await sleep(earliestLaunchAt - observedAt);
+    const postWait = Number(now());
+    if (!Number.isFinite(postWait) || postWait < earliestLaunchAt) {
+      throw Object.assign(new Error("Trade confirmation second is still active after the launch wait"), {
+        code: "confirmation_second_active",
+      });
+    }
+  }
+  return earliestLaunchAt;
+}
+
 function decodeHeader(value, label) {
   try {
     return JSON.parse(Buffer.from(String(value || ""), "base64").toString("utf8"));
@@ -786,14 +819,18 @@ function depositWalletFromQuickstart(quickstart) {
 }
 
 function safeStatePath(value, kind, stateDirectory = journalDirectory) {
-  const stateRoot = resolve(stateDirectory);
-  const candidate = resolve(String(value || ""));
-  if (!candidate.startsWith(`${stateRoot}${sep}`)) {
+  const resolvedRoot = resolve(stateDirectory);
+  const resolvedCandidate = resolve(String(value || ""));
+  let physicalRoot = resolvedRoot;
+  let physicalCandidate = resolvedCandidate;
+  try { physicalRoot = realpathSync(resolvedRoot); } catch {}
+  try { physicalCandidate = realpathSync(resolvedCandidate); } catch {}
+  if (!physicalCandidate.startsWith(`${physicalRoot}${sep}`)) {
     throw Object.assign(new Error(`${kind} path is outside Conviction's private state directory`), {
       code: "unsafe_state_path",
     });
   }
-  const name = basename(candidate);
+  const name = basename(resolvedCandidate);
   const valid = kind === "journal"
     ? name.endsWith(".json") && !name.endsWith(".lock.json")
     : kind === "replay lock"
@@ -804,7 +841,7 @@ function safeStatePath(value, kind, stateDirectory = journalDirectory) {
       code: "unsafe_state_path",
     });
   }
-  return candidate;
+  return resolvedCandidate;
 }
 
 export async function verifyJournalLockOwnership(
@@ -898,6 +935,80 @@ export async function releaseReconciledLocks(
   return released;
 }
 
+/**
+ * Restore a paid CLOSE to its sole resumable checkpoint when every failure is
+ * known to have happened before the live child process started. The replay
+ * lock deliberately remains in place, so neither a second payment nor a
+ * second order can be started outside `resume-close`.
+ */
+export async function recoverKnownUnstartedCloseExecution(
+  state,
+  {
+    journal,
+    stateDirectory = journalDirectory,
+    errorCode = "execution_blocked_before_launch",
+    now = Date.now(),
+    releaseLocks = releaseReconciledLocks,
+    writeState = writeReconciliationJournal,
+  } = {},
+) {
+  if (
+    state?.mode !== "close" || state?.reconciliationRequired !== true ||
+    !state?.tradeConsent || !HASH_RE.test(String(state.replayKey || "")) ||
+    !state.replayLockPath || !state.executionLockPath ||
+    state.liveResult || state.orderId || state.settlementTx
+  ) {
+    throw Object.assign(new Error("CLOSE is not a known-unstarted resumable checkpoint"), {
+      code: "unsafe_prelaunch_recovery",
+    });
+  }
+  // Prove that clearing only the known-unstarted execution markers produces
+  // the exact checkpoint accepted by `resume-close` before releasing a lock.
+  requireExactResumeCheckpoint({
+    ...state,
+    stage: "trade_confirmed",
+    executionArgv: null,
+    executionArgvHash: null,
+    executionAttemptedAt: null,
+    executionLockPath: null,
+  }, journal);
+  await verifyJournalLockOwnership(state, {
+    stateDirectory,
+    journal,
+    fields: ["replayLockPath", "executionLockPath"],
+    requirePresent: true,
+  });
+  const releasedLocks = await releaseLocks(state, {
+    stateDirectory,
+    journal,
+    fields: ["executionLockPath"],
+  });
+  if (releasedLocks.length !== 1 || state.executionLockPath) {
+    throw Object.assign(new Error("CLOSE execution lock was not released exactly once"), {
+      code: "execution_lock_release_failed",
+    });
+  }
+  state.stage = "trade_confirmed";
+  state.executionArgv = null;
+  state.executionArgvHash = null;
+  state.executionAttemptedAt = null;
+  state.reconciliationRequired = true;
+  state.executionBlockedBeforeLaunch = {
+    code: String(errorCode || "execution_blocked_before_launch"),
+    at: new Date(now).toISOString(),
+    liveProcessStarted: false,
+    replayLockRetained: true,
+  };
+  await writeState(state, { directory: stateDirectory, file: journal });
+  return Object.freeze({
+    ok: true,
+    status: state.stage,
+    resumable: true,
+    replayLockRetained: true,
+    releasedLocks: Object.freeze(releasedLocks),
+  });
+}
+
 async function releaseUnsentReplayLock(state, { journal = journalPath } = {}) {
   try {
     await releaseReconciledLocks(state, {
@@ -916,12 +1027,209 @@ async function releaseUnsentReplayLock(state, { journal = journalPath } = {}) {
   }
 }
 
+function validatePersistedLiveExecution(state, {
+  journal,
+  mode,
+  validated,
+} = {}) {
+  const confirmationAt = Date.parse(String(state?.tradeConfirmedAt || ""));
+  const expiresAt = Date.parse(String(validated?.expiresAt || ""));
+  const paymentProof = asObject(state?.paymentProof);
+  if (
+    state?.mode !== mode || resolve(String(state.journalPath || "")) !== journal ||
+    state.reconciliationRequired !== true || !state.executionLockPath ||
+    !asObject(state.paidCard) || !asObject(state.liveResult) ||
+    !HASH_RE.test(String(state.paymentTx || "")) ||
+    paymentProof?.transactionHash !== state.paymentTx ||
+    !HASH_RE.test(String(state.intentHash || "")) || state.intentHash !== validated.intentHash ||
+    !Array.isArray(state.executionArgv) || state.executionArgv.length === 0 ||
+    state.executionArgv.some((value) => typeof value !== "string") ||
+    !HASH_RE.test(String(state.executionArgvHash || "")) ||
+    sha256(state.executionArgv) !== state.executionArgvHash ||
+    sha256(validated.executionCard.argv) !== state.executionArgvHash ||
+    !ADDRESS_RE.test(String(state.paymentPayer || "")) || state.paymentPayer !== String(state.paymentPayer).toLowerCase() ||
+    !ADDRESS_RE.test(String(state.buyerWallet || "")) || state.buyerWallet !== validated.wallet ||
+    !Number.isFinite(confirmationAt) || !Number.isFinite(expiresAt) || confirmationAt >= expiresAt
+  ) {
+    throw Object.assign(new Error(`${mode.toUpperCase()} live checkpoint is incomplete or internally inconsistent`), {
+      code: "invalid_reconciliation_journal",
+    });
+  }
+  const paidAt = Number(BigInt(paymentProof.blockTimestamp ?? -1) * 1_000n);
+  if (!Number.isSafeInteger(paidAt) || confirmationAt < paidAt) {
+    throw Object.assign(new Error(`${mode.toUpperCase()} confirmation predates its verified payment`), {
+      code: "invalid_reconciliation_journal",
+    });
+  }
+  return Object.freeze({ confirmationAt, expiresAt, paidAt });
+}
+
+export async function reconcileOpenJournal({
+  file,
+  trustedIssuers,
+  now = Date.now(),
+  verifyPosition = fetchAndVerifyPosition,
+  validateCardImpl = validateCard,
+  buildReceiptRequestImpl = buildReceiptRequest,
+  validateProofImpl = validateProof,
+  validateTerminalResultImpl = validateTerminalZeroOpenResult,
+  fetchExactOrderImpl = fetchExactOrder,
+  verifyTerminalOrderImpl = verifyTerminalZeroFillOrder,
+  stateDirectory = journalDirectory,
+} = {}) {
+  const journal = safeStatePath(file, "journal", stateDirectory);
+  const state = JSON.parse(await readFile(journal, "utf8"));
+  if (state?.mode !== "open") {
+    throw Object.assign(new Error("Journal is not a Conviction OPEN journey"), {
+      code: "invalid_reconciliation_journal",
+    });
+  }
+  const validated = validateCardImpl(state.paidCard, {
+    trustedIssuers,
+    allowExpired: true,
+    now,
+  });
+  const executionWindow = validatePersistedLiveExecution(state, { journal, mode: "open", validated });
+  await verifyJournalLockOwnership(state, {
+    stateDirectory,
+    journal,
+    fields: ["executionLockPath"],
+    requirePresent: true,
+  });
+
+  let status;
+  let proof;
+  let terminal;
+  if (HASH_RE.test(String(state.orderId || "")) && HASH_RE.test(String(state.settlementTx || ""))) {
+    const request = buildReceiptRequestImpl(state.paidCard, state.liveResult, { trustedIssuers });
+    if (
+      request?.orderId !== state.orderId || request?.transactionHash !== state.settlementTx ||
+      request?.intentHash !== validated.intentHash
+    ) {
+      throw Object.assign(new Error("Persisted OPEN settlement identity differs from the signed live result"), {
+        code: "open_live_identity_mismatch",
+      });
+    }
+    const document = await verifyPosition(state.settlementTx, {
+      intent: request.intent,
+      intentHash: request.intentHash,
+      orderId: request.orderId,
+      issuance: request.issuance,
+      trustedIssuers,
+    });
+    const settledAt = Date.parse(String(document?.positionProof?.settledAt || ""));
+    if (
+      !Number.isFinite(settledAt) ||
+      Math.floor(settledAt / 1_000) <= Math.floor(executionWindow.confirmationAt / 1_000)
+    ) {
+      throw Object.assign(new Error("Independent OPEN settlement predates the recorded trade confirmation"), {
+        code: "settlement_before_confirmation",
+      });
+    }
+    proof = validateProofImpl(state.paidCard, document, { trustedIssuers });
+    if (
+      proof?.orderId !== state.orderId || proof?.transactionHash !== state.settlementTx ||
+      !HASH_RE.test(String(proof?.positionProofHash || ""))
+    ) {
+      throw Object.assign(new Error("Independent OPEN proof differs from the persisted live settlement"), {
+        code: "open_proof_mismatch",
+      });
+    }
+    status = "complete_reconciled";
+  } else if (HASH_RE.test(String(state.orderId || "")) && !state.settlementTx) {
+    const live = validateTerminalResultImpl(state.paidCard, state.liveResult, { trustedIssuers });
+    if (live.orderId !== state.orderId || live.validated.intentHash !== validated.intentHash) {
+      throw Object.assign(new Error("Persisted terminal OPEN identity differs from the signed live result"), {
+        code: "open_live_identity_mismatch",
+      });
+    }
+    const snapshot = await fetchExactOrderImpl({
+      signerAddress: state.paymentPayer,
+      depositWallet: state.buyerWallet,
+      orderId: state.orderId,
+      outcomeTokenId: validated.tokenId,
+    });
+    terminal = verifyTerminalOrderImpl({
+      action: "OPEN",
+      signerAddress: state.paymentPayer,
+      wallet: state.buyerWallet,
+      live,
+      snapshot,
+      confirmedAt: state.tradeConfirmedAt,
+      expiresAt: validated.expiresAt,
+      now,
+    });
+    if (
+      terminal?.ok !== true || terminal.proof?.orderId !== state.orderId ||
+      terminal.proof?.intentHash !== validated.intentHash ||
+      !HASH_RE.test(String(terminal.proofHash || ""))
+    ) {
+      throw Object.assign(new Error("Terminal OPEN proof differs from the signed live result"), {
+        code: "terminal_zero_proof_mismatch",
+      });
+    }
+    status = "terminal_zero_fill_reconciled";
+  } else {
+    return {
+      ok: true,
+      status: "manual_reconciliation_required",
+      reconciliationRequired: true,
+      journalPath: journal,
+      stage: state.stage,
+      orderId: state.orderId || null,
+      settlementTx: state.settlementTx || null,
+    };
+  }
+
+  const releasedLocks = await releaseReconciledLocks(state, {
+    stateDirectory,
+    journal,
+    fields: ["executionLockPath"],
+  });
+  if (releasedLocks.length !== 1) {
+    throw Object.assign(new Error("OPEN reconciliation did not release exactly its execution lock"), {
+      code: "execution_lock_release_failed",
+    });
+  }
+  state.stage = status;
+  state.reconciliationRequired = false;
+  state.reconciledAt = new Date(now).toISOString();
+  state.reconciliationReason = proof ? "verified_settlement" : "authenticated_terminal_zero_fill";
+  if (proof) {
+    state.positionProofHash = proof.positionProofHash;
+    state.positionPassportHash = proof.positionPassportHash || null;
+  } else {
+    state.terminalZeroFillProof = terminal.proof;
+    state.terminalZeroFillProofHash = terminal.proofHash;
+  }
+  await writeReconciliationJournal(state, { directory: dirname(journal), file: journal });
+  return {
+    ok: true,
+    status,
+    reconciliationRequired: false,
+    journalPath: journal,
+    orderId: state.orderId,
+    settlementTx: state.settlementTx || null,
+    releasedLocks,
+    ...(proof ? {
+      positionProofHash: proof.positionProofHash,
+      positionPassportHash: proof.positionPassportHash || null,
+    } : {
+      terminalZeroFillProofHash: terminal.proofHash,
+      matchedSharesRaw: "0",
+    }),
+  };
+}
+
 export async function reconcileCloseJournal({
   file,
   trustedIssuers,
   now = Date.now(),
   verifyClose = fetchAndVerifyClose,
   validateCardImpl = validateCloseCard,
+  validateTerminalResultImpl = validateTerminalZeroCloseResult,
+  fetchExactOrderImpl = fetchExactOrder,
+  verifyTerminalOrderImpl = verifyTerminalZeroFillOrder,
   authorizationStateImpl = fetchEip3009AuthorizationState,
   stateDirectory = journalDirectory,
 } = {}) {
@@ -933,6 +1241,7 @@ export async function reconcileCloseJournal({
 
   let reason;
   let proof;
+  let terminal;
   if (HASH_RE.test(String(state.settlementTx || "")) && HASH_RE.test(String(state.orderId || "")) && state.paidCard) {
     proof = await verifyClose(state.settlementTx, {
       intent: state.paidCard.intent,
@@ -941,7 +1250,85 @@ export async function reconcileCloseJournal({
       issuance: state.paidCard.issuance,
       trustedIssuers,
     });
+    const confirmedAt = Date.parse(String(state.tradeConfirmedAt || ""));
+    const settledAt = Date.parse(String(proof?.closeProof?.settledAt || ""));
+    if (
+      !Number.isFinite(confirmedAt) || !Number.isFinite(settledAt) ||
+      Math.floor(settledAt / 1_000) <= Math.floor(confirmedAt / 1_000)
+    ) {
+      throw Object.assign(new Error("Verified CLOSE settlement does not strictly postdate trade confirmation"), {
+        code: "settlement_before_confirmation",
+      });
+    }
     reason = "verified_settlement";
+  } else if (
+    HASH_RE.test(String(state.orderId || "")) && !state.settlementTx &&
+    state.paidCard && state.liveResult && state.executionArgvHash
+  ) {
+    const validated = validateCardImpl(state.paidCard, {
+      trustedIssuers,
+      allowExpired: true,
+      now,
+    });
+    validatePersistedLiveExecution(state, { journal, mode: "close", validated });
+    const request = resumeRequest(state);
+    bindCloseCardToRequest(validated, {
+      market: {
+        conditionId: validated.intent?.market?.conditionId,
+        outcomeTokenId: validated.tokenId,
+      },
+      source: {
+        ...validated.intent?.source,
+        wallet: state.buyerWallet,
+        marketConditionId: validated.intent?.market?.conditionId,
+        outcome: validated.outcome,
+        outcomeTokenId: validated.tokenId,
+      },
+    }, request, state.buyerWallet);
+    const expectedReplayKey = closeReplayKey({ request, sellerWallet: state.buyerWallet });
+    if (state.replayKey !== expectedReplayKey) {
+      throw Object.assign(new Error("Terminal CLOSE replay identity differs from its paid request"), {
+        code: "invalid_replay_key",
+      });
+    }
+    await verifyJournalLockOwnership(state, {
+      stateDirectory,
+      journal,
+      fields: ["replayLockPath", "executionLockPath"],
+      requirePresent: true,
+    });
+    const live = validateTerminalResultImpl(state.paidCard, state.liveResult, { trustedIssuers });
+    if (live.orderId !== state.orderId || live.validated.intentHash !== validated.intentHash) {
+      throw Object.assign(new Error("Persisted terminal CLOSE identity differs from the signed live result"), {
+        code: "close_live_identity_mismatch",
+      });
+    }
+    const snapshot = await fetchExactOrderImpl({
+      signerAddress: state.paymentPayer,
+      depositWallet: state.buyerWallet,
+      orderId: state.orderId,
+      outcomeTokenId: validated.tokenId,
+    });
+    terminal = verifyTerminalOrderImpl({
+      action: "CLOSE",
+      signerAddress: state.paymentPayer,
+      wallet: state.buyerWallet,
+      live,
+      snapshot,
+      confirmedAt: state.tradeConfirmedAt,
+      expiresAt: validated.expiresAt,
+      now,
+    });
+    if (
+      terminal?.ok !== true || terminal.proof?.orderId !== state.orderId ||
+      terminal.proof?.intentHash !== validated.intentHash ||
+      !HASH_RE.test(String(terminal.proofHash || ""))
+    ) {
+      throw Object.assign(new Error("Terminal CLOSE proof differs from the signed live result"), {
+        code: "terminal_zero_proof_mismatch",
+      });
+    }
+    reason = "authenticated_terminal_zero_fill";
   } else if (!state.executionArgvHash && state.paidCard) {
     const card = validateCardImpl(state.paidCard, {
       trustedIssuers,
@@ -1016,6 +1403,8 @@ export async function reconcileCloseJournal({
   });
   state.stage = reason === "verified_settlement"
     ? "complete_reconciled"
+    : reason === "authenticated_terminal_zero_fill"
+      ? "terminal_zero_fill_reconciled"
     : reason === "expired_unsettled_authorization"
       ? "expired_unsettled_authorization_reconciled"
       : "expired_unexecuted_reconciled";
@@ -1025,6 +1414,10 @@ export async function reconcileCloseJournal({
   if (proof) {
     state.closeProofHash = proof.closeProofHash;
     state.closePassportHash = proof.closePassportHash;
+  }
+  if (terminal) {
+    state.terminalZeroFillProof = terminal.proof;
+    state.terminalZeroFillProofHash = terminal.proofHash;
   }
   await writeReconciliationJournal(state, { directory: dirname(journal), file: journal });
   return {
@@ -1037,6 +1430,10 @@ export async function reconcileCloseJournal({
       transactionHash: proof.closeProof.transactionHash,
       closeProofHash: proof.closeProofHash,
       closePassportHash: proof.closePassportHash,
+    } : terminal ? {
+      orderId: state.orderId,
+      terminalZeroFillProofHash: terminal.proofHash,
+      matchedSharesRaw: "0",
     } : {}),
   };
 }
@@ -1389,9 +1786,9 @@ export async function resumePaidCloseJournal({
       "Verified CLOSE proof differs from the one live result",
     );
     resumeInvariant(
-      Date.parse(proof.settledAt) >= Math.floor(consent.confirmedAt / 1_000) * 1_000,
+      Math.floor(Date.parse(proof.settledAt) / 1_000) > Math.floor(consent.confirmedAt / 1_000),
       "settlement_before_confirmation",
-      "Verified CLOSE settlement predates the recorded trade consent",
+      "Verified CLOSE settlement does not strictly postdate the recorded trade-consent second",
     );
     state.closeProofHash = proof.closeProofHash;
     state.closePassportHash = proof.closePassportHash;
@@ -1569,11 +1966,19 @@ export function validatePaymentChallenge(decoded, service = POSITION_CARD_SERVIC
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  if (options.command === "reconcile-close" || options.command === "resume-close") {
+  if (options.command === "reconcile-open" || options.command === "reconcile-close" || options.command === "resume-close") {
     const trustedIssuerDocument = JSON.parse(await readFile(options.issuerRegistry, "utf8"));
     const trustedIssuers = trustedIssuerRegistry(trustedIssuerDocument.issuers || trustedIssuerDocument);
     if (trustedIssuers.size === 0) {
       throw Object.assign(new Error("Pinned issuer registry is empty"), { code: "missing_trusted_issuer" });
+    }
+    if (options.command === "reconcile-open") {
+      const result = await reconcileOpenJournal({
+        file: options.journal,
+        trustedIssuers,
+      });
+      stdout.write(`${JSON.stringify(result)}\n`);
+      return;
     }
     if (options.command === "reconcile-close") {
       const result = await reconcileCloseJournal({
@@ -2073,6 +2478,10 @@ async function main() {
       checkpoint.stage = "execution_lock_acquired";
       await writeReconciliationJournal(checkpoint);
       try {
+        // Exact CLOB recovery requires the accepted order to strictly postdate
+        // the buyer's confirmation second. Waiting here keeps the temporal
+        // boundary deterministic without authorizing any additional action.
+        await waitForStrictlyPostConfirmationSecond(checkpoint.tradeConfirmedAt);
         const reasserted = await commandJson(
           "polymarket-plugin",
           ["switch-mode", "--mode", "deposit-wallet"],
@@ -2185,10 +2594,43 @@ async function main() {
         checkpoint.liveResult = result;
         const data = result?.data || result;
         checkpoint.stage = "live_result_received";
-        checkpoint.orderId = data?.order_id || null;
-        checkpoint.settlementTx = Array.isArray(data?.tx_hashes) ? data.tx_hashes[0] || null : null;
+        checkpoint.orderId = HASH_RE.test(String(data?.order_id || ""))
+          ? String(data.order_id).toLowerCase()
+          : null;
+        checkpoint.settlementTx = Array.isArray(data?.tx_hashes) && data.tx_hashes.length === 1 &&
+          HASH_RE.test(String(data.tx_hashes[0] || ""))
+          ? String(data.tx_hashes[0]).toLowerCase()
+          : null;
         await writeReconciliationJournal(checkpoint);
         return result;
+      } catch (error) {
+        if (closeMode && !executionAttempted) {
+          try {
+            await recoverKnownUnstartedCloseExecution(checkpoint, {
+              journal: journalPath,
+              errorCode: error?.code,
+            });
+          } catch (recoveryError) {
+            error.details = {
+              ...(error?.details && typeof error.details === "object" ? error.details : {}),
+              prelaunchRecoveryError: recoveryError?.code || "prelaunch_recovery_failed",
+            };
+          }
+        } else if (executionAttempted && error?.details && typeof error.details === "object") {
+          const candidate = error.details;
+          const data = candidate?.data || candidate;
+          if (HASH_RE.test(String(data?.order_id || ""))) {
+            checkpoint.liveResult = candidate;
+            checkpoint.orderId = String(data.order_id).toLowerCase();
+            checkpoint.settlementTx = Array.isArray(data?.tx_hashes) && data.tx_hashes.length === 1 &&
+              HASH_RE.test(String(data.tx_hashes[0] || ""))
+              ? String(data.tx_hashes[0]).toLowerCase()
+              : null;
+            checkpoint.stage = "live_result_error_received";
+            await writeReconciliationJournal(checkpoint);
+          }
+        }
+        throw error;
       } finally {
         await settleExecutionLock(checkpoint, {
           liveAttempted: executionAttempted,
@@ -2289,7 +2731,8 @@ if (isMain()) {
   try {
     await main();
   } catch (error) {
-    const stateCommand = process.argv[2] === "reconcile-close" || process.argv[2] === "resume-close";
+    const stateCommand = process.argv[2] === "reconcile-open" ||
+      process.argv[2] === "reconcile-close" || process.argv[2] === "resume-close";
     const persistCheckpoint = !stateCommand && shouldPersistFailureCheckpoint(checkpoint);
     if (persistCheckpoint) {
       checkpoint.reconciliationRequired = Boolean(

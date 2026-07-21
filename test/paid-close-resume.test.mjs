@@ -286,6 +286,38 @@ test("paid CLOSE resume reverifies everything, never pays again, and executes ex
   }
 });
 
+test("paid CLOSE resume retains both locks when settlement shares the confirmation second", async () => {
+  const f = await fixture({
+    adapterOverrides: {
+      validateCloseProof: async () => ({
+        orderId: CLOSE_ORDER,
+        transactionHash: CLOSE_TX,
+        closeProofHash: CLOSE_PROOF,
+        closePassportHash: CLOSE_PASSPORT,
+        settledAt: "1970-01-01T00:17:30.999Z",
+      }),
+    },
+  });
+  try {
+    await assert.rejects(run(f), (error) => error?.code === "settlement_before_confirmation");
+    assert.equal(f.calls.executions, 1);
+    const ambiguous = JSON.parse(await readFile(f.journal, "utf8"));
+    assert.equal(ambiguous.stage, "live_result_received");
+    assert.equal(ambiguous.reconciliationRequired, true);
+    assert.equal(ambiguous.resumeError.code, "settlement_before_confirmation");
+    assert.equal(ambiguous.resumeError.executionAmbiguous, true);
+    assert.equal(ambiguous.replayLockPath, f.replayLockPath);
+    assert.match(ambiguous.executionLockPath, /polymarket-execution\.lock\.json$/);
+    assert.deepEqual((await readdir(f.directory)).sort(), [
+      `close-${ambiguous.replayKey.slice(2)}.lock.json`,
+      "journey.json",
+      "polymarket-execution.lock.json",
+    ]);
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("paid CLOSE resume rejects any non-exact or already-attempted checkpoint before execution", async () => {
   for (const mutateState of [
     (state) => { state.stage = "payment_verified"; },

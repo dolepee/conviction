@@ -194,13 +194,13 @@ The x402 payment confirmation authorizes only the selected Conviction service ch
 
 After a passing helper-validated dry run, show the exact action bounds and require one fresh typed `confirm live mode` for that card. Earlier text and ordinary yes/no replies do not count.
 
-For OPEN/CLOSE, the final result must bind the exact live order ID and settlement transaction produced after that confirmation. Polygon timestamps have one-second resolution, so the enforceable boundary is:
+For OPEN/CLOSE, the final result must bind the exact live order ID and settlement transaction produced after that confirmation. The runtime waits until the next second before the final locked checks and launch. Polygon timestamps have one-second resolution, so the enforceable boundary is:
 
 ```text
-settlement_timestamp_ms >= floor(trade_confirmation_ms / 1000) * 1000
+floor(settlement_timestamp_ms / 1000) > floor(trade_confirmation_ms / 1000)
 ```
 
-Do not describe this as proof of ordering within the same second.
+Same-second evidence fails closed; do not describe it as proof of ordering after confirmation.
 
 For TAKE_PROFIT placement, the authenticated CLOB order's creation time must be strictly later than the confirmation second. The runtime deliberately waits past that second, repeats readiness and dry-run validation, and submits the one signed post-only GTD vector. Its immediate result is `ARMED` and `onChain:false`; do not imply a resting order filled in the same session.
 
@@ -208,7 +208,9 @@ For TAKE_PROFIT placement, the authenticated CLOB order's creation time must be 
 
 Persist a private journal before starting live execution. If the process loses a response after signing/submission, reconcile the recorded order and transaction read-only. Never retry an ambiguous order.
 
-For a CLOSE journal, use `node scripts/buyer-orchestrator.mjs reconcile-close --journal <path> --issuer-registry config/trusted-issuer.production.json`. It performs no payment or trade. It releases a canonical replay lock only for an independently verified settlement or an expired card for which execution never began; otherwise it preserves the lock and reports manual reconciliation required.
+For an OPEN journal, use `node scripts/buyer-orchestrator.mjs reconcile-open --journal <path> --issuer-registry config/trusted-issuer.production.json`. It performs no payment or trade and releases only its owner-verified execution lock after an independently verified settlement or a fresh credential-owner-bound exact CLOB proof that the signed FAK is canonically `CANCELED`/`EXPIRED`, has zero matched shares and no trades, and was created strictly after confirmation inside the card window.
+
+For a CLOSE journal, use `node scripts/buyer-orchestrator.mjs reconcile-close --journal <path> --issuer-registry config/trusted-issuer.production.json`. It performs no payment or trade. A failure known to occur before the live child starts restores the paid `trade_confirmed` checkpoint, releases only the global execution lock, and retains the replay lock; use `resume-close` to reverify and continue that exact paid card. Reconciliation releases owner-verified replay/execution locks only for an independently verified settlement, the same exact terminal-zero CLOB proof for the signed FOK, or an expired card for which execution never began. Otherwise it preserves every lock and reports manual reconciliation required.
 
 For a TAKE_PROFIT journal:
 

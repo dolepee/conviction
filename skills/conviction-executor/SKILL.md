@@ -141,21 +141,21 @@ After valid trade confirmation:
 
 1. Recheck expiry, persisted deposit-wallet identity, and action-specific balance/approval/reservation state.
 2. Repeat the identical validated dry run and validate it again.
-3. For `TAKE_PROFIT`, advance strictly beyond the Polygon/CLOB second containing confirmation, then repeat the readiness and dry-run checks once more so the authenticated order creation time can be proven after consent.
+3. Advance strictly beyond the Polygon/CLOB second containing confirmation. For every action, repeat the readiness and dry-run checks once more so an accepted order or settlement can be proven strictly after consent.
 4. Execute the same argument vector with only `--dry-run` removed.
 5. Let the official plugin obtain the user-held signature and submit the order.
 
 Never retry. For OPEN/CLOSE, if the command errors, is rejected, is unmatched, or lacks exactly one settlement transaction, report that result and stop. `OPEN` may accept a verified `FAK` partial fill inside every bound. `CLOSE` requires the exact `FOK` share quantity or no successful close. For TAKE_PROFIT, require one exact authenticated CLOB order matching the signed vector; return `ARMED`, `onChain:false`, the exact order ID, and the private journal path. Do not require or invent an immediate settlement transaction.
 
-If execution starts but the outcome is ambiguous, persist the private reconciliation journal and perform read-only reconciliation. Never submit a second order to “check” or recover.
+If execution starts but the outcome is ambiguous, persist the private reconciliation journal and perform read-only reconciliation. Never submit a second order to “check” or recover. For OPEN, use `reconcile-open`; it may release only the owner-verified execution lock after an independently verified Polygon settlement or a fresh credential-owner-bound exact CLOB proof of the signed FAK in canonical `CANCELED`/`EXPIRED` state with zero matches and no trades. For CLOSE, a known pre-spawn refusal restores the paid `trade_confirmed` checkpoint while retaining replay protection; continue only with `resume-close`. Otherwise `reconcile-close` requires an independently verified settlement, the same exact terminal-zero proof for the signed FOK, or safe expiry of a never-started card.
 
 ## 7. Verify the Polygon result automatically
 
 Do not ask for another confirmation for read-only verification. Bind verification to the exact live order ID and transaction returned by this same journey, then recompute the proof independently from public Polygon RPC.
 
-For `OPEN`, build the helper-produced receipt request, verify through `/api/receipt`, and validate the returned position proof and position passport.
+For `OPEN`, build the helper-produced receipt request, verify through `/api/receipt`, and validate the returned position proof and position passport. Its settlement block second must be strictly later than the recorded trade-confirmation second.
 
-For `CLOSE`, build the helper-produced receipt request, verify through `/api/close-receipt` or directly with the same public-chain verifier, and validate the close proof and close passport against the exact live receipt request. The verified settlement timestamp must be at or after the Polygon-second containing trade confirmation; Polygon block timestamps cannot distinguish ordering within one second.
+For `CLOSE`, build the helper-produced receipt request, verify through `/api/close-receipt` or directly with the same public-chain verifier, and validate the close proof and close passport against the exact live receipt request. The verified settlement block second must be strictly later than the recorded trade-confirmation second; same-second evidence is rejected because Polygon block timestamps cannot prove ordering within that second.
 
 For `TAKE_PROFIT`, the immediate verification target is the exact authenticated CLOB order and `ARMED` passport. For later `tp-status`, fetch the exact pinned order and all associated authenticated trades, require the post-only order to be the unique maker contribution, then independently rederive every unique Polygon receipt and aggregate partial/full fills against the signed wallet, token, share cap, target, gross, fee, and net bounds. Preserve active/canceled/expired remainder state. Treat included receipts as `PROVISIONAL` until Polygon's finalized head covers every settlement; never present provisional evidence as final. Status is read-only and needs no payment. Never call a zero-match or indeterminate order a fill. Missing/incomplete order, trade, pagination, or chain data stays unresolved.
 

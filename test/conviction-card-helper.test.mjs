@@ -13,6 +13,7 @@ import {
   validateCard,
   validatePluginPreview,
   validateProof,
+  validateTerminalZeroOpenResult,
 } from "../skills/conviction-executor/scripts/conviction-card.mjs";
 import { LIVE_EXPECTED_FILL, LIVE_MARKET_SNAPSHOT, LIVE_RECEIPT } from "./fixtures.mjs";
 
@@ -287,6 +288,34 @@ test("builds only the canonical receipt request from one matched settlement", ()
     () => buildReceiptRequest(SIGNED_SAMPLE, substitutedOutcome, { trustedIssuers: TRUSTED_ISSUERS }),
     (error) => error.code === "plugin_mismatch",
   );
+});
+
+test("authenticates only an exact terminal zero-fill OPEN identity for independent reconciliation", () => {
+  const terminal = liveResult();
+  terminal.data.status = "unmatched";
+  terminal.data.tx_hashes = [];
+  const verified = validateTerminalZeroOpenResult(SIGNED_SAMPLE, terminal, {
+    trustedIssuers: TRUSTED_ISSUERS,
+  });
+  assert.equal(verified.orderId, terminal.data.order_id);
+  assert.equal(verified.status, "unmatched");
+  assert.equal(verified.reportedSharesRaw, "8000000");
+
+  for (const mutate of [
+    (value) => { value.data.status = "live"; },
+    (value) => { value.data.tx_hashes = [`0x${"c".repeat(64)}`]; },
+    (value) => { value.data.token_id = "123"; },
+    (value) => { value.data.order_type = "GTC"; },
+    (value) => { value.data.order_id = "0x1234"; },
+  ]) {
+    const invalid = clone(terminal);
+    mutate(invalid);
+    assert.throws(
+      () => validateTerminalZeroOpenResult(SIGNED_SAMPLE, invalid, {
+        trustedIssuers: TRUSTED_ISSUERS,
+      }),
+    );
+  }
 });
 
 test("validates the canonical post-fill proof against its original card", () => {

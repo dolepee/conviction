@@ -12,6 +12,7 @@ import {
   validateCloseLiveResult,
   validateClosePluginPreview,
   validateCloseProof,
+  validateTerminalZeroCloseResult,
 } from "../skills/conviction-executor/scripts/conviction-exit-card.mjs";
 
 const NOW = Date.parse("2026-07-21T02:00:10.000Z");
@@ -291,6 +292,29 @@ test("rejects resting or ambiguous live results", () => {
     () => validateCloseLiveResult(card, ambiguous, { trustedIssuers }),
     (error) => error.code === "ambiguous_settlement",
   );
+});
+
+test("authenticates only an exact terminal zero-fill CLOSE identity for independent reconciliation", () => {
+  const terminal = liveResult();
+  terminal.data.status = "rejected";
+  terminal.data.tx_hashes = [];
+  terminal.data.usdc_out = 0;
+  const verified = validateTerminalZeroCloseResult(closeCard(), terminal, { trustedIssuers });
+  assert.equal(verified.orderId, terminal.data.order_id);
+  assert.equal(verified.status, "rejected");
+  assert.equal(verified.reportedSharesRaw, "5000000");
+
+  for (const mutate of [
+    (value) => { value.data.status = "live"; },
+    (value) => { value.data.tx_hashes = [`0x${"d".repeat(64)}`]; },
+    (value) => { value.data.usdc_out = 1.3; },
+    (value) => { value.data.side = "BUY"; },
+    (value) => { value.data.order_id = "0x1234"; },
+  ]) {
+    const invalid = clone(terminal);
+    mutate(invalid);
+    assert.throws(() => validateTerminalZeroCloseResult(closeCard(), invalid, { trustedIssuers }));
+  }
 });
 
 test("rejects mutation of the source proof even after recomputing no signature", () => {

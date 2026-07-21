@@ -8,7 +8,11 @@ const BUYER_WALLET = "0x2222222222222222222222222222222222222222";
 const CONDITION = `0x${"ab".repeat(32)}`;
 const TOKEN = "123456789";
 
-function fixture({ mutateValidated, validateCardError } = {}) {
+function fixture({
+  mutateValidated,
+  validateCardError,
+  proofSettledAt = "1970-01-01T00:00:02.000Z",
+} = {}) {
   let clock = 1_000;
   let executes = 0;
   const confirmations = [];
@@ -60,6 +64,7 @@ function fixture({ mutateValidated, validateCardError } = {}) {
       orderId: `0x${"34".repeat(32)}`,
       transactionHash: `0x${"12".repeat(32)}`,
       positionProofHash: `0x${"56".repeat(32)}`,
+      settledAt: proofSettledAt,
     }),
   };
   const confirm = async (kind) => {
@@ -104,6 +109,23 @@ test("open journey keeps payment and trade consent distinct and executes exactly
   assert.ok(result.timings.paidAt < result.timings.confirmedAt);
   assert.ok(result.timings.confirmedAt < result.timings.provedAt);
   assert.equal(result.timings.paymentToProofMs, result.timings.provedAt - result.timings.paidAt);
+});
+
+test("an OPEN proof from the confirmation second is rejected even when otherwise valid", async () => {
+  const f = fixture({ proofSettledAt: "1970-01-01T00:00:01.999Z" });
+  await assert.rejects(
+    runOpenJourney({
+      request,
+      paymentPayer: PAYMENT_PAYER,
+      buyerWallet: BUYER_WALLET,
+      adapters: f.adapters,
+      confirm: f.confirm,
+      now: f.now,
+      trustedIssuers: [],
+    }),
+    (error) => error?.code === "settlement_before_confirmation",
+  );
+  assert.equal(f.executes(), 1);
 });
 
 for (const [name, mutate, code] of [

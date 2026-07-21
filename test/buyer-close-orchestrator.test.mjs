@@ -175,6 +175,12 @@ test("a proof settling before live-trade confirmation is rejected", async () => 
   assert.equal(f.executes(), 1);
 });
 
+test("a CLOSE proof from the confirmation second is rejected", async () => {
+  const f = fixture({ proofSettledAt: "1970-01-01T00:00:01.999Z" });
+  await assert.rejects(run(f), (error) => error instanceof BuyerJourneyError && error.code === "settlement_before_confirmation");
+  assert.equal(f.executes(), 1);
+});
+
 function run(f, overrides = {}) {
   return runCloseJourney({
     request,

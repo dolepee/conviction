@@ -421,6 +421,11 @@ export async function runOpenJourney({
   const receiptRequest = await adapters.buildReceiptRequest(paid.card, liveResult, { trustedIssuers });
   const proofDocument = await adapters.fetchProof(receiptRequest);
   const proof = await adapters.validateProof(paid.card, proofDocument, { trustedIssuers });
+  requireValue(
+    Math.floor(Date.parse(proof.settledAt) / 1_000) > Math.floor(confirmed.at / 1_000),
+    "settlement_before_confirmation",
+    "Verified OPEN settlement does not strictly postdate the buyer's live-trade confirmation second",
+  );
   const proved = mark("position_proof_verified", { transactionHash: proof.transactionHash, positionProofHash: proof.positionProofHash });
 
   return {
@@ -632,9 +637,9 @@ export async function runCloseJourney({
     expectedReceiptRequest: receiptRequest,
   });
   requireValue(
-    Date.parse(proof.settledAt) >= Math.floor(confirmed.at / 1_000) * 1_000,
+    Math.floor(Date.parse(proof.settledAt) / 1_000) > Math.floor(confirmed.at / 1_000),
     "settlement_before_confirmation",
-    "Verified CLOSE settlement predates the buyer's live-trade confirmation",
+    "Verified CLOSE settlement does not strictly postdate the buyer's live-trade confirmation second",
   );
   const proved = mark("close_proof_verified", { transactionHash: proof.transactionHash, closeProofHash: proof.closeProofHash });
 

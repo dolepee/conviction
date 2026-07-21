@@ -47,7 +47,7 @@ The wallet-free economic preview expires 30 seconds after its market snapshot. T
 
 ## OPEN execution
 
-The buyer orchestrator derives an argument vector from canonical `executionCard.argv`, runs the official `polymarket-plugin` dry run, and may execute the identical vector only after a separate, fresh live confirmation. It rechecks deposit-wallet mode, atomic pUSD balance, card expiry, and the venue dry run immediately before signing. FAK fills only at or below `maxPrice` and cancels any remainder. Conviction does not receive the wallet key or Polymarket credentials. V2 signs the order principal, token, shares, and price while the operator applies fees at match time; Conviction reserves the observed fee in the displayed total and verifies it after settlement, but does not mislabel that fee as part of the V2 signature.
+The buyer orchestrator derives an argument vector from canonical `executionCard.argv`, runs the official `polymarket-plugin` dry run, and may execute the identical vector only after a separate, fresh live confirmation. It advances beyond the confirmation second, then rechecks deposit-wallet mode, atomic pUSD balance, card expiry, and the venue dry run immediately before signing. FAK fills only at or below `maxPrice` and cancels any remainder. Conviction does not receive the wallet key or Polymarket credentials. V2 signs the order principal, token, shares, and price while the operator applies fees at match time; Conviction reserves the observed fee in the displayed total and verifies it after settlement, but does not mislabel that fee as part of the V2 signature.
 
 ## OPEN verification request
 
@@ -63,7 +63,9 @@ The buyer orchestrator derives an argument vector from canonical `executionCard.
 
 Conviction recomputes the intent hash, verifies the pinned issuer and settlement time against the signed five-minute window, derives actual principal, venue fee, total debit, and shares from the selected order's Polygon events, verifies the selected YES/NO token mapping, and checks every value stayed within the displayed fee-inclusive budget and maximum price. The response includes deterministic position-proof and signed position-passport hashes.
 
-The issuer signature proves the exact card existed inside its issuance window; the buyer wallet separately signs only the Polymarket order. The final passport binds the signed card to the mined settlement block and verified fill.
+The issuer signature proves the exact card existed inside its issuance window; the buyer wallet separately signs only the Polymarket order. The final passport binds the signed card to the mined settlement block and verified fill. The settlement block second must be strictly later than the recorded trade-confirmation second.
+
+If OPEN submission or proof delivery becomes ambiguous, `buyer-orchestrator.mjs reconcile-open` performs no payment or order. It reverifies the signed card and exact persisted identity, then either independently proves the Polygon settlement or requires a fresh credential-owner-bound exact CLOB snapshot with the signed FAK identity, canonical `CANCELED`/`EXPIRED` status, zero matched shares, no associated trades, and creation strictly after confirmation inside the card window. Only then does it release that journey's owner-verified execution lock; every other state remains locked.
 
 ## CLOSE request
 
@@ -104,11 +106,11 @@ No transaction is signed or broadcast by either CLOSE endpoint. The free preview
 
 ## CLOSE execution and proof
 
-The public agent/CLI repeats the seller balance, standard V2 outcome-token approval, open-order, expiry, and exact plugin dry-run checks before submission. Payment consent and trade consent remain distinct: x402 payment never authorizes a sell. After exactly one fresh live confirmation, it submits the same FOK SELL arguments from the buyer's configured deposit wallet. The order must sell every requested share at or above `minPrice`, or produce no fill.
+The public agent/CLI repeats the seller balance, standard V2 outcome-token approval, open-order, expiry, and exact plugin dry-run checks before submission. Payment consent and trade consent remain distinct: x402 payment never authorizes a sell. After exactly one fresh live confirmation, it waits until the next second, repeats the locked checks, and submits the same FOK SELL arguments from the buyer's configured deposit wallet. The order must sell every requested share at or above `minPrice`, or produce no fill. A verified settlement block second must be strictly later than the confirmation second.
 
 `POST /api/close-receipt` recomputes the exit-intent hash, verifies its issuer and settlement window, and derives the exact outcome-token debit, gross proceeds, venue fee, and net pUSD credit from Polygon logs. It rejects another token, wallet, order, transaction, exchange, share count, price floor, fee bound, or settlement window.
 
-The buyer runtime keys its replay lock to the canonical condition, selected token, seller, source proof, shares, and floor—not to a URL spelling or payment sponsor—and serializes the final deposit-wallet check through submission. An ambiguous CLOSE is never retried. `buyer-orchestrator.mjs reconcile-close` can release the scoped lock only after independently verifying a recorded settlement, or after confirming that execution never began and the signed card has expired; every other state remains locked for manual investigation.
+The buyer runtime keys its replay lock to the canonical condition, selected token, seller, source proof, shares, and floor—not to a URL spelling or payment sponsor—and serializes the final deposit-wallet check through submission. An ambiguous CLOSE is never retried. A known refusal before the live child process starts releases only the owner-verified global execution lock, clears attempt markers, restores `trade_confirmed`, and retains the paid card and replay lock; only `resume-close` may continue that exact journey without another payment. `reconcile-close` can release its owner-verified scoped locks only after independently verifying a recorded settlement, proving a canonical terminal zero-fill exact FOK through a fresh credential-owner-bound CLOB snapshot, or confirming that execution never began and the signed card expired. Every other state remains locked for manual investigation.
 
 The OPEN source is a provenance link, not a consumable tax lot or one-time nullifier. Reusing a legacy source proof after shares have left and later returned to the wallet can still describe lineage; it does not prove those later tokens are the identical economic lot. Fresh seller-owned balance is the authority to sell for either Position Manager action.
 
