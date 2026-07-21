@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Conviction — Thesis-bound prediction execution</title>
+    <meta
+      name="description"
+      content="Choose YES or NO, see the exact exposure, sign a bounded prediction-market order from your own wallet, and prove the fill obeyed every limit."
+    />
+    <meta name="theme-color" content="#f6f0df" />
+    <meta name="color-scheme" content="light" />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <link rel="canonical" href="https://conviction-bay.vercel.app/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://conviction-bay.vercel.app/" />
+    <meta property="og:title" content="Conviction — Choose a side. Bound the trade. Prove the fill." />
+    <meta
+      property="og:description"
+      content="Thesis-bound YES or NO execution with objective exposure checks and a verifiable Polygon receipt."
+    />
+    <meta property="og:image" content="https://conviction-bay.vercel.app/assets/conviction-og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="675" />
+    <meta property="og:image:alt" content="Conviction execution card showing a bounded Polymarket YES fill." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Conviction — Choose a side. Bound the trade. Prove the fill." />
+    <meta
+      name="twitter:description"
+      content="A non-custodial execution firewall for bounded prediction-market positions."
+    />
+    <meta name="twitter:image" content="https://conviction-bay.vercel.app/assets/conviction-og.png" />
+    <meta name="twitter:image:alt" content="Conviction execution card showing a bounded Polymarket YES fill." />
+    <link rel="icon" href="/assets/conviction-logo.svg" type="image/svg+xml" />
+    <link rel="icon" href="/assets/conviction-icon-32.png" type="image/png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" sizes="180x180" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" type="module"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Conviction home">
+        <img src="/assets/conviction-logo.svg" alt="" width="38" height="38" />
+        <span>Conviction</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#proof">Proof</a>
+        <a href="#compile">Compile</a>
+        <a href="#safety">Safety</a>
+      </nav>
+      <span class="network-pill"><i aria-hidden="true"></i> Polygon live</span>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">Choose a side. Bound the trade. Prove the fill.</p>
+          <h1 id="hero-title">Turn conviction into a <em>bounded position.</em></h1>
+          <p class="lede">
+            Choose YES or NO, name the most you will risk and the highest price you will pay.
+            Conviction checks the exposure, your Agentic Wallet signs, and Polygon proves every bound held.
+          </p>
+          <div class="hero-actions">
+            <a
+              class="button button-primary"
+              href="https://polygonscan.com/tx/0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a"
+              target="_blank"
+              rel="noreferrer"
+            >Open verified fill <span aria-hidden="true">↗</span></a>
+            <a class="button button-quiet" href="#compile">Build an execution card</a>
+          </div>
+          <ul class="trust-strip" aria-label="Product guarantees">
+            <li>No custody</li>
+            <li>Hard price cap</li>
+            <li>Outcome-token binding</li>
+          </ul>
+        </div>
+
+        <article class="fill-ticket" aria-labelledby="ticket-title">
+          <div class="ticket-topline">
+            <span>LIVE EXECUTION / 001</span>
+            <span class="verified-mark">Verified</span>
+          </div>
+          <h2 id="ticket-title">Will the U.S. invade Iran before 2027?</h2>
+          <div class="ticket-direction">
+            <span class="yes-orb">YES</span>
+            <div>
+              <strong>5.000000 shares</strong>
+              <small>matched on Polymarket V2</small>
+            </div>
+          </div>
+          <dl class="ticket-grid">
+            <div><dt>Spend</dt><dd>1.35 pUSD</dd></div>
+            <div><dt>Max price</dt><dd>27¢</dd></div>
+            <div><dt>Order</dt><dd>FAK</dd></div>
+            <div><dt>Block</dt><dd>90,598,011</dd></div>
+          </dl>
+          <div class="ticket-proof">
+            <span>Settlement</span>
+            <code>0x25d2…fb8a</code>
+            <span aria-label="All receipt checks passed">5/5 checks</span>
+          </div>
+        </article>
+      </section>
+
+      <section class="loop" aria-labelledby="loop-title">
+        <div class="section-heading">
+          <p class="eyebrow">The product loop</p>
+          <h2 id="loop-title">From “I believe” to “it filled.”</h2>
+        </div>
+        <ol class="loop-steps">
+          <li><span>01</span><h3>Choose the side</h3><p>Bring your thesis and select YES or NO. Conviction does not invent the bet.</p></li>
+          <li><span>02</span><h3>See the exposure</h3><p>Fee-inclusive loss, payout at the cap, price, spread, depth, and quote expiry.</p></li>
+          <li><span>03</span><h3>Sign in your wallet</h3><p>Your Agentic Wallet keeps the key and confirms the write.</p></li>
+          <li><span>04</span><h3>Verify the fill</h3><p>Payment, token transfer, order ID, exchange, and chain all bind.</p></li>
+        </ol>
+      </section>
+
+      <section class="proof-section" id="proof" aria-labelledby="proof-title">
+        <div class="proof-intro">
+          <p class="eyebrow">Not a screenshot</p>
+          <h2 id="proof-title">The receipt is the product.</h2>
+          <p>
+            Conviction re-reads Polygon instead of trusting a success message. Substituting the wallet,
+            market token, amount, shares, exchange, order ID, or chain makes verification fail closed.
+          </p>
+          <a
+            class="text-link"
+            href="https://polygonscan.com/tx/0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a"
+            target="_blank"
+            rel="noreferrer"
+          >Inspect block 90,598,011 <span aria-hidden="true">↗</span></a>
+        </div>
+        <div class="receipt-ledger" role="group" aria-label="Verified receipt checks">
+          <div><span>01</span><strong>Transaction succeeded</strong><b>PASS</b></div>
+          <div><span>02</span><strong>Standard V2 exchange</strong><b>PASS</b></div>
+          <div><span>03</span><strong>Exact 1.35 pUSD paid</strong><b>PASS</b></div>
+          <div><span>04</span><strong>Exact 5 YES received</strong><b>PASS</b></div>
+          <div><span>05</span><strong>Order ID bound</strong><b>PASS</b></div>
+          <footer>
+            <span>Receipt hash</span>
+            <code>0x1746d89ea5c08c5edc214fcca3baf5b3bc6ce7b4ea9d02427dd88035cd4373b3</code>
+          </footer>
+        </div>
+      </section>
+
+      <section class="compiler-section" id="compile" aria-labelledby="compiler-title">
+        <div class="section-heading">
+          <p class="eyebrow">Bounded intent compiler</p>
+          <h2 id="compiler-title">See exactly what can happen before money moves.</h2>
+          <p>Conviction resolves the selected token and computes the exposure server-side. It never signs or broadcasts from the browser.</p>
+        </div>
+        <div class="compiler-grid">
+          <form id="intent-form" class="intent-form">
+            <label>
+              Polymarket market
+              <input
+                id="market-input"
+                name="market"
+                value="will-the-us-invade-iran-before-2027"
+                autocomplete="off"
+                required
+              />
+            </label>
+            <fieldset class="outcome-selector">
+              <legend>Choose the outcome token</legend>
+              <label><input id="outcome-yes" type="radio" name="outcome" value="yes" checked /><span>YES</span></label>
+              <label><input id="outcome-no" type="radio" name="outcome" value="no" /><span>NO</span></label>
+            </fieldset>
+            <div class="field-row">
+              <label>Total risk budget, fees included (pUSD)<input id="spend-input" name="spend" value="1.35" inputmode="decimal" required /></label>
+              <label>Maximum price<input id="max-price-input" name="maxPrice" value="0.27" inputmode="decimal" required /></label>
+            </div>
+            <label>
+              Buyer deposit wallet
+              <input
+                id="wallet-input"
+                name="wallet"
+                value="0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe"
+                autocomplete="off"
+                spellcheck="false"
+                required
+              />
+            </label>
+            <label>
+              Your rationale
+              <textarea id="rationale-input" name="rationale" rows="3" minlength="20" maxlength="500" required>I expect this event to resolve YES and will not pay above 27 cents.</textarea>
+            </label>
+            <button class="button button-primary" type="submit">Compile bounded intent</button>
+          </form>
+          <section class="compiled-card" aria-labelledby="compiled-title">
+            <div class="compiled-empty" id="compiled-empty">
+              <span aria-hidden="true">⌁</span>
+              <h3 id="compiled-title">Your execution card appears here.</h3>
+              <p>Selected token, live ask, maximum loss, full-fill payout, expiry, and intent hash.</p>
+            </div>
+            <div id="compiled-result" hidden></div>
+            <p class="form-status" id="form-status" role="status" aria-live="polite" aria-atomic="true"></p>
+          </section>
+        </div>
+      </section>
+
+      <section class="safety-section" id="safety" aria-labelledby="safety-title">
+        <div>
+          <p class="eyebrow">Hard boundary</p>
+          <h2 id="safety-title">Conviction executes intent. It does not manufacture it.</h2>
+        </div>
+        <div class="safety-copy">
+          <p>
+            No signals, no hidden sizing, no custody, no leverage. You choose the market, side, and economic bound;
+            the official Polymarket plugin and your Agentic Wallet handle signing.
+          </p>
+          <p>
+            New Polymarket deposit wallets use max token allowances and blanket outcome-token approvals to
+            official exchange contracts. Conviction discloses that setup and recommends a dedicated low-balance wallet.
+          </p>
+          <p>
+            Polymarket V2 applies venue fees at match time rather than inside the signed order. Conviction therefore
+            derives a conservative fee reserve, requires the dedicated wallet balance to cap exposure, and verifies
+            principal, fee, and total debit independently after settlement.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="brand"><img src="/assets/conviction-logo.svg" alt="" width="32" height="32" /><span>Conviction</span></div>
+      <p>Built for OKX.AI Genesis · controlled house proof, not external traction.</p>
+      <p>© <span id="year">2026</span> qdee</p>
+    </footer>
+  </body>
+</html>

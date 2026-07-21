@@ -1,0 +1,27 @@
+{
+  "name": "conviction",
+  "version": "0.3.2",
+  "private": true,
+  "type": "module",
+  "description": "Non-custodial bounded prediction-market execution for OKX.AI",
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "node --check src/*.mjs && node --check scripts/*.mjs && node --check api/*.js && node --check test/*.test.mjs && python3 -m py_compile scripts/conviction_fast_responder.py",
+    "agent:verify": "python3 scripts/conviction_fast_responder.py --self-test",
+    "site:verify": "node scripts/verify-site.mjs",
+    "gate": "npm run typecheck && npm test && npm run site:verify && npm run agent:verify",
+    "payment:preflight": "node scripts/check-payment-credentials.mjs",
+    "service:verify": "node scripts/verify-paid-service.mjs",
+    "intent:live": "node scripts/compile-live-intent.mjs",
+    "receipt:verify": "node scripts/verify-live-receipt.mjs"
+  },
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "@okxweb3/x402-core": "0.1.0",
+    "@okxweb3/x402-evm": "0.2.1",
+    "@okxweb3/x402-express": "0.1.1",
+    "express": "5.2.1"
+  }
+}
