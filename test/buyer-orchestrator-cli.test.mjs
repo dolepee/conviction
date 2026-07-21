@@ -18,6 +18,7 @@ import {
   requireDistinctPaymentPayer,
   requirePinnedCloseExecutionReadiness,
   settleExecutionLock,
+  summarizeOpenSellReservations,
   validatePaymentChallenge,
   writeReconciliationJournal,
 } from "../scripts/buyer-orchestrator.mjs";
@@ -289,7 +290,7 @@ test("buyer CLI normalizes native OPEN output and the historical proof artifact"
   );
 });
 
-test("buyer CLI fail-closes on every open order, independent of side or token", () => {
+test("buyer CLI normalizes only active open orders", () => {
   assert.deepEqual(normalizeOpenOrders({ ok: true, data: [] }), []);
   assert.equal(normalizeOpenOrders({
     ok: true,
@@ -303,6 +304,44 @@ test("buyer CLI fail-closes on every open order, independent of side or token", 
   }).length, 2);
   assert.throws(
     () => normalizeOpenOrders({ ok: true, data: { count: 0 } }),
+    (error) => error?.code === "invalid_tool_output",
+  );
+});
+
+test("buyer CLI reserves only unmatched SELL shares for the selected outcome token", () => {
+  const orders = {
+    ok: true,
+    data: {
+      orders: [
+        { status: "OPEN", side: "BUY", token_id: "1", original_size: "99", size_matched: "0" },
+        { status: "LIVE", side: "SELL", token_id: "2", original_size: "8", size_matched: "0" },
+        { status: "OPEN", side: "sell", token_id: "1", original_size: "5", size_matched: "1.25" },
+        { status: "MATCHED", side: "SELL", token_id: "1", original_size: "4", size_matched: "4" },
+      ],
+    },
+  };
+
+  assert.deepEqual(summarizeOpenSellReservations(orders, "1"), {
+    openSellOrderCount: 1,
+    reservedSharesRaw: "3750000",
+  });
+  assert.deepEqual(summarizeOpenSellReservations(orders, "3"), {
+    openSellOrderCount: 0,
+    reservedSharesRaw: "0",
+  });
+});
+
+test("buyer CLI fail-closes on malformed selected-token SELL reservations", () => {
+  assert.throws(
+    () => summarizeOpenSellReservations({
+      orders: [{ status: "OPEN", side: "SELL", token_id: "1", original_size: null, size_matched: "0" }],
+    }, "1"),
+    (error) => error?.code === "invalid_tool_output",
+  );
+  assert.throws(
+    () => summarizeOpenSellReservations({
+      orders: [{ status: "OPEN", side: "SELL", token_id: "1", original_size: "1", size_matched: "2" }],
+    }, "1"),
     (error) => error?.code === "invalid_tool_output",
   );
 });
@@ -449,7 +488,7 @@ test("locked CLOSE execution rechecks the active wallet, balance, approval, and 
     outcomeBalanceRaw: "5000000",
     approvedForExchange: true,
     reservedSharesRaw: "0",
-    openOrderCount: 0,
+    openSellOrderCount: 0,
   };
   assert.doesNotThrow(() => requirePinnedCloseExecutionReadiness(ready, {
     wallet,
@@ -465,7 +504,7 @@ test("locked CLOSE execution rechecks the active wallet, balance, approval, and 
     (error) => error?.code === "trading_wallet_mismatch",
   );
   assert.throws(
-    () => requirePinnedCloseExecutionReadiness({ ...ready, openOrderCount: 1 }, {
+    () => requirePinnedCloseExecutionReadiness({ ...ready, openSellOrderCount: 1 }, {
       wallet,
       tokenId: "123",
       sharesRaw: 5_000_000n,

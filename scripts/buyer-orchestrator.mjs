@@ -318,6 +318,41 @@ export function normalizeOpenOrders(input) {
   });
 }
 
+export function summarizeOpenSellReservations(input, outcomeTokenId) {
+  const tokenId = String(outcomeTokenId || "");
+  if (!/^\d+$/.test(tokenId)) {
+    throw Object.assign(new Error("Selected outcome token ID is invalid"), {
+      code: "invalid_tool_output",
+    });
+  }
+
+  const matching = normalizeOpenOrders(input).filter((order) => {
+    const side = String(order?.side || "").toUpperCase();
+    const orderTokenId = String(order?.token_id ?? order?.asset_id ?? "");
+    return side === "SELL" && orderTokenId === tokenId;
+  });
+
+  let reservedSharesRaw = 0n;
+  for (const order of matching) {
+    try {
+      const originalRaw = parseDecimal(order?.original_size, 6, "open SELL original size");
+      const matchedRaw = parseDecimal(order?.size_matched ?? "0", 6, "open SELL matched size");
+      if (matchedRaw > originalRaw) throw new Error("matched size exceeds original size");
+      reservedSharesRaw += originalRaw - matchedRaw;
+    } catch (error) {
+      throw Object.assign(new Error("Polymarket returned an invalid matching open SELL order"), {
+        code: "invalid_tool_output",
+        cause: error,
+      });
+    }
+  }
+
+  return Object.freeze({
+    openSellOrderCount: matching.length,
+    reservedSharesRaw: reservedSharesRaw.toString(),
+  });
+}
+
 export function closeReplayKey({ request, sellerWallet }) {
   const sourceIntent = asObject(request?.sourcePosition?.intent);
   const conditionId = String(sourceIntent?.market?.conditionId || "").toLowerCase();
@@ -453,7 +488,7 @@ export function requirePinnedCloseExecutionReadiness(readiness, { wallet, tokenI
   if (BigInt(readiness?.outcomeBalanceRaw ?? -1) < sharesRaw) {
     throw Object.assign(new Error("Final outcome-token balance is below the exact CLOSE shares"), { code: "insufficient_position" });
   }
-  if (BigInt(readiness?.reservedSharesRaw ?? -1) !== 0n || Number(readiness?.openOrderCount ?? -1) !== 0) {
+  if (BigInt(readiness?.reservedSharesRaw ?? -1) !== 0n || Number(readiness?.openSellOrderCount ?? -1) !== 0) {
     throw Object.assign(new Error("An open order appeared before CLOSE submission"), { code: "position_reserved" });
   }
 }
@@ -846,7 +881,7 @@ async function main() {
             `  Post-settlement net verification floor: ${b.minimumNetProceedsRaw} atomic pUSD`,
             "  Fee/net note: V2 does not sign the operator fee; these are detected after settlement, not preventive controls.",
             `  Current position balance: ${latestCloseReadiness?.outcomeBalanceRaw || "unknown"} atomic shares`,
-            `  Open-order reservations: ${latestCloseReadiness?.openOrderCount ?? "unknown"}`,
+            `  Matching open SELL reservations: ${latestCloseReadiness?.openSellOrderCount ?? "unknown"}`,
             `  Seller wallet: ${b.wallet}`,
             `  Source OPEN intent: ${b.sourceIntentHash}`,
             `  Source position proof: ${b.sourcePositionProofHash}`,
@@ -943,11 +978,12 @@ async function main() {
         fetchPositionSnapshot(tradingWallet, outcomeTokenId),
         commandJson(
           "polymarket-plugin",
-          ["orders", "--state", "OPEN", "--limit", "100"],
+          ["orders", "--state", "OPEN"],
           "Polymarket open-orders check",
         ),
       ]);
       const openOrders = normalizeOpenOrders(ordersResult);
+      const reservations = summarizeOpenSellReservations(openOrders, position.outcomeTokenId);
       latestCloseReadiness = {
         ...readiness,
         outcomeTokenId: position.outcomeTokenId,
@@ -955,9 +991,9 @@ async function main() {
         positionBlockNumber: position.blockNumber,
         positionBlockHash: position.blockHash,
         approvedForExchange: position.approvedForExchange,
-        reservedSharesRaw: "0",
-        openSellOrderCount: openOrders.length,
-        openOrderCount: openOrders.length,
+        reservedSharesRaw: reservations.reservedSharesRaw,
+        openSellOrderCount: reservations.openSellOrderCount,
+        totalOpenOrderCount: openOrders.length,
       };
       return latestCloseReadiness;
     },
