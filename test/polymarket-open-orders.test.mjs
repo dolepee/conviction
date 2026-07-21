@@ -205,6 +205,23 @@ test("exact-order client authenticates one canonical order without returning cre
   assert.equal(JSON.stringify(result).includes(CREDS.passphrase), false);
 });
 
+test("exact-order client canonicalizes a market-resolved cancellation", async () => {
+  const result = await fetchExactOrder({
+    signerAddress: SIGNER,
+    depositWallet: DEPOSIT,
+    orderId: ORDER_ID,
+    outcomeTokenId: TOKEN,
+    credentials: CREDS,
+    now: () => 1_800_000_000_000,
+    fetchImpl: async () => response(exactOrder({
+      status: "ORDER_STATUS_CANCELED_MARKET_RESOLVED",
+    })),
+  });
+
+  assert.equal(result.order.status, "CANCELED");
+  assert.equal(result.order.sizeMatched, "0");
+});
+
 test("exact-order client fails closed on missing or substituted identity", async () => {
   await assert.rejects(
     fetchExactOrder({
