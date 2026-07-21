@@ -8,10 +8,12 @@ import {
   claimCloseReplayLock,
   claimExecutionLock,
   closeReplayKey,
+  fetchEip3009AuthorizationState,
   normalizeOpenOrders,
   normalizeSourcePosition,
   parseArgs,
   parseJsonOutput,
+  paymentAuthorizationMetadata,
   paymentTransaction,
   reconcileCloseJournal,
   normalizePluginReadiness,
@@ -125,6 +127,95 @@ test("JSON tool output and payment transaction parsing fail closed", () => {
   assert.throws(() => paymentTransaction({ transaction: "0x1234" }), /no settlement transaction/);
 });
 
+test("buyer CLI records only pinned non-secret EIP-3009 authorization metadata", () => {
+  const payer = "0x1111111111111111111111111111111111111111";
+  const nonce = `0x${"ab".repeat(32)}`;
+  const encoded = Buffer.from(JSON.stringify({
+    x402Version: 2,
+    accepted: {
+      scheme: "exact",
+      network: SERVICE_NETWORK,
+      asset: SERVICE_ASSET,
+      amount: MANAGE_SERVICE_PRICE_ATOMIC,
+      payTo: SERVICE_PAYEE,
+      maxTimeoutSeconds: 300,
+      extra: { name: "USD₮0", version: "1" },
+    },
+    payload: {
+      authorization: {
+        from: payer,
+        to: SERVICE_PAYEE,
+        value: MANAGE_SERVICE_PRICE_ATOMIC,
+        validAfter: "100",
+        validBefore: "400",
+        nonce,
+      },
+      signature: `0x${"cd".repeat(65)}`,
+    },
+  })).toString("base64");
+  const metadata = paymentAuthorizationMetadata(encoded, {
+    paymentPayer: payer,
+    service: POSITION_MANAGER_SERVICE,
+    now: 105_000,
+  });
+  assert.deepEqual(metadata, {
+    version: "conviction-x402-authorization-v1",
+    scheme: "exact-eip3009",
+    network: SERVICE_NETWORK,
+    asset: SERVICE_ASSET,
+    from: payer,
+    to: SERVICE_PAYEE,
+    value: MANAGE_SERVICE_PRICE_ATOMIC,
+    validAfter: "100",
+    validBefore: "400",
+    nonce,
+  });
+  assert.equal("signature" in metadata, false);
+  assert.throws(
+    () => paymentAuthorizationMetadata(encoded, {
+      paymentPayer: "0x2222222222222222222222222222222222222222",
+      service: POSITION_MANAGER_SERVICE,
+      now: 105_000,
+    }),
+    (error) => error?.code === "payment_authorization_mismatch",
+  );
+  const longLived = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+  longLived.payload.authorization.validBefore = "500";
+  assert.throws(
+    () => paymentAuthorizationMetadata(Buffer.from(JSON.stringify(longLived)).toString("base64"), {
+      paymentPayer: payer,
+      service: POSITION_MANAGER_SERVICE,
+      now: 105_000,
+    }),
+    (error) => error?.code === "payment_authorization_mismatch",
+  );
+});
+
+test("authorization-state recovery reads the canonical finalized X Layer block", async () => {
+  const calls = [];
+  const blockHash = `0x${"12".repeat(32)}`;
+  const fetchImpl = async (_url, options) => {
+    const request = JSON.parse(options.body);
+    calls.push(request);
+    const result = request.method === "eth_chainId"
+      ? "0xc4"
+      : request.method === "eth_getBlockByNumber"
+        ? { number: "0x10", timestamp: "0x20", hash: blockHash }
+        : `0x${"0".repeat(64)}`;
+    return { ok: true, async json() { return { jsonrpc: "2.0", id: request.id, result }; } };
+  };
+  const result = await fetchEip3009AuthorizationState({
+    asset: SERVICE_ASSET,
+    from: "0x1111111111111111111111111111111111111111",
+    nonce: `0x${"ab".repeat(32)}`,
+  }, { fetchImpl, rpcUrl: "https://xlayer.example.invalid" });
+  assert.equal(result.used, false);
+  assert.equal(result.blockHash, blockHash);
+  assert.deepEqual(calls.map((call) => call.method), ["eth_chainId", "eth_getBlockByNumber", "eth_call"]);
+  assert.deepEqual(calls[1].params, ["finalized", false]);
+  assert.deepEqual(calls[2].params[1], { blockHash, requireCanonical: true });
+});
+
 test("buyer CLI accepts only the exact pinned x402 challenge", () => {
   const challenge = {
     x402Version: 2,
@@ -135,6 +226,8 @@ test("buyer CLI accepts only the exact pinned x402 challenge", () => {
       asset: SERVICE_ASSET,
       payTo: SERVICE_PAYEE,
       amount: SERVICE_PRICE_ATOMIC,
+      maxTimeoutSeconds: 300,
+      extra: { name: "USD₮0", version: "1" },
     }],
   };
 
@@ -145,6 +238,8 @@ test("buyer CLI accepts only the exact pinned x402 challenge", () => {
     { accepts: [{ ...challenge.accepts[0], amount: "50001" }] },
     { accepts: [{ ...challenge.accepts[0], network: "eip155:137" }] },
     { accepts: [{ ...challenge.accepts[0], payTo: "0x1111111111111111111111111111111111111111" }] },
+    { accepts: [{ ...challenge.accepts[0], maxTimeoutSeconds: 600 }] },
+    { accepts: [{ ...challenge.accepts[0], extra: { ...challenge.accepts[0].extra, assetTransferMethod: "permit2" } }] },
   ]) {
     assert.throws(
       () => validatePaymentChallenge({ ...challenge, ...mutation }),
@@ -163,6 +258,8 @@ test("buyer CLI pins the position manager to /api/manage and 0.10 USD₮0", () =
       asset: SERVICE_ASSET,
       payTo: SERVICE_PAYEE,
       amount: MANAGE_SERVICE_PRICE_ATOMIC,
+      maxTimeoutSeconds: 300,
+      extra: { name: "USD₮0", version: "1" },
     }],
   };
   assert.equal(
@@ -537,6 +634,7 @@ test("CLOSE reconciliation releases only an expired unexecuted card's scoped loc
   const journal = join(directory, "journey.json");
   const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
   const executionLock = join(directory, "polymarket-execution.lock.json");
+  const replayKey = `0x${"a".repeat(64)}`;
   try {
     const state = {
       mode: "close",
@@ -544,13 +642,21 @@ test("CLOSE reconciliation releases only an expired unexecuted card's scoped loc
       reconciliationRequired: true,
       paidCard: { fixture: true },
       executionArgvHash: null,
+      replayKey,
       replayLockPath: replayLock,
       executionLockPath: executionLock,
     };
     await Promise.all([
       writeFile(journal, JSON.stringify(state)),
-      writeFile(replayLock, "{}"),
-      writeFile(executionLock, "{}"),
+      writeFile(replayLock, JSON.stringify({
+        version: "conviction-close-replay-lock-v1",
+        replayKey,
+        journalPath: journal,
+      })),
+      writeFile(executionLock, JSON.stringify({
+        version: "conviction-polymarket-execution-lock-v1",
+        journalPath: journal,
+      })),
     ]);
     const result = await reconcileCloseJournal({
       file: journal,
@@ -565,6 +671,189 @@ test("CLOSE reconciliation releases only an expired unexecuted card's scoped loc
     const updated = JSON.parse(await readFile(journal, "utf8"));
     assert.equal(updated.replayLockPath, null);
     assert.equal(updated.executionLockPath, null);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function rejectedPaymentState({ replayLock, validBefore = "10", stage = "paid_request_rejected_pre_settlement" }) {
+  const replayKey = `0x${"a".repeat(64)}`;
+  return {
+    mode: "close",
+    stage,
+    reconciliationRequired: true,
+    paymentPayer: "0x1111111111111111111111111111111111111111",
+    paymentTx: null,
+    paidCard: null,
+    orderId: null,
+    settlementTx: null,
+    tradeConfirmedAt: null,
+    liveResult: null,
+    executionArgv: null,
+    executionArgvHash: null,
+    replayKey,
+    replayLockPath: replayLock,
+    executionLockPath: null,
+    paidServiceResponse: stage === "payment_authorization_created"
+      ? null
+      : { status: stage === "paid_request_rejected_pre_settlement" ? 422 : 200, paymentResponsePresent: false },
+    paymentAuthorization: {
+      version: "conviction-x402-authorization-v1",
+      scheme: "exact-eip3009",
+      network: SERVICE_NETWORK,
+      asset: SERVICE_ASSET,
+      from: "0x1111111111111111111111111111111111111111",
+      to: SERVICE_PAYEE,
+      value: MANAGE_SERVICE_PRICE_ATOMIC,
+      validAfter: "0",
+      validBefore,
+      nonce: `0x${"ab".repeat(32)}`,
+    },
+  };
+}
+
+function replayLockDocument(journal) {
+  return JSON.stringify({
+    version: "conviction-close-replay-lock-v1",
+    replayKey: `0x${"a".repeat(64)}`,
+    journalPath: journal,
+  });
+}
+
+test("CLOSE reconciliation retains a rejected payment lock until the authorization expires on chain", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-reconcile-auth-wait-test-"));
+  const journal = join(directory, "journey.json");
+  const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
+  try {
+    await Promise.all([
+      writeFile(journal, JSON.stringify(rejectedPaymentState({ replayLock, validBefore: "10" }))),
+      writeFile(replayLock, replayLockDocument(journal)),
+    ]);
+    let stateReads = 0;
+    const result = await reconcileCloseJournal({
+      file: journal,
+      trustedIssuers: new Map(),
+      now: 9_000,
+      stateDirectory: directory,
+      async authorizationStateImpl() { stateReads += 1; return { used: false, blockTimestamp: "11" }; },
+    });
+    assert.equal(result.status, "waiting_for_authorization_expiry");
+    assert.equal(result.reconciliationRequired, true);
+    assert.equal(stateReads, 0);
+    assert.deepEqual((await readdir(directory)).sort(), [
+      `close-${"a".repeat(64)}.lock.json`,
+      "journey.json",
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CLOSE reconciliation releases an expired rejected authorization only when on-chain state is unused", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-reconcile-auth-unused-test-"));
+  const journal = join(directory, "journey.json");
+  const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
+  try {
+    await Promise.all([
+      writeFile(journal, JSON.stringify(rejectedPaymentState({ replayLock, validBefore: "1" }))),
+      writeFile(replayLock, replayLockDocument(journal)),
+    ]);
+    const result = await reconcileCloseJournal({
+      file: journal,
+      trustedIssuers: new Map(),
+      now: 2_000,
+      stateDirectory: directory,
+      async authorizationStateImpl() { return { used: false, blockTimestamp: "2" }; },
+    });
+    assert.equal(result.status, "expired_unsettled_authorization_reconciled");
+    assert.equal(result.reconciliationRequired, false);
+    assert.deepEqual(await readdir(directory), ["journey.json"]);
+    const updated = JSON.parse(await readFile(journal, "utf8"));
+    assert.equal(updated.replayLockPath, null);
+    assert.equal(updated.reconciliationReason, "expired_unsettled_authorization");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CLOSE reconciliation retains the lock when a rejected authorization was consumed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-reconcile-auth-used-test-"));
+  const journal = join(directory, "journey.json");
+  const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
+  try {
+    await Promise.all([
+      writeFile(journal, JSON.stringify(rejectedPaymentState({ replayLock, validBefore: "1" }))),
+      writeFile(replayLock, replayLockDocument(journal)),
+    ]);
+    const result = await reconcileCloseJournal({
+      file: journal,
+      trustedIssuers: new Map(),
+      now: 2_000,
+      stateDirectory: directory,
+      async authorizationStateImpl() { return { used: true, blockTimestamp: "2" }; },
+    });
+    assert.equal(result.status, "manual_reconciliation_required");
+    assert.equal(result.reason, "payment_authorization_consumed_or_ambiguous");
+    assert.equal(result.reconciliationRequired, true);
+    assert.equal((await readdir(directory)).length, 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CLOSE reconciliation safely recovers timeout and ambiguous-response stages after finalized expiry", async () => {
+  for (const stage of ["payment_authorization_created", "paid_request_settlement_ambiguous"]) {
+    const directory = await mkdtemp(join(tmpdir(), `conviction-reconcile-${stage}-test-`));
+    const journal = join(directory, "journey.json");
+    const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
+    try {
+      await Promise.all([
+        writeFile(journal, JSON.stringify(rejectedPaymentState({ replayLock, validBefore: "1", stage }))),
+        writeFile(replayLock, replayLockDocument(journal)),
+      ]);
+      const result = await reconcileCloseJournal({
+        file: journal,
+        trustedIssuers: new Map(),
+        now: 2_000,
+        stateDirectory: directory,
+        async authorizationStateImpl() {
+          return { used: false, blockNumber: "10", blockHash: `0x${"12".repeat(32)}`, blockTimestamp: "2" };
+        },
+      });
+      assert.equal(result.status, "expired_unsettled_authorization_reconciled");
+      assert.equal(result.reconciliationRequired, false);
+      assert.deepEqual(await readdir(directory), ["journey.json"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("CLOSE reconciliation never releases a replay lock owned by another journal", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-reconcile-wrong-owner-test-"));
+  const journal = join(directory, "journey.json");
+  const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
+  try {
+    await Promise.all([
+      writeFile(journal, JSON.stringify(rejectedPaymentState({ replayLock, validBefore: "1" }))),
+      writeFile(replayLock, replayLockDocument(join(directory, "another-journey.json"))),
+    ]);
+    await assert.rejects(
+      reconcileCloseJournal({
+        file: journal,
+        trustedIssuers: new Map(),
+        now: 2_000,
+        stateDirectory: directory,
+        async authorizationStateImpl() {
+          return { used: false, blockNumber: "10", blockHash: `0x${"12".repeat(32)}`, blockTimestamp: "2" };
+        },
+      }),
+      (error) => error?.code === "lock_ownership_mismatch",
+    );
+    assert.deepEqual((await readdir(directory)).sort(), [
+      `close-${"a".repeat(64)}.lock.json`,
+      "journey.json",
+    ]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

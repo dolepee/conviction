@@ -10,7 +10,9 @@ import {
 import {
   MANAGE_SERVICE_PRICE_ATOMIC,
   MANAGE_SERVICE_RESOURCE,
+  SERVICE_ASSET,
   SERVICE_NETWORK,
+  SERVICE_PAYEE,
 } from "../src/service-payment.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
@@ -67,6 +69,66 @@ function position() {
   };
 }
 
+function managerPaymentRequirements() {
+  return {
+    scheme: "exact",
+    network: SERVICE_NETWORK,
+    amount: MANAGE_SERVICE_PRICE_ATOMIC,
+    asset: SERVICE_ASSET,
+    payTo: SERVICE_PAYEE,
+    maxTimeoutSeconds: 300,
+    extra: { name: "USD₮0", version: "1" },
+  };
+}
+
+function paidManagerHeader() {
+  return Buffer.from(JSON.stringify({
+    x402Version: 2,
+    resource: { url: MANAGE_SERVICE_RESOURCE, mimeType: "application/json" },
+    accepted: managerPaymentRequirements(),
+    payload: { testAuthorization: "signed-manager-test-value" },
+  })).toString("base64");
+}
+
+function trackedManagerFacilitator() {
+  const calls = { verify: 0, settle: 0 };
+  return {
+    calls,
+    client: {
+      async getSupported() {
+        return { kinds: [{ x402Version: 2, scheme: "exact", network: SERVICE_NETWORK }], extensions: [] };
+      },
+      async verify(payload, requirements) {
+        calls.verify += 1;
+        assert.deepEqual(payload.accepted, managerPaymentRequirements());
+        assert.deepEqual(requirements, managerPaymentRequirements());
+        return { isValid: true, payer: "0x1111111111111111111111111111111111111111" };
+      },
+      async settle() {
+        calls.settle += 1;
+        return {
+          success: true,
+          status: "success",
+          payer: "0x1111111111111111111111111111111111111111",
+          transaction: `0x${"ab".repeat(32)}`,
+          network: SERVICE_NETWORK,
+        };
+      },
+    },
+  };
+}
+
+function managerRequestBody() {
+  return {
+    market: LIVE_MARKET_SNAPSHOT.slug,
+    outcome: "yes",
+    shares: "5",
+    minPrice: "0.26",
+    wallet: WALLET,
+    sourcePosition: { supplied: true },
+  };
+}
+
 test("paid manager re-verifies source and holdings before compiling CLOSE", async () => {
   const calls = [];
   const handler = createManageHandler({
@@ -107,6 +169,198 @@ test("paid manager re-verifies source and holdings before compiling CLOSE", asyn
   assert.equal(body.issued, true);
   assert.deepEqual(calls.map((entry) => entry[0]).sort(), ["market", "position", "source"]);
   assert.equal(MANAGE_QUOTE_TTL_MS, 300_000);
+});
+
+test("paid manager refetches one transiently stale Polygon position without weakening the freshness bound", async () => {
+  let positionReads = 0;
+  let issuances = 0;
+  const handler = createManageHandler({
+    issueIntentImpl(compilation) {
+      issuances += 1;
+      return { ...compilation, issued: true };
+    },
+    trustedIssuers: new Map(),
+    async resolveMarketImpl() { return LIVE_MARKET_SNAPSHOT; },
+    async verifySourceImpl() { return source(); },
+    async fetchPositionImpl() {
+      positionReads += 1;
+      return {
+        ...position(),
+        capturedAt: positionReads === 1
+          ? "2026-07-21T01:59:00.000Z"
+          : "2026-07-21T02:00:09.000Z",
+      };
+    },
+    compileOptions: { now: Date.parse("2026-07-21T02:00:10.000Z"), quoteTtlMs: 300_000 },
+  });
+  const response = responseRecorder();
+  await handler({
+    method: "POST",
+    body: {
+      market: LIVE_MARKET_SNAPSHOT.slug,
+      outcome: "yes",
+      shares: "5",
+      minPrice: "0.26",
+      wallet: WALLET,
+      sourcePosition: { supplied: true },
+    },
+  }, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(JSON.parse(response.body).ok, true);
+  assert.equal(positionReads, 2);
+  assert.equal(issuances, 1);
+});
+
+test("paid manager remains fail-closed when the refetched Polygon position is still stale", async () => {
+  let positionReads = 0;
+  let issuances = 0;
+  const handler = createManageHandler({
+    issueIntentImpl(compilation) {
+      issuances += 1;
+      return compilation;
+    },
+    trustedIssuers: new Map(),
+    async resolveMarketImpl() { return LIVE_MARKET_SNAPSHOT; },
+    async verifySourceImpl() { return source(); },
+    async fetchPositionImpl() {
+      positionReads += 1;
+      return { ...position(), capturedAt: "2026-07-21T01:59:00.000Z" };
+    },
+    compileOptions: { now: Date.parse("2026-07-21T02:00:10.000Z"), quoteTtlMs: 300_000 },
+  });
+  const response = responseRecorder();
+  await handler({
+    method: "POST",
+    body: {
+      market: LIVE_MARKET_SNAPSHOT.slug,
+      outcome: "yes",
+      shares: "5",
+      minPrice: "0.26",
+      wallet: WALLET,
+      sourcePosition: { supplied: true },
+    },
+  }, response);
+
+  assert.equal(response.statusCode, 422);
+  assert.equal(JSON.parse(response.body).error.code, "stale_position_snapshot");
+  assert.equal(positionReads, 2);
+  assert.equal(issuances, 0);
+});
+
+test("paid manager does not retry a non-staleness compiler rejection", async () => {
+  let positionReads = 0;
+  const handler = createManageHandler({
+    issueIntentImpl(compilation) { return compilation; },
+    trustedIssuers: new Map(),
+    async resolveMarketImpl() { return LIVE_MARKET_SNAPSHOT; },
+    async verifySourceImpl() { return source(); },
+    async fetchPositionImpl() {
+      positionReads += 1;
+      return { ...position(), approvedForExchange: false };
+    },
+    compileOptions: { now: Date.parse("2026-07-21T02:00:10.000Z"), quoteTtlMs: 300_000 },
+  });
+  const response = responseRecorder();
+  await handler({
+    method: "POST",
+    body: {
+      market: LIVE_MARKET_SNAPSHOT.slug,
+      outcome: "yes",
+      shares: "5",
+      minPrice: "0.26",
+      wallet: WALLET,
+      sourcePosition: { supplied: true },
+    },
+  }, response);
+
+  assert.equal(response.statusCode, 422);
+  assert.equal(JSON.parse(response.body).error.code, "ctf_approval_missing");
+  assert.equal(positionReads, 1);
+});
+
+test("verified manager payment settles exactly once after one fresh position refetch", async () => {
+  const facilitator = trackedManagerFacilitator();
+  let positionReads = 0;
+  const manageHandler = createManageHandler({
+    issueIntentImpl(compilation) { return compilation; },
+    trustedIssuers: new Map(),
+    async resolveMarketImpl() { return LIVE_MARKET_SNAPSHOT; },
+    async verifySourceImpl() { return source(); },
+    async fetchPositionImpl() {
+      positionReads += 1;
+      return {
+        ...position(),
+        capturedAt: positionReads === 1
+          ? "2026-07-21T01:59:00.000Z"
+          : "2026-07-21T02:00:09.000Z",
+      };
+    },
+    compileOptions: { now: Date.parse("2026-07-21T02:00:10.000Z"), quoteTtlMs: 300_000 },
+  });
+  const app = createManageApp({
+    OKX_API_KEY: "test-api-key",
+    OKX_SECRET_KEY: "test-secret-key",
+    OKX_PASSPHRASE: "test-passphrase",
+  }, {
+    facilitatorClient: facilitator.client,
+    logger: { error() {} },
+    manageHandler,
+    async notifyPaidCall() {},
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/manage`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "payment-signature": paidManagerHeader() },
+      body: JSON.stringify(managerRequestBody()),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).ok, true);
+    assert.ok(response.headers.get("payment-response"));
+  });
+  assert.equal(positionReads, 2);
+  assert.equal(facilitator.calls.verify, 1);
+  assert.equal(facilitator.calls.settle, 1);
+});
+
+test("persistently stale verified manager request returns 422 without settling", async () => {
+  const facilitator = trackedManagerFacilitator();
+  let positionReads = 0;
+  const manageHandler = createManageHandler({
+    issueIntentImpl(compilation) { return compilation; },
+    trustedIssuers: new Map(),
+    async resolveMarketImpl() { return LIVE_MARKET_SNAPSHOT; },
+    async verifySourceImpl() { return source(); },
+    async fetchPositionImpl() {
+      positionReads += 1;
+      return { ...position(), capturedAt: "2026-07-21T01:59:00.000Z" };
+    },
+    compileOptions: { now: Date.parse("2026-07-21T02:00:10.000Z"), quoteTtlMs: 300_000 },
+  });
+  const app = createManageApp({
+    OKX_API_KEY: "test-api-key",
+    OKX_SECRET_KEY: "test-secret-key",
+    OKX_PASSPHRASE: "test-passphrase",
+  }, {
+    facilitatorClient: facilitator.client,
+    logger: { error() {} },
+    manageHandler,
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/manage`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "payment-signature": paidManagerHeader() },
+      body: JSON.stringify(managerRequestBody()),
+    });
+    assert.equal(response.status, 422);
+    assert.equal((await response.json()).error.code, "stale_position_snapshot");
+    assert.equal(response.headers.get("payment-response"), null);
+  });
+  assert.equal(positionReads, 2);
+  assert.equal(facilitator.calls.verify, 1);
+  assert.equal(facilitator.calls.settle, 0);
 });
 
 test("bare manager probes receive the distinct 0.10 challenge", async () => {

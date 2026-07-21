@@ -19,6 +19,7 @@ export const MANAGE_SERVICE_PATH = "/api/manage";
 export const MANAGE_SERVICE_RESOURCE = "https://conviction-bay.vercel.app/api/manage";
 export const MANAGE_SERVICE_PRICE_ATOMIC = "100000";
 export const MANAGE_SERVICE_PRICE_DISPLAY = "0.10 USD₮0";
+export const SERVICE_PAYMENT_TIMEOUT_SECONDS = 300;
 
 export const POSITION_CARD_SERVICE = Object.freeze({
   path: SERVICE_PATH,
@@ -113,7 +114,7 @@ export function serviceRouteConfiguration(service = POSITION_CARD_SERVICE) {
           asset: SERVICE_ASSET,
           extra: { name: "USD₮0", version: "1" },
         },
-        maxTimeoutSeconds: 300,
+        maxTimeoutSeconds: SERVICE_PAYMENT_TIMEOUT_SECONDS,
       },
       resource: service.resource,
       description: service.description,
