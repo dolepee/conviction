@@ -11,6 +11,10 @@ import {
 import { createEnvironmentIntentIssuer } from "../src/intent-issuer.mjs";
 import {
   readFacilitatorCredentials,
+  MANAGE_SERVICE_PATH,
+  MANAGE_SERVICE_PRICE_ATOMIC,
+  MANAGE_SERVICE_RESOURCE,
+  POSITION_MANAGER_SERVICE,
   SERVICE_ASSET,
   SERVICE_NETWORK,
   SERVICE_PAYEE,
@@ -152,6 +156,15 @@ test("pins the listing payment to one exact X Layer amount and payee", () => {
     extra: { name: "USD₮0", version: "1" },
   });
   assert.equal(PAID_SERVICE_QUOTE_TTL_MS, 300_000);
+});
+
+test("pins the position manager to a distinct paid resource and price", () => {
+  const config = serviceRouteConfiguration(POSITION_MANAGER_SERVICE)[`* ${MANAGE_SERVICE_PATH}`];
+  assert.equal(config.resource, MANAGE_SERVICE_RESOURCE);
+  assert.equal(config.accepts.network, SERVICE_NETWORK);
+  assert.equal(config.accepts.payTo, SERVICE_PAYEE);
+  assert.equal(config.accepts.price.amount, MANAGE_SERVICE_PRICE_ATOMIC);
+  assert.match(config.description, /CLOSE/);
 });
 
 test("fails closed when any facilitator credential is absent", () => {

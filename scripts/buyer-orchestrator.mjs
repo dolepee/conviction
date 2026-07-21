@@ -2,23 +2,26 @@
 
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { chmod, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, stderr } from "node:process";
 import { promisify } from "node:util";
 
-import { runOpenJourney } from "../src/buyer-orchestrator.mjs";
+import { runCloseJourney, runOpenJourney } from "../src/buyer-orchestrator.mjs";
 import { sha256 } from "../src/canonical.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID, POLYGON_RPC_URL } from "../src/constants.mjs";
+import { parseDecimal } from "../src/decimal.mjs";
+import { fetchAndVerifyClose } from "../src/exit-receipt-verifier.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
+import { fetchPositionSnapshot } from "../src/position-client.mjs";
 import {
+  POSITION_CARD_SERVICE,
+  POSITION_MANAGER_SERVICE,
   SERVICE_ASSET,
   SERVICE_NETWORK,
   SERVICE_PAYEE,
-  SERVICE_PRICE_ATOMIC,
-  SERVICE_RESOURCE,
 } from "../src/service-payment.mjs";
 import { fetchAndVerifyX402Payment } from "../src/x402-payment-verifier.mjs";
 import {
@@ -27,21 +30,33 @@ import {
   validatePluginPreview,
   validateProof,
 } from "../skills/conviction-executor/scripts/conviction-card.mjs";
+import {
+  buildCloseReceiptRequest,
+  validateCloseCard,
+  validateClosePluginPreview,
+  validateCloseProof,
+} from "../skills/conviction-executor/scripts/conviction-exit-card.mjs";
 
 const execFileAsync = promisify(execFile);
 let executionAttempted = false;
 const journalDirectory = join(homedir(), ".local", "state", "conviction", "reconciliation");
+const executionLockFile = join(journalDirectory, "polymarket-execution.lock.json");
 const journalPath = join(
   journalDirectory,
   `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}.json`,
 );
 const checkpoint = {
+  mode: null,
   stage: "not_started",
   paymentTx: null,
   intentHash: null,
   orderId: null,
   settlementTx: null,
   positionProofHash: null,
+  closeProofHash: null,
+  closePassportHash: null,
+  sourceIntentHash: null,
+  sourcePositionProofHash: null,
   paidCard: null,
   liveResult: null,
   paymentProof: null,
@@ -51,6 +66,13 @@ const checkpoint = {
   tradeConfirmedAt: null,
   executionArgv: null,
   executionArgvHash: null,
+  replayKey: null,
+  replayLockPath: null,
+  replayLockReleasedAt: null,
+  replayLockReleaseError: null,
+  executionLockPath: null,
+  executionLockReleasedAt: null,
+  executionLockReleaseError: null,
   reconciliationRequired: false,
   journalPath,
 };
@@ -72,7 +94,16 @@ function usage() {
     "    --payment-payer <X-Layer-address> --buyer-wallet <Polygon-deposit-wallet>",
     "    --issuer-registry <issuers.json> [--json]",
     "",
-    "The program displays the exact x402 challenge and requires `confirm payment`,",
+    "  node scripts/buyer-orchestrator.mjs close --origin <url> --market <slug-or-id>",
+    "    --side YES|NO --shares <whole-shares> --min-price <price>",
+    "    --payment-payer <X-Layer-address> --seller-wallet <Polygon-deposit-wallet>",
+    "    --source-proof <open-result-or-proof.json> --issuer-registry <issuers.json>",
+    "    [--rationale <text>] [--json]",
+    "",
+    "  node scripts/buyer-orchestrator.mjs reconcile-close --journal <journey.json>",
+    "    --issuer-registry <issuers.json> [--json]",
+    "",
+    "The program displays the exact service-payment challenge and requires `confirm payment`,",
     "then displays the final signed bounds and requires exactly one",
     "interactive `confirm live mode` before it can submit the Polygon order.",
   ].join("\n");
@@ -100,18 +131,43 @@ export function parseArgs(argv) {
     rest.splice(index, 1);
     return true;
   };
-  if (command !== "open") throw Object.assign(new Error(usage()), { code: "invalid_command" });
-  const parsed = {
+  if (command === "reconcile-close") {
+    const parsed = {
+      command,
+      journal: take("--journal"),
+      issuerRegistry: take("--issuer-registry"),
+      json: boolean("--json"),
+    };
+    if (rest.length) throw Object.assign(new Error(`Unknown arguments: ${rest.join(" ")}`), { code: "invalid_argument" });
+    return parsed;
+  }
+  if (command !== "open" && command !== "close") {
+    throw Object.assign(new Error(usage()), { code: "invalid_command" });
+  }
+  const common = {
+    command,
     origin: take("--origin").replace(/\/$/, ""),
     market: take("--market"),
     side: take("--side").toUpperCase(),
-    budget: take("--budget"),
-    maxPrice: take("--max-price"),
     paymentPayer: take("--payment-payer").toLowerCase(),
-    buyerWallet: take("--buyer-wallet").toLowerCase(),
     issuerRegistry: take("--issuer-registry"),
     json: boolean("--json"),
   };
+  const parsed = command === "open"
+    ? {
+        ...common,
+        budget: take("--budget"),
+        maxPrice: take("--max-price"),
+        buyerWallet: take("--buyer-wallet").toLowerCase(),
+      }
+    : {
+        ...common,
+        shares: take("--shares"),
+        minPrice: take("--min-price"),
+        sellerWallet: take("--seller-wallet").toLowerCase(),
+        sourceProof: take("--source-proof"),
+        rationale: take("--rationale", false) || "",
+      };
   if (rest.length) throw Object.assign(new Error(`Unknown arguments: ${rest.join(" ")}`), { code: "invalid_argument" });
   return parsed;
 }
@@ -126,6 +182,280 @@ export function parseJsonOutput(text, label) {
     try { return JSON.parse(line); } catch {}
   }
   throw Object.assign(new Error(`${label} did not return JSON`), { code: "invalid_tool_output" });
+}
+
+const HASH_RE = /^0x[0-9a-f]{64}$/i;
+
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function firstObject(...values) {
+  return values.find((value) => asObject(value)) || null;
+}
+
+function firstValue(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+/**
+ * Accept the native runOpenJourney result/sourcePosition shape as well as the
+ * historical public deliverable. The service independently replays the source
+ * settlement from Polygon, so this function only normalizes transport shape.
+ */
+export function normalizeSourcePosition(document) {
+  const input = asObject(document);
+  if (!input) {
+    throw Object.assign(new Error("Source proof file must contain a JSON object"), {
+      code: "invalid_source_proof_file",
+    });
+  }
+  const root = firstObject(input.response, input.result, input) || input;
+  const direct = firstObject(
+    root.sourcePosition,
+    root.open?.sourcePosition,
+    input.sourcePosition,
+    input.open?.sourcePosition,
+  );
+  const intent = firstObject(
+    direct?.intent,
+    root.canonicalIntent,
+    root.intent,
+    root.positionPassport?.intent,
+    input.canonicalIntent,
+    input.intent,
+    input.positionPassport?.intent,
+  );
+  const positionProof = firstObject(
+    root.positionProof,
+    root.positionPassport?.positionProof,
+    root.verifiedPositionProof,
+    input.positionProof,
+    input.positionPassport?.positionProof,
+    input.verifiedPositionProof,
+  );
+  const receiptProof = firstObject(
+    root.receiptProof,
+    root.positionPassport?.receiptProof,
+    input.receiptProof,
+    input.positionPassport?.receiptProof,
+  );
+  const hashes = firstObject(root.hashes, input.hashes) || {};
+  const issuance = firstObject(
+    direct?.issuance,
+    root.issuance,
+    root.positionPassport?.issuance,
+    input.issuance,
+    input.positionPassport?.issuance,
+  );
+  const normalized = {
+    transactionHash: String(firstValue(
+      direct?.transactionHash,
+      positionProof?.transactionHash,
+      receiptProof?.transactionHash,
+      root.transactionHash,
+      input.transactionHash,
+    ) || "").toLowerCase(),
+    orderId: String(firstValue(
+      direct?.orderId,
+      positionProof?.orderId,
+      receiptProof?.orderId,
+      root.orderId,
+      input.orderId,
+    ) || "").toLowerCase(),
+    intentHash: String(firstValue(
+      direct?.intentHash,
+      positionProof?.intentHash,
+      hashes.intentHash,
+      root.intentHash,
+      input.intentHash,
+    ) || "").toLowerCase(),
+    positionProofHash: String(firstValue(
+      direct?.positionProofHash,
+      root.positionProofHash,
+      hashes.positionProofHash,
+      root.verifiedPositionProof?.positionProofHash,
+      input.positionProofHash,
+      input.verifiedPositionProof?.positionProofHash,
+    ) || "").toLowerCase(),
+    intent,
+    ...(issuance ? { issuance } : {}),
+  };
+  for (const field of ["transactionHash", "orderId", "intentHash", "positionProofHash"]) {
+    if (!HASH_RE.test(normalized[field])) {
+      throw Object.assign(new Error(`Source proof file has no valid ${field}`), {
+        code: "invalid_source_proof_file",
+      });
+    }
+  }
+  if (!intent) {
+    throw Object.assign(new Error("Source proof file has no canonical intent"), {
+      code: "invalid_source_proof_file",
+    });
+  }
+  return Object.freeze(normalized);
+}
+
+export function normalizeOpenOrders(input) {
+  const root = input?.data ?? input;
+  const orders = Array.isArray(root)
+    ? root
+    : Array.isArray(root?.orders)
+      ? root.orders
+      : Array.isArray(root?.results)
+        ? root.results
+        : Array.isArray(root?.data)
+          ? root.data
+          : null;
+  if (!orders) {
+    throw Object.assign(new Error("Polymarket open-orders response has an unknown shape"), {
+      code: "invalid_tool_output",
+    });
+  }
+  return orders.filter((order) => {
+    const state = String(order?.status ?? order?.state ?? "OPEN").toUpperCase();
+    return state === "OPEN" || state === "LIVE" || state === "UNMATCHED";
+  });
+}
+
+export function closeReplayKey({ request, sellerWallet }) {
+  const sourceIntent = asObject(request?.sourcePosition?.intent);
+  const conditionId = String(sourceIntent?.market?.conditionId || "").toLowerCase();
+  const outcomeTokenId = String(
+    sourceIntent?.market?.outcomeTokenId || sourceIntent?.order?.outcomeTokenId || "",
+  );
+  if (!HASH_RE.test(conditionId) || !/^\d+$/.test(outcomeTokenId)) {
+    throw Object.assign(new Error("Close replay identity has no canonical condition and outcome token"), {
+      code: "invalid_replay_identity",
+    });
+  }
+  return sha256({
+    version: "conviction-close-replay-v1",
+    sellerWallet: String(sellerWallet || "").toLowerCase(),
+    conditionId,
+    outcomeTokenId,
+    outcome: String(request?.outcome || request?.side || "").toUpperCase(),
+    sharesRaw: parseDecimal(request?.shares, 6, "close replay shares").toString(),
+    minPriceRaw: parseDecimal(request?.minPrice, 6, "close replay minimum price").toString(),
+    sourceIntentHash: String(request?.sourcePosition?.intentHash || "").toLowerCase(),
+    sourcePositionProofHash: String(request?.sourcePosition?.positionProofHash || "").toLowerCase(),
+    sourceTransactionHash: String(request?.sourcePosition?.transactionHash || "").toLowerCase(),
+    sourceOrderId: String(request?.sourcePosition?.orderId || "").toLowerCase(),
+  });
+}
+
+export async function claimCloseReplayLock({
+  key,
+  journal,
+  directory = journalDirectory,
+} = {}) {
+  if (!HASH_RE.test(String(key || ""))) {
+    throw Object.assign(new Error("Close replay key is invalid"), { code: "invalid_replay_key" });
+  }
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
+  const file = join(directory, `close-${String(key).slice(2)}.lock.json`);
+  let handle;
+  try {
+    handle = await open(file, "wx", 0o600);
+    await handle.writeFile(`${JSON.stringify({
+      version: "conviction-close-replay-lock-v1",
+      replayKey: key,
+      journalPath: journal,
+      claimedAt: new Date().toISOString(),
+    }, null, 2)}\n`);
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw Object.assign(
+        new Error("This exact CLOSE request was already claimed; reconcile its journal before any retry"),
+        { code: "close_replay_blocked", details: { replayLockPath: file } },
+      );
+    }
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+  return file;
+}
+
+export async function claimExecutionLock({
+  journal,
+  directory = journalDirectory,
+  file = executionLockFile,
+} = {}) {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
+  let handle;
+  try {
+    handle = await open(file, "wx", 0o600);
+    await handle.writeFile(`${JSON.stringify({
+      version: "conviction-polymarket-execution-lock-v1",
+      pid: process.pid,
+      journalPath: journal,
+      claimedAt: new Date().toISOString(),
+    }, null, 2)}\n`);
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw Object.assign(
+        new Error("Another Conviction execution is unresolved; reconcile its journal before trading"),
+        { code: "execution_reconciliation_required", details: { executionLockPath: file } },
+      );
+    }
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+  return file;
+}
+
+export async function settleExecutionLock(
+  state,
+  {
+    liveAttempted,
+    proofVerified,
+    unlinkImpl = unlink,
+    now = Date.now(),
+  } = {},
+) {
+  if (!state?.executionLockPath) return { released: false, retained: false };
+  if (liveAttempted && !proofVerified) {
+    return { released: false, retained: true, path: state.executionLockPath };
+  }
+  try {
+    await unlinkImpl(state.executionLockPath);
+    const releasedPath = state.executionLockPath;
+    state.executionLockReleasedAt = new Date(now).toISOString();
+    state.executionLockPath = null;
+    return { released: true, retained: false, path: releasedPath };
+  } catch (error) {
+    state.executionLockReleaseError = error?.code || "lock_release_failed";
+    return { released: false, retained: true, path: state.executionLockPath };
+  }
+}
+
+export function requirePinnedCloseExecutionReadiness(readiness, { wallet, tokenId, sharesRaw }) {
+  if (
+    readiness?.accessible !== true || readiness?.clobVersion !== "V2" ||
+    readiness?.currentMode !== "deposit_wallet" ||
+    String(readiness?.buyerWallet || "").toLowerCase() !== wallet ||
+    String(readiness?.tradingAddress || "").toLowerCase() !== wallet
+  ) {
+    throw Object.assign(new Error("Active deposit wallet changed immediately before CLOSE"), {
+      code: "trading_wallet_mismatch",
+    });
+  }
+  if (String(readiness?.outcomeTokenId || "") !== tokenId) {
+    throw Object.assign(new Error("Final position snapshot is for another token"), { code: "token_substitution" });
+  }
+  if (readiness?.approvedForExchange !== true) {
+    throw Object.assign(new Error("Final standard V2 outcome-token approval is missing"), { code: "ctf_approval_missing" });
+  }
+  if (BigInt(readiness?.outcomeBalanceRaw ?? -1) < sharesRaw) {
+    throw Object.assign(new Error("Final outcome-token balance is below the exact CLOSE shares"), { code: "insufficient_position" });
+  }
+  if (BigInt(readiness?.reservedSharesRaw ?? -1) !== 0n || Number(readiness?.openOrderCount ?? -1) !== 0) {
+    throw Object.assign(new Error("An open order appeared before CLOSE submission"), { code: "position_reserved" });
+  }
 }
 
 async function commandJson(file, args, label) {
@@ -184,6 +514,126 @@ function depositWalletFromQuickstart(quickstart) {
   const data = quickstart?.data || quickstart;
   const address = data?.wallet?.deposit_wallet;
   return address ? String(address).toLowerCase() : null;
+}
+
+function safeStatePath(value, kind, stateDirectory = journalDirectory) {
+  const stateRoot = resolve(stateDirectory);
+  const candidate = resolve(String(value || ""));
+  if (!candidate.startsWith(`${stateRoot}${sep}`)) {
+    throw Object.assign(new Error(`${kind} path is outside Conviction's private state directory`), {
+      code: "unsafe_state_path",
+    });
+  }
+  const name = basename(candidate);
+  const valid = kind === "journal"
+    ? name.endsWith(".json") && !name.endsWith(".lock.json")
+    : kind === "replay lock"
+      ? /^close-[0-9a-f]{64}\.lock\.json$/.test(name)
+      : name === "polymarket-execution.lock.json";
+  if (!valid) {
+    throw Object.assign(new Error(`${kind} path is not a recognized Conviction state file`), {
+      code: "unsafe_state_path",
+    });
+  }
+  return candidate;
+}
+
+async function releaseReconciledLocks(state, { stateDirectory = journalDirectory } = {}) {
+  const released = [];
+  for (const [field, kind] of [
+    ["replayLockPath", "replay lock"],
+    ["executionLockPath", "execution lock"],
+  ]) {
+    if (!state[field]) continue;
+    const file = safeStatePath(state[field], kind, stateDirectory);
+    try {
+      await unlink(file);
+      released.push(file);
+      state[field] = null;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      state[field] = null;
+    }
+  }
+  return released;
+}
+
+export async function reconcileCloseJournal({
+  file,
+  trustedIssuers,
+  now = Date.now(),
+  verifyClose = fetchAndVerifyClose,
+  validateCardImpl = validateCloseCard,
+  stateDirectory = journalDirectory,
+} = {}) {
+  const journal = safeStatePath(file, "journal", stateDirectory);
+  const state = JSON.parse(await readFile(journal, "utf8"));
+  if (state?.mode !== "close") {
+    throw Object.assign(new Error("Journal is not a Conviction CLOSE journey"), { code: "invalid_reconciliation_journal" });
+  }
+
+  let reason;
+  let proof;
+  if (HASH_RE.test(String(state.settlementTx || "")) && HASH_RE.test(String(state.orderId || "")) && state.paidCard) {
+    proof = await verifyClose(state.settlementTx, {
+      intent: state.paidCard.intent,
+      intentHash: state.paidCard.intentHash,
+      orderId: state.orderId,
+      issuance: state.paidCard.issuance,
+      trustedIssuers,
+    });
+    reason = "verified_settlement";
+  } else if (!state.executionArgvHash && state.paidCard) {
+    const card = validateCardImpl(state.paidCard, {
+      trustedIssuers,
+      allowExpired: true,
+      now,
+    });
+    if (Date.parse(card.expiresAt) > now) {
+      return {
+        ok: true,
+        status: "waiting_for_card_expiry",
+        expiresAt: card.expiresAt,
+        reconciliationRequired: true,
+        journalPath: journal,
+      };
+    }
+    reason = "expired_without_execution";
+  } else {
+    return {
+      ok: true,
+      status: "manual_reconciliation_required",
+      reconciliationRequired: true,
+      journalPath: journal,
+      stage: state.stage,
+      paymentTx: state.paymentTx || null,
+      orderId: state.orderId || null,
+      settlementTx: state.settlementTx || null,
+    };
+  }
+
+  const releasedLocks = await releaseReconciledLocks(state, { stateDirectory });
+  state.stage = reason === "verified_settlement" ? "complete_reconciled" : "expired_unexecuted_reconciled";
+  state.reconciliationRequired = false;
+  state.reconciledAt = new Date(now).toISOString();
+  state.reconciliationReason = reason;
+  if (proof) {
+    state.closeProofHash = proof.closeProofHash;
+    state.closePassportHash = proof.closePassportHash;
+  }
+  await writeReconciliationJournal(state, { directory: dirname(journal), file: journal });
+  return {
+    ok: true,
+    status: state.stage,
+    reconciliationRequired: false,
+    journalPath: journal,
+    releasedLocks,
+    ...(proof ? {
+      transactionHash: proof.closeProof.transactionHash,
+      closeProofHash: proof.closeProofHash,
+      closePassportHash: proof.closePassportHash,
+    } : {}),
+  };
 }
 
 export function normalizePluginReadiness({
@@ -265,14 +715,14 @@ export function requireDistinctPaymentPayer(paymentPayer) {
   return String(paymentPayer || "").toLowerCase();
 }
 
-export function validatePaymentChallenge(decoded) {
+export function validatePaymentChallenge(decoded, service = POSITION_CARD_SERVICE) {
   const requirement = decoded?.accepts?.[0];
   if (
-    decoded?.x402Version !== 2 || decoded?.resource?.url !== SERVICE_RESOURCE ||
+    decoded?.x402Version !== 2 || decoded?.resource?.url !== service.resource ||
     requirement?.scheme !== "exact" || requirement?.network !== SERVICE_NETWORK ||
     requirement?.asset?.toLowerCase() !== SERVICE_ASSET ||
     requirement?.payTo?.toLowerCase() !== SERVICE_PAYEE ||
-    requirement?.amount !== SERVICE_PRICE_ATOMIC
+    requirement?.amount !== service.priceAtomic
   ) {
     throw Object.assign(
       new Error("x402 challenge differs from Conviction's pinned price"),
@@ -284,6 +734,19 @@ export function validatePaymentChallenge(decoded) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.command === "reconcile-close") {
+    const trustedIssuerDocument = JSON.parse(await readFile(options.issuerRegistry, "utf8"));
+    const trustedIssuers = trustedIssuerRegistry(trustedIssuerDocument.issuers || trustedIssuerDocument);
+    if (trustedIssuers.size === 0) {
+      throw Object.assign(new Error("Pinned issuer registry is empty"), { code: "missing_trusted_issuer" });
+    }
+    const result = await reconcileCloseJournal({
+      file: options.journal,
+      trustedIssuers,
+    });
+    stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
   requireDistinctPaymentPayer(options.paymentPayer);
   const trustedIssuers = JSON.parse(await readFile(options.issuerRegistry, "utf8"));
   const pinnedRecords = trustedIssuers?.issuers || trustedIssuers;
@@ -291,29 +754,75 @@ async function main() {
   if (pinnedRegistry.size === 0) {
     throw Object.assign(new Error("Pinned issuer registry is empty"), { code: "missing_trusted_issuer" });
   }
-  const requestBody = {
-    market: options.market,
-    outcome: options.side.toLowerCase(),
-    spend: options.budget,
-    maxPrice: options.maxPrice,
-    wallet: options.buyerWallet,
-  };
-  checkpoint.request = {
-    market: options.market,
-    side: options.side,
-    budget: options.budget,
-    maxPrice: options.maxPrice,
-  };
+  const closeMode = options.command === "close";
+  const tradingWallet = closeMode ? options.sellerWallet : options.buyerWallet;
+  const service = closeMode ? POSITION_MANAGER_SERVICE : POSITION_CARD_SERVICE;
+  const sourcePosition = closeMode
+    ? normalizeSourcePosition(JSON.parse(await readFile(options.sourceProof, "utf8")))
+    : undefined;
+  const journeyRequest = closeMode
+    ? {
+        market: options.market,
+        outcome: options.side,
+        shares: options.shares,
+        minPrice: options.minPrice,
+        rationale: options.rationale,
+        sourcePosition,
+      }
+    : {
+        market: options.market,
+        side: options.side,
+        budget: options.budget,
+        maxPrice: options.maxPrice,
+      };
+  const requestBody = closeMode
+    ? {
+        market: options.market,
+        outcome: options.side.toLowerCase(),
+        shares: options.shares,
+        minPrice: options.minPrice,
+        wallet: options.sellerWallet,
+        rationale: options.rationale,
+        sourcePosition,
+      }
+    : {
+        market: options.market,
+        outcome: options.side.toLowerCase(),
+        spend: options.budget,
+        maxPrice: options.maxPrice,
+        wallet: options.buyerWallet,
+      };
+  checkpoint.mode = options.command;
+  checkpoint.request = closeMode
+    ? {
+        market: options.market,
+        outcome: options.side,
+        shares: options.shares,
+        minPrice: options.minPrice,
+        sourceIntentHash: sourcePosition.intentHash,
+        sourcePositionProofHash: sourcePosition.positionProofHash,
+      }
+    : {
+        market: options.market,
+        side: options.side,
+        budget: options.budget,
+        maxPrice: options.maxPrice,
+      };
   checkpoint.paymentPayer = options.paymentPayer;
-  checkpoint.buyerWallet = options.buyerWallet;
+  checkpoint.buyerWallet = tradingWallet;
+  checkpoint.sourceIntentHash = sourcePosition?.intentHash || null;
+  checkpoint.sourcePositionProofHash = sourcePosition?.positionProofHash || null;
+  let latestReadiness;
+  let latestCloseReadiness;
   const emit = options.json
     ? (event) => process.stderr.write(`${JSON.stringify(event)}\n`)
     : (event) => {
       if (event.type === "payment_confirmation") {
         const requirement = event.challenge?.decoded?.accepts?.[0] || {};
         stdout.write([
-          "\nConviction service payment:",
-          `  Amount: ${requirement.amount} atomic USD₮0 (0.05 USD₮0)`,
+          "\nConviction service payment via **OKX Agent Payments Protocol**:",
+          `  Product: ${service.serviceName}`,
+          `  Amount: ${service.priceDisplay} (${requirement.amount} atomic)`,
           `  Network: ${requirement.network}`,
           `  Asset: ${requirement.asset}`,
           `  From: ${options.paymentPayer}`,
@@ -323,18 +832,52 @@ async function main() {
         ].join("\n"));
       } else if (event.type === "trade_confirmation") {
         const b = event.bounds;
-        stdout.write([
-          "\nBounded order ready:",
-          `  Market: ${b.market}`,
-          `  Side: ${b.side}`,
-          `  Maximum price: ${b.maxPrice}`,
-          `  Maximum order principal: ${b.maximumOrderPrincipalRaw} atomic pUSD`,
-          `  Current venue-fee reserve: ${b.maximumFeeRaw} atomic pUSD (V2 fee is operator-set at match time)`,
-          `  Accepted total-debit ceiling for verification: ${b.maximumTotalDebitRaw} atomic pUSD`,
-          `  Buyer wallet: ${b.wallet}`,
-          `  Expires: ${b.expiresAt}`,
-          "",
-        ].join("\n"));
+        if (closeMode) {
+          stdout.write([
+            "\nBounded CLOSE ready:",
+            `  Market: ${b.marketQuestion}`,
+            `  Condition: ${b.conditionId}`,
+            `  Outcome sold: ${b.outcome}`,
+            `  Outcome token: ${b.outcomeTokenId}`,
+            `  Exact shares: ${b.exactShares}`,
+            `  Minimum price: ${b.minPrice}`,
+            `  Minimum gross proceeds: ${b.minimumGrossProceedsRaw} atomic pUSD`,
+            `  Current fee verification ceiling: ${b.maximumFeeRaw} atomic pUSD`,
+            `  Post-settlement net verification floor: ${b.minimumNetProceedsRaw} atomic pUSD`,
+            "  Fee/net note: V2 does not sign the operator fee; these are detected after settlement, not preventive controls.",
+            `  Current position balance: ${latestCloseReadiness?.outcomeBalanceRaw || "unknown"} atomic shares`,
+            `  Open-order reservations: ${latestCloseReadiness?.openOrderCount ?? "unknown"}`,
+            `  Seller wallet: ${b.wallet}`,
+            `  Source OPEN intent: ${b.sourceIntentHash}`,
+            `  Source position proof: ${b.sourcePositionProofHash}`,
+            `  Signed by: ${b.issuerKeyId} (${b.issuerFingerprint})`,
+            `  Issued: ${b.issuedAt}`,
+            `  Expires: ${b.expiresAt}`,
+            `  Service payment completed: ${b.completedPayment.amountAtomic} atomic USD₮0 on ${b.completedPayment.network}`,
+            `  Payment transaction: ${b.completedPayment.transactionHash}`,
+            `  Payment payer: ${b.completedPayment.payer}`,
+            `  Payment recipient: ${b.completedPayment.payee}`,
+            "  Order type: FOK (exact fill or no fill)",
+            "  Buyer-wallet gas: 0 (off-chain order signature; venue settlement)",
+            "  Polygon settlement is irreversible.",
+            "",
+          ].join("\n"));
+        } else {
+          stdout.write([
+            "\nBounded order ready:",
+            `  Market: ${b.market}`,
+            `  Side: ${b.side}`,
+            `  Maximum price: ${b.maxPrice}`,
+            `  Maximum order principal: ${b.maximumOrderPrincipalRaw} atomic pUSD`,
+            `  Current venue-fee reserve: ${b.maximumFeeRaw} atomic pUSD (V2 fee is operator-set at match time)`,
+            `  Accepted total-debit ceiling for verification: ${b.maximumTotalDebitRaw} atomic pUSD`,
+            `  Current pUSD balance: ${latestReadiness?.pUsdBalanceRaw || "unknown"} atomic`,
+            `  Buyer wallet: ${b.wallet}`,
+            `  Expires: ${b.expiresAt}`,
+            "  Polygon settlement is irreversible.",
+            "",
+          ].join("\n"));
+        }
       }
     };
   const readline = createInterface({ input: stdin, output: options.json ? stderr : stdout });
@@ -344,16 +887,37 @@ async function main() {
     if (kind === "payment") {
       if (paymentConsentUsed) return false;
       paymentConsentUsed = true;
-      const answer = await readline.question("Type `confirm payment` to pay exactly 0.05 USD₮0 on X Layer: ");
+      const answer = await readline.question(
+        `Type \`confirm payment\` to pay exactly ${service.priceDisplay} (${service.priceAtomic} atomic) on X Layer: `,
+      );
       return answer.trim() === "confirm payment";
     }
-    const answer = await readline.question("Type `confirm live mode` to submit this one bounded order: ");
+    const action = closeMode ? "bounded FOK CLOSE" : "bounded order";
+    const answer = await readline.question(`Type \`confirm live mode\` to submit this one ${action}: `);
     const accepted = answer.trim() === "confirm live mode";
     if (accepted) {
       checkpoint.tradeConfirmedAt = new Date().toISOString();
       await writeReconciliationJournal(checkpoint);
     }
     return accepted;
+  };
+
+  const loadReadiness = async () => {
+    const [access, addresses, quickstart] = await Promise.all([
+      commandJson("polymarket-plugin", ["check-access"], "Polymarket access check"),
+      commandJson("onchainos", ["wallet", "addresses"], "Agentic Wallet addresses"),
+      commandJson("polymarket-plugin", ["quickstart"], "Polymarket readiness"),
+    ]);
+    const depositWallet = depositWalletFromQuickstart(quickstart);
+    const pUsdBalanceRaw = depositWallet ? await polygonPusdBalanceRaw(depositWallet) : "0";
+    latestReadiness = normalizePluginReadiness({
+      access,
+      addresses,
+      quickstart,
+      selectedMode: selectedTradingMode,
+      pUsdBalanceRaw,
+    });
+    return latestReadiness;
   };
 
   const adapters = {
@@ -372,21 +936,30 @@ async function main() {
       selectedTradingMode = result.mode;
       return result;
     },
-    checkReadiness: async () => {
-      const [access, addresses, quickstart] = await Promise.all([
-        commandJson("polymarket-plugin", ["check-access"], "Polymarket access check"),
-        commandJson("onchainos", ["wallet", "addresses"], "Agentic Wallet addresses"),
-        commandJson("polymarket-plugin", ["quickstart"], "Polymarket readiness"),
+    checkReadiness: loadReadiness,
+    checkCloseReadiness: async ({ outcomeTokenId }) => {
+      const [readiness, position, ordersResult] = await Promise.all([
+        loadReadiness(),
+        fetchPositionSnapshot(tradingWallet, outcomeTokenId),
+        commandJson(
+          "polymarket-plugin",
+          ["orders", "--state", "OPEN", "--limit", "100"],
+          "Polymarket open-orders check",
+        ),
       ]);
-      const depositWallet = depositWalletFromQuickstart(quickstart);
-      const pUsdBalanceRaw = depositWallet ? await polygonPusdBalanceRaw(depositWallet) : "0";
-      return normalizePluginReadiness({
-        access,
-        addresses,
-        quickstart,
-        selectedMode: selectedTradingMode,
-        pUsdBalanceRaw,
-      });
+      const openOrders = normalizeOpenOrders(ordersResult);
+      latestCloseReadiness = {
+        ...readiness,
+        outcomeTokenId: position.outcomeTokenId,
+        outcomeBalanceRaw: position.balanceRaw,
+        positionBlockNumber: position.blockNumber,
+        positionBlockHash: position.blockHash,
+        approvedForExchange: position.approvedForExchange,
+        reservedSharesRaw: "0",
+        openSellOrderCount: openOrders.length,
+        openOrderCount: openOrders.length,
+      };
+      return latestCloseReadiness;
     },
     previewMarket: async () => {
       const { response, json } = await postJson(`${options.origin}/api/preview`, requestBody);
@@ -400,8 +973,17 @@ async function main() {
         outcomeTokenId: json.preview.market.outcomeTokenId,
       };
     },
+    previewClose: async () => {
+      const { response, json } = await postJson(`${options.origin}/api/manage-preview`, requestBody);
+      if (!response.ok || json?.ok !== true) {
+        throw Object.assign(new Error(json?.error?.message || "Free CLOSE preview failed"), {
+          code: json?.error?.code || "preview_failed",
+        });
+      }
+      return json;
+    },
     requestPaymentChallenge: async () => {
-      const { response, json } = await postJson(`${options.origin}/api/service`, requestBody);
+      const { response, json } = await postJson(`${options.origin}${service.path}`, requestBody);
       const encoded = response.headers.get("payment-required");
       if (response.status !== 402 || !encoded) {
         throw Object.assign(new Error(json?.error?.message || "Service did not return an x402 challenge"), {
@@ -409,21 +991,54 @@ async function main() {
         });
       }
       const decoded = decodeHeader(encoded, "PAYMENT-REQUIRED");
-      validatePaymentChallenge(decoded);
+      validatePaymentChallenge(decoded, service);
       return { encoded, decoded };
     },
     payAndRequestCard: async ({ challenge }) => {
-      const signed = await commandJson(
-        "onchainos",
-        ["payment", "pay", "--payload", challenge.encoded, "--selected-index", "0", "--chain", "xlayer"],
-        "x402 authorization",
-      );
+      let createdReplayLock = false;
+      if (closeMode) {
+        checkpoint.replayKey = closeReplayKey({
+          request: journeyRequest,
+          sellerWallet: options.sellerWallet,
+        });
+        checkpoint.replayLockPath = await claimCloseReplayLock({
+          key: checkpoint.replayKey,
+          journal: journalPath,
+        });
+        checkpoint.stage = "payment_authorization_starting";
+        await writeReconciliationJournal(checkpoint);
+        createdReplayLock = true;
+      }
+      let signed;
+      try {
+        signed = await commandJson(
+          "onchainos",
+          ["payment", "pay", "--payload", challenge.encoded, "--selected-index", "0", "--chain", "xlayer"],
+          "service payment authorization",
+        );
+      } catch (error) {
+        if (createdReplayLock) {
+          try { await unlink(checkpoint.replayLockPath); } catch {}
+          checkpoint.replayLockPath = null;
+          checkpoint.replayKey = null;
+          checkpoint.stage = "payment_authorization_failed_before_replay";
+          await writeReconciliationJournal(checkpoint);
+        }
+        throw error;
+      }
       const data = signed?.data || signed;
       const headerName = data.header_name || "PAYMENT-SIGNATURE";
       if (!data.authorization_header || String(data.wallet || "").toLowerCase() !== options.paymentPayer) {
+        if (createdReplayLock) {
+          try { await unlink(checkpoint.replayLockPath); } catch {}
+          checkpoint.replayLockPath = null;
+          checkpoint.replayKey = null;
+        }
         throw Object.assign(new Error("x402 authorization was not signed by the pinned payer"), { code: "payment_wallet_mismatch" });
       }
-      const { response, json } = await postJson(`${options.origin}/api/service`, requestBody, {
+      checkpoint.stage = "payment_authorization_created";
+      await writeReconciliationJournal(checkpoint);
+      const { response, json } = await postJson(`${options.origin}${service.path}`, requestBody, {
         headers: { [headerName]: data.authorization_header },
       });
       if (!response.ok || json?.ok !== true) {
@@ -447,7 +1062,7 @@ async function main() {
         payer: options.paymentPayer,
         payee: SERVICE_PAYEE,
         asset: SERVICE_ASSET,
-        amountAtomic: SERVICE_PRICE_ATOMIC,
+        amountAtomic: service.priceAtomic,
         earliestAllowedTime: new Date(startedAt).toISOString(),
       });
       checkpoint.stage = "payment_verified";
@@ -456,25 +1071,93 @@ async function main() {
       return result.proof;
     },
     validateCard: async (card, validationOptions) => validateCard(card, validationOptions),
+    validateCloseCard: async (card, validationOptions) => validateCloseCard(card, validationOptions),
     dryRun: async (argv) => commandJson("polymarket-plugin", [...argv, "--dry-run"], "Polymarket dry run"),
     validateDryRun: async (card, dryRun, validationOptions) => validatePluginPreview(card, dryRun, validationOptions),
+    validateCloseDryRun: async (card, dryRun, validationOptions) => validateClosePluginPreview(card, dryRun, validationOptions),
     execute: async (argv) => {
-      executionAttempted = true;
-      checkpoint.stage = "execution_attempted";
-      checkpoint.reconciliationRequired = true;
-      checkpoint.executionArgv = [...argv];
-      checkpoint.executionArgvHash = sha256(argv);
+      checkpoint.executionLockPath = await claimExecutionLock({ journal: journalPath });
+      checkpoint.stage = "execution_lock_acquired";
       await writeReconciliationJournal(checkpoint);
-      const result = await commandJson("polymarket-plugin", argv, "Polymarket live order");
-      checkpoint.liveResult = result;
-      const data = result?.data || result;
-      checkpoint.stage = "live_result_received";
-      checkpoint.orderId = data?.order_id || null;
-      checkpoint.settlementTx = Array.isArray(data?.tx_hashes) ? data.tx_hashes[0] || null : null;
-      await writeReconciliationJournal(checkpoint);
-      return result;
+      try {
+        const reasserted = await commandJson(
+          "polymarket-plugin",
+          ["switch-mode", "--mode", "deposit-wallet"],
+          "Final Polymarket trading-mode selection",
+        );
+        if ((reasserted?.data || reasserted)?.mode !== "deposit-wallet") {
+          throw Object.assign(new Error("Polymarket did not preserve DEPOSIT_WALLET mode before CLOSE"), {
+            code: "wrong_trading_mode",
+          });
+        }
+        selectedTradingMode = reasserted.data?.mode || reasserted.mode;
+
+        if (closeMode) {
+          const tokenIndex = argv.indexOf("--token-id");
+          const sharesIndex = argv.indexOf("--shares");
+          const tokenId = tokenIndex >= 0 ? String(argv[tokenIndex + 1] || "") : "";
+          const sharesRaw = sharesIndex >= 0 ? parseDecimal(argv[sharesIndex + 1], 6, "execution shares") : -1n;
+          const lockedReadiness = await adapters.checkCloseReadiness({ outcomeTokenId: tokenId });
+          requirePinnedCloseExecutionReadiness(lockedReadiness, {
+            wallet: tradingWallet,
+            tokenId,
+            sharesRaw,
+          });
+          const lockedCard = validateCloseCard(checkpoint.paidCard, {
+            trustedIssuers: pinnedRegistry,
+            now: Date.now(),
+          });
+          if (Date.parse(lockedCard.expiresAt) - Date.now() < 10_000) {
+            throw Object.assign(new Error("Signed CLOSE card has too little time left for locked submission"), {
+              code: "insufficient_execution_window",
+            });
+          }
+          const lockedDryRun = await commandJson(
+            "polymarket-plugin",
+            [...argv, "--dry-run"],
+            "Locked final Polymarket dry run",
+          );
+          validateClosePluginPreview(checkpoint.paidCard, lockedDryRun, {
+            trustedIssuers: pinnedRegistry,
+            now: Date.now(),
+          });
+        } else {
+          const lockedReadiness = await loadReadiness();
+          if (
+            lockedReadiness.currentMode !== "deposit_wallet" ||
+            lockedReadiness.buyerWallet !== tradingWallet ||
+            lockedReadiness.tradingAddress !== tradingWallet
+          ) {
+            throw Object.assign(new Error("Active deposit wallet changed immediately before OPEN"), {
+              code: "trading_wallet_mismatch",
+            });
+          }
+        }
+
+        executionAttempted = true;
+        checkpoint.stage = "execution_attempted";
+        checkpoint.reconciliationRequired = true;
+        checkpoint.executionArgv = [...argv];
+        checkpoint.executionArgvHash = sha256(argv);
+        await writeReconciliationJournal(checkpoint);
+        const result = await commandJson("polymarket-plugin", argv, "Polymarket live order");
+        checkpoint.liveResult = result;
+        const data = result?.data || result;
+        checkpoint.stage = "live_result_received";
+        checkpoint.orderId = data?.order_id || null;
+        checkpoint.settlementTx = Array.isArray(data?.tx_hashes) ? data.tx_hashes[0] || null : null;
+        await writeReconciliationJournal(checkpoint);
+        return result;
+      } finally {
+        await settleExecutionLock(checkpoint, {
+          liveAttempted: executionAttempted,
+          proofVerified: false,
+        });
+        await writeReconciliationJournal(checkpoint);
+      }
     },
     buildReceiptRequest: async (card, result, validationOptions) => buildReceiptRequest(card, result, validationOptions),
+    buildCloseReceiptRequest: async (card, result, validationOptions) => buildCloseReceiptRequest(card, result, validationOptions),
     fetchProof: async (body) => {
       const { response, json } = await postJson(`${options.origin}/api/receipt`, body);
       if (!response.ok || json?.ok !== true) {
@@ -489,25 +1172,61 @@ async function main() {
       return json;
     },
     validateProof: async (card, proof, validationOptions) => validateProof(card, proof, validationOptions),
+    fetchCloseProof: async (body) => {
+      const proof = await fetchAndVerifyClose(body.transactionHash, {
+        intent: body.intent,
+        intentHash: body.intentHash,
+        orderId: body.orderId,
+        issuance: body.issuance,
+        trustedIssuers: pinnedRegistry,
+      });
+      checkpoint.stage = "close_proof_received";
+      checkpoint.closeProofHash = proof.closeProofHash || null;
+      checkpoint.closePassportHash = proof.closePassportHash || null;
+      checkpoint.reconciliationRequired = true;
+      await writeReconciliationJournal(checkpoint);
+      return proof;
+    },
+    validateCloseProof: async (card, proof, validationOptions) => validateCloseProof(card, proof, validationOptions),
   };
 
   try {
-    const result = await runOpenJourney({
-      request: {
-        market: options.market,
-        side: options.side,
-        budget: options.budget,
-        maxPrice: options.maxPrice,
-      },
-      paymentPayer: options.paymentPayer,
-      buyerWallet: options.buyerWallet,
-      trustedIssuers,
-      adapters,
-      confirm,
-      emit,
-    });
+    const result = closeMode
+      ? await runCloseJourney({
+          request: journeyRequest,
+          paymentPayer: options.paymentPayer,
+          sellerWallet: options.sellerWallet,
+          trustedIssuers,
+          adapters,
+          confirm,
+          emit,
+        })
+      : await runOpenJourney({
+          request: journeyRequest,
+          paymentPayer: options.paymentPayer,
+          buyerWallet: options.buyerWallet,
+          trustedIssuers,
+          adapters,
+          confirm,
+          emit,
+        });
     stdout.write(`${JSON.stringify(result)}\n`);
     checkpoint.stage = "complete";
+    checkpoint.reconciliationRequired = false;
+    await settleExecutionLock(checkpoint, {
+      liveAttempted: executionAttempted,
+      proofVerified: true,
+    });
+    if (checkpoint.replayLockPath) {
+      try {
+        await unlink(checkpoint.replayLockPath);
+        checkpoint.replayLockReleasedAt = new Date().toISOString();
+        checkpoint.replayLockPath = null;
+      } catch (error) {
+        checkpoint.replayLockReleaseError = error?.code || "lock_release_failed";
+      }
+    }
+    await writeReconciliationJournal(checkpoint);
   } finally {
     readline.close();
   }
@@ -521,16 +1240,24 @@ if (isMain()) {
   try {
     await main();
   } catch (error) {
-    checkpoint.reconciliationRequired = executionAttempted;
-    try { await writeReconciliationJournal(checkpoint); } catch {}
+    const reconciliationCommand = process.argv[2] === "reconcile-close";
+    if (!reconciliationCommand) {
+      checkpoint.reconciliationRequired = Boolean(
+        executionAttempted ||
+        (checkpoint.replayLockPath && checkpoint.stage !== "complete"),
+      );
+      try { await writeReconciliationJournal(checkpoint); } catch {}
+    }
     process.stdout.write(`${JSON.stringify({
       ok: false,
       code: error?.code || "buyer_journey_failed",
       message: error?.message || "Buyer journey failed",
-      ordersPlaced: executionAttempted ? "unknown" : 0,
-      reconciliationRequired: executionAttempted,
-      journalPath,
-      checkpoint,
+      ...(reconciliationCommand ? {} : {
+        ordersPlaced: executionAttempted ? "unknown" : 0,
+        reconciliationRequired: checkpoint.reconciliationRequired,
+        journalPath,
+        checkpoint,
+      }),
     })}\n`);
     process.exitCode = 1;
   }

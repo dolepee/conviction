@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Privacy — Conviction</title>
-    <meta name="description" content="What Conviction processes when it previews a bounded position card or verifies a Polygon fill." />
+    <meta name="description" content="What Conviction processes when it previews, opens, closes, or verifies a bounded Polygon prediction-market position." />
     <meta name="robots" content="index,follow" />
     <link rel="canonical" href="https://conviction-bay.vercel.app/privacy.html" />
     <link rel="icon" href="/assets/conviction-logo.svg" type="image/svg+xml" />
@@ -22,15 +22,15 @@
       <p class="policy-updated">Effective 21 July 2026</p>
       <section>
         <h2>What is processed</h2>
-        <p>For a market lookup or bounds preview, Conviction processes the market reference, selected outcome, total risk budget, and maximum price. A final position card also processes the public Polygon deposit-wallet address and an optional note. Receipt verification processes the submitted transaction hash, order ID, intent, and intent hash.</p>
+        <p>For an OPEN market lookup or bounds preview, Conviction processes the market reference, selected outcome, total risk budget, and maximum price. A final OPEN card also processes the public Polygon deposit-wallet address and an optional note. For CLOSE, Conviction processes the market, outcome, exact whole shares, minimum price, seller address, optional note, and prior OPEN source. It independently re-fetches that source settlement and reads the seller's public outcome-token balance and exchange approval. OPEN and CLOSE receipt verification process the submitted transaction hash, order ID, intent, intent hash, and any issuance proof.</p>
       </section>
       <section>
         <h2>What the application does not request</h2>
-        <p>Never submit a seed phrase, private key, bearer token, CLOB credential, reusable signature, raw authorization, or live-trading confirmation. The browser does not connect to a wallet, sign, approve, or broadcast.</p>
+        <p>Never submit a seed phrase, private key, bearer token, CLOB credential, reusable signature, raw authorization, or live-trading confirmation to a hosted Conviction endpoint. The browser does not connect to a wallet, sign, approve, or broadcast. The public agent/CLI keeps the buyer's separate trade confirmation and official-plugin execution on the buyer's machine.</p>
       </section>
       <section>
         <h2>Storage and infrastructure</h2>
-        <p>Conviction has no application database, user accounts, analytics SDK, advertising tracker, or cookies. The public preview and verifier temporarily retain an IP-shaped client identifier and request count in a warm server instance to limit abuse; those buckets are bounded and are not written to an application database. Hosting, x402 facilitation, Polymarket APIs, and Polygon RPC infrastructure may retain ordinary request, operational, or payment logs under their own policies. A successful paid service notification contains only fixed settlement metadata—service name, amount, network, transaction hash, and time—not the wallet, note, or request body.</p>
+        <p>Conviction has no application database, user accounts, analytics SDK, advertising tracker, or cookies. The public previews and verifiers temporarily retain an IP-shaped client identifier and request count in a warm server instance to limit abuse; those buckets are bounded and are not written to an application database. Hosting, x402 facilitation, Polymarket APIs, and Polygon RPC infrastructure may retain ordinary request, operational, or payment logs under their own policies. A successful paid OPEN or CLOSE notification contains only fixed settlement metadata—service name, amount, network, transaction hash, and time—not the wallet, note, source proof, or request body.</p>
       </section>
       <section>
         <h2>Contact</h2>

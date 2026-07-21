@@ -17,6 +17,7 @@ function fixture({ mutateValidated, validateCardError } = {}) {
     outcome: "YES",
     tokenId: TOKEN,
     intentHash: `0x${"cd".repeat(32)}`,
+    issuance: { version: "conviction-issuance-v1", signature: "fixture" },
     expiresAt: "2030-01-01T00:00:00.000Z",
     intent: { market: { conditionId: CONDITION } },
     executionCard: { argv: ["buy", "--market-id", CONDITION] },
@@ -92,6 +93,14 @@ test("open journey keeps payment and trade consent distinct and executes exactly
   assert.equal(result.confirmation.count, 1);
   assert.equal(result.ordersPlaced, 1);
   assert.equal(f.executes(), 1);
+  assert.deepEqual(result.sourcePosition, {
+    transactionHash: `0x${"12".repeat(32)}`,
+    orderId: `0x${"34".repeat(32)}`,
+    intentHash: `0x${"cd".repeat(32)}`,
+    intent: { market: { conditionId: CONDITION } },
+    issuance: { version: "conviction-issuance-v1", signature: "fixture" },
+    positionProofHash: `0x${"56".repeat(32)}`,
+  });
   assert.ok(result.timings.paidAt < result.timings.confirmedAt);
   assert.ok(result.timings.confirmedAt < result.timings.provedAt);
 });
