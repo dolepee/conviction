@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -7,6 +10,7 @@ import {
   paymentTransaction,
   normalizePluginReadiness,
   validatePaymentChallenge,
+  writeReconciliationJournal,
 } from "../scripts/buyer-orchestrator.mjs";
 import {
   SERVICE_ASSET,
@@ -123,4 +127,27 @@ test("buyer CLI does not infer V2 readiness without the selected deposit-wallet 
 
   assert.equal(readiness.clobVersion, "");
   assert.equal(readiness.currentMode, "");
+});
+
+test("buyer CLI atomically journals reconciliation state outside Git with owner-only permissions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-journal-test-"));
+  const file = join(directory, "journey.json");
+  try {
+    const checkpoint = {
+      stage: "live_result_received",
+      reconciliationRequired: true,
+      paidCard: { intentHash: `0x${"a".repeat(64)}` },
+      liveResult: { ok: true, data: { order_id: `0x${"b".repeat(64)}` } },
+    };
+    assert.equal(
+      await writeReconciliationJournal(checkpoint, { directory, file }),
+      file,
+    );
+    assert.deepEqual(JSON.parse(await readFile(file, "utf8")), checkpoint);
+    assert.equal((await stat(directory)).mode & 0o777, 0o700);
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+    assert.deepEqual(await readdir(directory), ["journey.json"]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

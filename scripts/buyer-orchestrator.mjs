@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, stderr } from "node:process";
 import { promisify } from "node:util";
 
 import { runOpenJourney } from "../src/buyer-orchestrator.mjs";
+import { sha256 } from "../src/canonical.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID, POLYGON_RPC_URL } from "../src/constants.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import {
@@ -27,6 +30,11 @@ import {
 
 const execFileAsync = promisify(execFile);
 let executionAttempted = false;
+const journalDirectory = join(homedir(), ".local", "state", "conviction", "reconciliation");
+const journalPath = join(
+  journalDirectory,
+  `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}.json`,
+);
 const checkpoint = {
   stage: "not_started",
   paymentTx: null,
@@ -34,7 +42,27 @@ const checkpoint = {
   orderId: null,
   settlementTx: null,
   positionProofHash: null,
+  paidCard: null,
+  liveResult: null,
+  paymentProof: null,
+  request: null,
+  paymentPayer: null,
+  buyerWallet: null,
+  tradeConfirmedAt: null,
+  executionArgv: null,
+  executionArgvHash: null,
+  reconciliationRequired: false,
+  journalPath,
 };
+
+export async function writeReconciliationJournal(value, { directory = journalDirectory, file = journalPath } = {}) {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
+  const temporary = `${file}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporary, file);
+  return file;
+}
 
 function usage() {
   return [
@@ -259,6 +287,14 @@ async function main() {
     maxPrice: options.maxPrice,
     wallet: options.buyerWallet,
   };
+  checkpoint.request = {
+    market: options.market,
+    side: options.side,
+    budget: options.budget,
+    maxPrice: options.maxPrice,
+  };
+  checkpoint.paymentPayer = options.paymentPayer;
+  checkpoint.buyerWallet = options.buyerWallet;
   const emit = options.json
     ? (event) => process.stderr.write(`${JSON.stringify(event)}\n`)
     : (event) => {
@@ -301,7 +337,12 @@ async function main() {
       return answer.trim() === "confirm payment";
     }
     const answer = await readline.question("Type `confirm live mode` to submit this one bounded order: ");
-    return answer.trim() === "confirm live mode";
+    const accepted = answer.trim() === "confirm live mode";
+    if (accepted) {
+      checkpoint.tradeConfirmedAt = new Date().toISOString();
+      await writeReconciliationJournal(checkpoint);
+    }
+    return accepted;
   };
 
   const adapters = {
@@ -385,6 +426,8 @@ async function main() {
       checkpoint.stage = "paid_card_received";
       checkpoint.paymentTx = paymentTx;
       checkpoint.intentHash = json.intentHash || null;
+      checkpoint.paidCard = json;
+      await writeReconciliationJournal(checkpoint);
       return { card: json, paymentResponse, paymentTx };
     },
     verifyPayment: async ({ paid, startedAt }) => {
@@ -397,6 +440,8 @@ async function main() {
         earliestAllowedTime: new Date(startedAt).toISOString(),
       });
       checkpoint.stage = "payment_verified";
+      checkpoint.paymentProof = result.proof;
+      await writeReconciliationJournal(checkpoint);
       return result.proof;
     },
     validateCard: async (card, validationOptions) => validateCard(card, validationOptions),
@@ -405,11 +450,17 @@ async function main() {
     execute: async (argv) => {
       executionAttempted = true;
       checkpoint.stage = "execution_attempted";
+      checkpoint.reconciliationRequired = true;
+      checkpoint.executionArgv = [...argv];
+      checkpoint.executionArgvHash = sha256(argv);
+      await writeReconciliationJournal(checkpoint);
       const result = await commandJson("polymarket-plugin", argv, "Polymarket live order");
+      checkpoint.liveResult = result;
       const data = result?.data || result;
       checkpoint.stage = "live_result_received";
       checkpoint.orderId = data?.order_id || null;
       checkpoint.settlementTx = Array.isArray(data?.tx_hashes) ? data.tx_hashes[0] || null : null;
+      await writeReconciliationJournal(checkpoint);
       return result;
     },
     buildReceiptRequest: async (card, result, validationOptions) => buildReceiptRequest(card, result, validationOptions),
@@ -422,6 +473,8 @@ async function main() {
       }
       checkpoint.stage = "proof_received";
       checkpoint.positionProofHash = json.positionProofHash || null;
+      checkpoint.reconciliationRequired = false;
+      await writeReconciliationJournal(checkpoint);
       return json;
     },
     validateProof: async (card, proof, validationOptions) => validateProof(card, proof, validationOptions),
@@ -457,12 +510,15 @@ if (isMain()) {
   try {
     await main();
   } catch (error) {
+    checkpoint.reconciliationRequired = executionAttempted;
+    try { await writeReconciliationJournal(checkpoint); } catch {}
     process.stdout.write(`${JSON.stringify({
       ok: false,
       code: error?.code || "buyer_journey_failed",
       message: error?.message || "Buyer journey failed",
       ordersPlaced: executionAttempted ? "unknown" : 0,
       reconciliationRequired: executionAttempted,
+      journalPath,
       checkpoint,
     })}\n`);
     process.exitCode = 1;

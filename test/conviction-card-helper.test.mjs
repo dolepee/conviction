@@ -229,6 +229,44 @@ test("builds only the canonical receipt request from one matched settlement", ()
   assert.equal(body.intent, SIGNED_SAMPLE.response.intent);
   assert.equal(body.issuance, SIGNED_SAMPLE.response.issuance);
 
+  const liveWithoutRequestMarketId = liveResult();
+  delete liveWithoutRequestMarketId.data.market_id;
+  assert.equal(
+    buildReceiptRequest(SIGNED_SAMPLE, liveWithoutRequestMarketId, { trustedIssuers: TRUSTED_ISSUERS }).orderId,
+    `0x${"a".repeat(64)}`,
+  );
+
+  const wrongOptionalMarketId = liveResult();
+  wrongOptionalMarketId.data.market_id = "substituted-market";
+  assert.throws(
+    () => buildReceiptRequest(SIGNED_SAMPLE, wrongOptionalMarketId, { trustedIssuers: TRUSTED_ISSUERS }),
+    (error) => error.code === "plugin_mismatch",
+  );
+
+  for (const mutate of [
+    (value) => { delete value.data.condition_id; },
+    (value) => { value.data.condition_id = `0x${"1".repeat(64)}`; },
+    (value) => { delete value.data.token_id; },
+    (value) => { value.data.token_id = "123"; },
+  ]) {
+    const invalidLive = liveResult();
+    mutate(invalidLive);
+    assert.throws(
+      () => buildReceiptRequest(SIGNED_SAMPLE, invalidLive, { trustedIssuers: TRUSTED_ISSUERS }),
+      (error) => error.code === "plugin_mismatch",
+    );
+  }
+
+  const previewWithoutMarketId = pluginPreview();
+  delete previewWithoutMarketId.data.market_id;
+  assert.throws(
+    () => validatePluginPreview(SIGNED_SAMPLE, previewWithoutMarketId, {
+      now: SAMPLE_NOW,
+      trustedIssuers: TRUSTED_ISSUERS,
+    }),
+    (error) => error.code === "plugin_mismatch",
+  );
+
   const unmatched = liveResult();
   unmatched.data.status = "unmatched";
   assert.throws(

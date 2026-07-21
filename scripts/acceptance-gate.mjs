@@ -40,6 +40,7 @@ const orchestratorPath = path.join(HERE, "buyer-orchestrator.mjs");
 const productionRegistryPath = path.join(HERE, "..", "config", "trusted-issuer.production.json");
 const productionOrigin = new URL(SERVICE_RESOURCE).origin;
 const results = [];
+let reconciliation = null;
 
 function record(id, name, status, detail = "") {
   results.push({ id, name, status, detail });
@@ -187,6 +188,9 @@ if (mode === "live") {
   });
 
   if (journey.code !== 0 || journey.report?.ok !== true) {
+    if (journey.report?.reconciliationRequired === true && journey.report?.checkpoint) {
+      reconciliation = journey.report.checkpoint;
+    }
     const detail = journey.report?.code || `orchestrator exit ${journey.code}`;
     for (const [id, name] of [
       ["1", "Fresh buyer-seat x402 payment independently verified"],
@@ -292,5 +296,12 @@ const verdict = mode === "live"
   ? failed.length === 0 && pending.length === 0 ? "GATE A: PASS" : "GATE A: FAIL"
   : failed.length === 0 ? `NO FAILURES (${pending.length} pending; Gate A undecided)` : "FAILURES PRESENT";
 process.stdout.write(`\n${verdict}\n`);
-writeFileSync(reportPath, `${JSON.stringify({ mode, origin, at: new Date().toISOString(), verdict, results }, null, 2)}\n`);
+writeFileSync(reportPath, `${JSON.stringify({
+  mode,
+  origin,
+  at: new Date().toISOString(),
+  verdict,
+  results,
+  ...(reconciliation ? { reconciliation } : {}),
+}, null, 2)}\n`);
 process.exitCode = failed.length || (mode === "live" && pending.length) ? 1 : 0;
