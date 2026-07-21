@@ -41,6 +41,14 @@ import {
   validateTakeProfitLiveResult,
   validateTakeProfitPluginPreview,
 } from "../skills/conviction-executor/scripts/conviction-take-profit-card.mjs";
+import {
+  buildTakeProfitCancelOutcome,
+  buildTakeProfitCancelRequest,
+  buildTakeProfitLookupFailureStatus,
+  buildTakeProfitStatus,
+  TAKE_PROFIT_CANCEL_CONFIRMATION,
+  validateArmedTakeProfitJournal,
+} from "../src/take-profit-lifecycle.mjs";
 
 const execFileAsync = promisify(execFile);
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
@@ -60,6 +68,12 @@ function usage() {
     "    --seller-wallet <Polygon-deposit-wallet> --source-proof <open-proof.json>",
     "    --issuer-registry <issuers.json> [--rationale <text>] [--json]",
     "",
+    "  node scripts/take-profit-orchestrator.mjs tp-status --journal <journey.json>",
+    "    --issuer-registry <issuers.json> [--json]",
+    "",
+    "  node scripts/take-profit-orchestrator.mjs cancel-tp --journal <journey.json>",
+    "    --issuer-registry <issuers.json> [--json]",
+    "",
     "The flow separately requires `confirm payment`, then `confirm live mode`.",
     "It places one post-only GTD order and returns an authenticated ARMED proof.",
   ].join("\n");
@@ -68,7 +82,6 @@ function usage() {
 export function parseTakeProfitArgs(argv) {
   const rest = [...argv];
   const command = rest.shift();
-  fail(command === "take-profit", "invalid_command", usage());
   const take = (name, required = true) => {
     const index = rest.indexOf(name);
     if (index < 0) {
@@ -86,6 +99,17 @@ export function parseTakeProfitArgs(argv) {
     rest.splice(index, 1);
     return true;
   };
+  if (command === "tp-status" || command === "cancel-tp") {
+    const parsed = {
+      command,
+      journal: take("--journal"),
+      issuerRegistry: take("--issuer-registry"),
+      json: boolean("--json"),
+    };
+    fail(rest.length === 0, "invalid_argument", `Unknown arguments: ${rest.join(" ")}`);
+    return Object.freeze(parsed);
+  }
+  fail(command === "take-profit", "invalid_command", usage());
   const parsed = {
     command,
     origin: take("--origin").replace(/\/$/, ""),
@@ -238,6 +262,156 @@ async function fetchExactOrderWithPropagation(argumentsObject) {
     }
   }
   throw lastError;
+}
+
+function safeJournalPath(value, stateDirectory = STATE_DIRECTORY) {
+  const file = String(value || "");
+  fail(file.startsWith(`${stateDirectory}/`) && basename(file).endsWith("-take-profit.json"), "invalid_state_path", "TAKE_PROFIT journal must be inside the private Conviction state directory");
+  return file;
+}
+
+async function loadLifecycleContext(options, { stateDirectory = STATE_DIRECTORY } = {}) {
+  const journalPath = safeJournalPath(options.journal, stateDirectory);
+  const [journalText, trustedText] = await Promise.all([
+    readFile(journalPath, "utf8"),
+    readFile(options.issuerRegistry, "utf8"),
+  ]);
+  const journal = JSON.parse(journalText);
+  const trustedDocument = JSON.parse(trustedText);
+  const trustedIssuers = trustedIssuerRegistry(trustedDocument?.issuers || trustedDocument);
+  fail(trustedIssuers.size > 0, "missing_trusted_issuer", "Pinned issuer registry is empty");
+  const binding = validateArmedTakeProfitJournal(journal, { trustedIssuers });
+  return { journalPath, journal, trustedIssuers, binding };
+}
+
+async function exactLifecycleSnapshot(binding) {
+  return fetchExactOrderWithPropagation({
+    signerAddress: binding.signerAddress,
+    depositWallet: binding.depositWallet,
+    orderId: binding.orderId,
+    outcomeTokenId: binding.outcomeTokenId,
+  });
+}
+
+export async function runTakeProfitStatusCli(options, {
+  now = Date.now,
+  stateDirectory = STATE_DIRECTORY,
+} = {}) {
+  const context = await loadLifecycleContext(options, { stateDirectory });
+  try {
+    const snapshot = await exactLifecycleSnapshot(context.binding);
+    return buildTakeProfitStatus(context.journal, snapshot, {
+      trustedIssuers: context.trustedIssuers,
+      now: now(),
+    });
+  } catch (error) {
+    if (!["order_not_found", "order_unavailable"].includes(error?.code)) throw error;
+    return buildTakeProfitLookupFailureStatus(context.journal, {
+      errorCode: error.code,
+      observedAt: new Date(now()).toISOString(),
+    }, {
+      trustedIssuers: context.trustedIssuers,
+      now: now(),
+    });
+  }
+}
+
+export async function runTakeProfitCancelCli(options, {
+  now = Date.now,
+  stateDirectory = STATE_DIRECTORY,
+} = {}) {
+  const context = await loadLifecycleContext(options, { stateDirectory });
+  const beforeSnapshot = await exactLifecycleSnapshot(context.binding);
+  const beforeStatus = buildTakeProfitStatus(context.journal, beforeSnapshot, {
+    trustedIssuers: context.trustedIssuers,
+    now: now(),
+  });
+  (options.json ? stderr : stdout).write(`${JSON.stringify({ type: "take_profit_cancel_confirmation", status: beforeStatus })}\n`);
+  const readline = createInterface({ input: stdin, output: options.json ? stderr : stdout });
+  let executionAttempted = false;
+  try {
+    const answer = await readline.question(`Type exactly \`${TAKE_PROFIT_CANCEL_CONFIRMATION}\` to cancel only ${context.binding.orderId}: `);
+    const confirmedAt = new Date(now()).toISOString();
+    const cancelRequest = buildTakeProfitCancelRequest({
+      journal: context.journal,
+      snapshot: beforeSnapshot,
+      typedConfirmation: answer.trim(),
+      confirmedAt,
+    }, {
+      trustedIssuers: context.trustedIssuers,
+      now: now(),
+    });
+    context.journal.executionLockPath = await claimExecutionLock({ journal: context.journalPath });
+    context.journal.cancelConsent = {
+      version: "conviction-take-profit-cancel-consent-v1",
+      orderId: cancelRequest.orderId,
+      confirmedAt,
+      preCancelSnapshotHash: cancelRequest.preCancelSnapshotHash,
+      argvHash: sha256(cancelRequest.argv),
+    };
+    await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
+    context.journal.cancelAttemptedAt = new Date(now()).toISOString();
+    context.journal.cancelExecutionArgv = [...cancelRequest.argv];
+    context.journal.reconciliationRequired = true;
+    executionAttempted = true;
+    await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
+    const cancelResult = await commandJson("polymarket-plugin", cancelRequest.argv, "Exact TAKE_PROFIT cancellation");
+    context.journal.cancelResult = cancelResult;
+    await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
+
+    let outcome;
+    try {
+      const afterSnapshot = await exactLifecycleSnapshot(context.binding);
+      outcome = buildTakeProfitCancelOutcome({
+        journal: context.journal,
+        beforeSnapshot,
+        cancelResult,
+        afterSnapshot,
+      }, {
+        trustedIssuers: context.trustedIssuers,
+        now: now(),
+      });
+    } catch (error) {
+      if (!["order_not_found", "order_unavailable"].includes(error?.code)) throw error;
+      outcome = buildTakeProfitCancelOutcome({
+        journal: context.journal,
+        beforeSnapshot,
+        cancelResult,
+        afterLookupErrorCode: error.code,
+        observedAt: new Date(now()).toISOString(),
+      }, {
+        trustedIssuers: context.trustedIssuers,
+        now: now(),
+      });
+    }
+    context.journal.latestLifecycleStatus = outcome.status;
+    context.journal.cancelOutcome = outcome;
+    const safelyTerminalWithoutSettlement = outcome.orderTerminal === true && outcome.settlementProofRequired === false;
+    context.journal.reconciliationRequired = !safelyTerminalWithoutSettlement;
+    await settleExecutionLock(context.journal, {
+      liveAttempted: true,
+      proofVerified: safelyTerminalWithoutSettlement,
+    });
+    await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
+    return { ...outcome, journalPath: context.journalPath };
+  } catch (error) {
+    context.journal.reconciliationRequired = executionAttempted;
+    context.journal.cancelError = {
+      code: error?.code || "take_profit_cancel_failed",
+      at: new Date(now()).toISOString(),
+      executionAmbiguous: executionAttempted,
+    };
+    if (context.journal.executionLockPath) {
+      await settleExecutionLock(context.journal, {
+        liveAttempted: executionAttempted,
+        proofVerified: false,
+      });
+    }
+    try { await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath }); } catch {}
+    throw error;
+  } finally {
+    readline.close();
+  }
 }
 
 function paymentDisplay(event, options) {
@@ -644,7 +818,11 @@ if (isMain()) {
   let options;
   try {
     options = parseTakeProfitArgs(process.argv.slice(2));
-    const result = await runTakeProfitCli(options);
+    const result = options.command === "tp-status"
+      ? await runTakeProfitStatusCli(options)
+      : options.command === "cancel-tp"
+        ? await runTakeProfitCancelCli(options)
+        : await runTakeProfitCli(options);
     stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
     stdout.write(`${JSON.stringify({

@@ -78,7 +78,22 @@ test("TAKE_PROFIT CLI accepts exactly one bounded manager request", () => {
   assert.equal(parsed.targetPrice, "0.4");
   assert.equal(parsed.json, true);
   assert.throws(() => parseTakeProfitArgs(argv(["--auto"])), (error) => error?.code === "invalid_argument");
-  assert.throws(() => parseTakeProfitArgs(["tp-status"]), (error) => error?.code === "invalid_command");
+  assert.deepEqual(parseTakeProfitArgs([
+    "tp-status", "--journal", "/tmp/journey.json", "--issuer-registry", "/tmp/issuers.json", "--json",
+  ]), {
+    command: "tp-status",
+    journal: "/tmp/journey.json",
+    issuerRegistry: "/tmp/issuers.json",
+    json: true,
+  });
+  assert.deepEqual(parseTakeProfitArgs([
+    "cancel-tp", "--journal", "/tmp/journey.json", "--issuer-registry", "/tmp/issuers.json",
+  ]), {
+    command: "cancel-tp",
+    journal: "/tmp/journey.json",
+    issuerRegistry: "/tmp/issuers.json",
+    json: false,
+  });
 });
 
 test("TAKE_PROFIT replay identity binds source, shares, target, expiry, and wallet", () => {
