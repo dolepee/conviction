@@ -14,6 +14,7 @@ export function createServiceApp(
     facilitatorClient = undefined,
     logger = console,
     compileHandler = paidIntentHandler,
+    notifyPaidCall = undefined,
   } = {},
 ) {
   const app = express();
@@ -24,7 +25,11 @@ export function createServiceApp(
   let paymentGate;
   let paymentConfigurationError;
   try {
-    paymentGate = createPaymentGate(environment, { facilitatorClient, logger });
+    paymentGate = createPaymentGate(environment, {
+      facilitatorClient,
+      logger,
+      notifyPaidCall,
+    });
   } catch (error) {
     paymentConfigurationError = error;
   }

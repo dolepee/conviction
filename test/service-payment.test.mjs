@@ -9,6 +9,7 @@ import {
   SERVICE_NETWORK,
   SERVICE_PAYEE,
   SERVICE_PRICE_ATOMIC,
+  SERVICE_PRICE_DISPLAY,
   SERVICE_RESOURCE,
   serviceRouteConfiguration,
 } from "../src/service-payment.mjs";
@@ -77,7 +78,11 @@ function paidHeader() {
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
 }
 
-function trackedFacilitator({ settleSuccess = true } = {}) {
+function trackedFacilitator({
+  settleSuccess = true,
+  settleStatus = "success",
+  transaction = `0x${"ab".repeat(32)}`,
+} = {}) {
   const calls = { supported: 0, verify: 0, settle: 0 };
   return {
     calls,
@@ -108,9 +113,9 @@ function trackedFacilitator({ settleSuccess = true } = {}) {
         }
         return {
           success: true,
-          status: "success",
+          status: settleStatus,
           payer: "0x1111111111111111111111111111111111111111",
-          transaction: `0x${"ab".repeat(32)}`,
+          transaction,
           network: SERVICE_NETWORK,
         };
       },
@@ -288,9 +293,13 @@ test("bare marketplace probes receive a challenge before method validation", asy
 
 test("a verified non-POST request is rejected without settlement", async () => {
   const facilitator = trackedFacilitator();
+  const notifications = [];
   const app = createServiceApp(TEST_ENVIRONMENT, {
     facilitatorClient: facilitator.client,
     logger: quietLogger(),
+    notifyPaidCall(event) {
+      notifications.push(event);
+    },
   });
   await withServer(app, async (origin) => {
     const response = await fetch(`${origin}/api/service`, {
@@ -303,6 +312,7 @@ test("a verified non-POST request is rejected without settlement", async () => {
 
   assert.equal(facilitator.calls.verify, 1);
   assert.equal(facilitator.calls.settle, 0);
+  assert.equal(notifications.length, 0);
 });
 
 test("alternate path spellings cannot bypass the payment route", async () => {
@@ -324,7 +334,9 @@ test("alternate path spellings cannot bypass the payment route", async () => {
 });
 
 test("a verified request compiles once, settles once, and returns settlement proof", async () => {
-  const facilitator = trackedFacilitator();
+  const transaction = `0x${"ab".repeat(32)}`;
+  const facilitator = trackedFacilitator({ transaction });
+  const notifications = [];
   let compiles = 0;
   const app = createServiceApp(TEST_ENVIRONMENT, {
     facilitatorClient: facilitator.client,
@@ -332,6 +344,9 @@ test("a verified request compiles once, settles once, and returns settlement pro
     compileHandler(request, response) {
       compiles += 1;
       return response.status(200).json({ ok: true, card: "bounded" });
+    },
+    notifyPaidCall(event) {
+      notifications.push(event);
     },
   });
 
@@ -358,13 +373,33 @@ test("a verified request compiles once, settles once, and returns settlement pro
   assert.equal(facilitator.calls.verify, 1);
   assert.equal(facilitator.calls.settle, 1);
   assert.equal(compiles, 1);
+  assert.equal(notifications.length, 1);
+  assert.deepEqual(Object.keys(notifications[0]).sort(), [
+    "amount",
+    "network",
+    "serviceName",
+    "settledAt",
+    "transaction",
+  ]);
+  assert.equal(notifications[0].serviceName, "Bounded YES/NO Position Card");
+  assert.equal(notifications[0].amount, SERVICE_PRICE_DISPLAY);
+  assert.equal(notifications[0].network, SERVICE_NETWORK);
+  assert.equal(notifications[0].transaction, transaction);
+  assert.equal(
+    new Date(notifications[0].settledAt).toISOString(),
+    notifications[0].settledAt,
+  );
 });
 
 test("a compiler error is delivered without settling the verified payment", async () => {
   const facilitator = trackedFacilitator();
+  const notifications = [];
   const app = createServiceApp(TEST_ENVIRONMENT, {
     facilitatorClient: facilitator.client,
     logger: quietLogger(),
+    notifyPaidCall(event) {
+      notifications.push(event);
+    },
     compileHandler(request, response) {
       return response.status(422).json({
         ok: false,
@@ -390,13 +425,18 @@ test("a compiler error is delivered without settling the verified payment", asyn
 
   assert.equal(facilitator.calls.verify, 1);
   assert.equal(facilitator.calls.settle, 0);
+  assert.equal(notifications.length, 0);
 });
 
 test("settlement failure withholds a successful compiler response", async () => {
   const facilitator = trackedFacilitator({ settleSuccess: false });
+  const notifications = [];
   const app = createServiceApp(TEST_ENVIRONMENT, {
     facilitatorClient: facilitator.client,
     logger: quietLogger(),
+    notifyPaidCall(event) {
+      notifications.push(event);
+    },
     compileHandler(request, response) {
       return response.status(200).json({ ok: true, secretCard: "must-not-leak" });
     },
@@ -419,4 +459,117 @@ test("settlement failure withholds a successful compiler response", async () => 
 
   assert.equal(facilitator.calls.verify, 1);
   assert.equal(facilitator.calls.settle, 1);
+  assert.equal(notifications.length, 0);
+});
+
+test("a pending settlement never produces a paid-call notification", async () => {
+  const facilitator = trackedFacilitator({ settleStatus: "pending" });
+  const notifications = [];
+  const app = createServiceApp(TEST_ENVIRONMENT, {
+    facilitatorClient: facilitator.client,
+    logger: quietLogger(),
+    notifyPaidCall(event) {
+      notifications.push(event);
+    },
+    compileHandler(request, response) {
+      return response.status(200).json({ ok: true, card: "bounded" });
+    },
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/service`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": paidHeader(),
+      },
+      body: "{}",
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, card: "bounded" });
+  });
+
+  assert.equal(facilitator.calls.settle, 1);
+  assert.equal(notifications.length, 0);
+});
+
+test("notification failure cannot change a successful paid response or leak its error", async () => {
+  const facilitator = trackedFacilitator();
+  const logs = [];
+  const logger = {
+    error(message, details) {
+      logs.push({ message, details });
+    },
+  };
+  const app = createServiceApp(TEST_ENVIRONMENT, {
+    facilitatorClient: facilitator.client,
+    logger,
+    async notifyPaidCall() {
+      const error = new Error("buyer-secret and bot-token must not be logged");
+      error.code = "telegram_notification_failed";
+      error.status = 502;
+      throw error;
+    },
+    compileHandler(request, response) {
+      return response.status(200).json({ ok: true, card: "bounded" });
+    },
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/service`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": paidHeader(),
+      },
+      body: JSON.stringify({ buyer: "buyer-secret" }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, card: "bounded" });
+    const paymentResponse = JSON.parse(
+      Buffer.from(response.headers.get("payment-response"), "base64").toString("utf8"),
+    );
+    assert.equal(paymentResponse.success, true);
+  });
+
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].message, "paid call notification failed");
+  assert.deepEqual(logs[0].details, {
+    name: "Error",
+    code: "telegram_notification_failed",
+    status: 502,
+  });
+  assert.equal(JSON.stringify(logs).includes("buyer-secret"), false);
+  assert.equal(JSON.stringify(logs).includes("bot-token"), false);
+});
+
+test("even a throwing logger cannot break a paid response after settlement", async () => {
+  const facilitator = trackedFacilitator();
+  const app = createServiceApp(TEST_ENVIRONMENT, {
+    facilitatorClient: facilitator.client,
+    logger: {
+      error() {
+        throw new Error("logger unavailable");
+      },
+    },
+    async notifyPaidCall() {
+      throw new Error("notifier unavailable");
+    },
+    compileHandler(request, response) {
+      return response.status(200).json({ ok: true });
+    },
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/service`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": paidHeader(),
+      },
+      body: "{}",
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+  });
 });

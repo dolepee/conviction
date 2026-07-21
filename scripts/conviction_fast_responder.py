@@ -14,15 +14,24 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Callable
 
+from telegram_outbox import (
+    flush_notifications,
+    normalize_outbox_state,
+    queue_notification,
+    send_telegram,
+    telegram_config,
+)
 
-AGENT_ID = os.environ.get("CONVICTION_AGENT_ID", "pending").strip()
+
+AGENT_ID = os.environ.get("CONVICTION_AGENT_ID", "7034").strip()
 AGENT_NAME = "Conviction"
-SERVICE_NAME = "Bounded Outcome Execution"
+SERVICE_NAME = "Bounded YES/NO Position Card"
 PUBLIC_URL = os.environ.get(
     "CONVICTION_PUBLIC_URL", "https://conviction-bay.vercel.app"
 ).rstrip("/")
@@ -42,6 +51,9 @@ STATE_PATH = Path(
 LOG_PATH = Path(
     os.environ.get("CONVICTION_FAST_RESPONDER_LOG", TASK_HOME / "logs" / "conviction-fast-responder.log")
 )
+TELEGRAM_ENV_PATH = Path(
+    os.environ.get("CONVICTION_TELEGRAM_ENV", HOME / ".hermes" / ".env")
+)
 COMMAND_DB = TASK_HOME / "sqlite" / "command-store.sqlite"
 SESSION_DB = TASK_HOME / "sqlite" / "session-store.sqlite"
 
@@ -54,14 +66,13 @@ SECRET_TERMS = re.compile(
     r"\b(seed phrase|mnemonic|private key|api secret|bearer token|clob credential|reusable signature)\b",
     re.I,
 )
-
-
 def session_regex() -> re.Pattern[str]:
     return re.compile(
         rf"session dispatch queued route=group "
         rf"session=(?P<session>job:[^ ]+:my:{re.escape(AGENT_ID)}:to:(?P<to_agent>[^ ]+)) "
         rf"message=(?P<message>[^ ]+) "
-        rf".*type=a2a-agent-chat .*fromAgent=(?P<from_agent>[^ ]+) toAgent={re.escape(AGENT_ID)}"
+        rf"type=a2a-agent-chat job=[^ ]+ "
+        rf"fromAgent=(?P<from_agent>[^ ]+) toAgent={re.escape(AGENT_ID)}(?= content=)"
     )
 
 
@@ -73,9 +84,53 @@ def log(message: str) -> None:
     print(line, end="", flush=True)
 
 
+def telegram_sender(message: str) -> bool:
+    return send_telegram(TELEGRAM_ENV_PATH, message, log)
+
+
+def queue_session_notification(
+    state: dict,
+    *,
+    job_id: str,
+    peer_agent_id: str,
+    message_id: str,
+    reviewer: bool,
+) -> bool:
+    event_id = f"session|{job_id}|{message_id}"
+    route = "platform review probe" if reviewer else "buyer request"
+    return queue_notification(
+        state,
+        event_id,
+        "Conviction request handled\n"
+        f"agent=#{AGENT_ID}\n"
+        f"service={SERVICE_NAME}\n"
+        f"route={route}\n"
+        f"job={job_id}\n"
+        f"peerAgent={peer_agent_id}\n"
+        "reply=queued",
+    )
+
+
 def session_parts(session_key: str) -> dict[str, str] | None:
     match = SESSION_KEY_RE.match(session_key)
     return match.groupdict() if match else None
+
+
+def bound_session_parts(match: re.Match[str] | None) -> dict[str, str] | None:
+    if match is None:
+        return None
+    parts = session_parts(match.group("session"))
+    if parts is None:
+        return None
+    from_agent = match.group("from_agent")
+    if (
+        from_agent == AGENT_ID
+        or match.group("to_agent") != from_agent
+        or parts.get("to_agent_id") != from_agent
+        or parts.get("my_agent_id") != AGENT_ID
+    ):
+        return None
+    return parts
 
 
 def parse_request(content: str) -> tuple[dict[str, str] | None, list[str]]:
@@ -273,17 +328,23 @@ def enqueue_reply(session_key: str, message: str) -> bool:
 
 def load_state() -> dict:
     if not STATE_PATH.exists():
-        return {"handled": [], "offset": None, "session_replies": {}}
+        state = {"handled": [], "offset": None, "session_replies": {}}
+        normalize_outbox_state(state)
+        return state
     try:
         state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        return state if isinstance(state, dict) else {"handled": [], "offset": None, "session_replies": {}}
+        if not isinstance(state, dict):
+            state = {"handled": [], "offset": None, "session_replies": {}}
     except Exception:
-        return {"handled": [], "offset": None, "session_replies": {}}
+        state = {"handled": [], "offset": None, "session_replies": {}}
+    normalize_outbox_state(state)
+    return state
 
 
 def save_state(state: dict) -> None:
     state["handled"] = state.get("handled", [])[-500:]
     state["session_replies"] = dict(list(state.get("session_replies", {}).items())[-100:])
+    normalize_outbox_state(state)
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     temporary = STATE_PATH.with_suffix(".tmp")
     temporary.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
@@ -329,19 +390,28 @@ def fetch_full_content(job_id: str, to_agent_id: str, snippet: str) -> str:
 
 def process_line(line: str, state: dict, pattern: re.Pattern[str]) -> None:
     match = pattern.search(line)
-    if not match or match.group("from_agent") == AGENT_ID:
+    parts = bound_session_parts(match)
+    if match is None or parts is None:
         return
     session_key = match.group("session")
     key = f"{session_key}|{match.group('message')}"
     if key in set(state.get("handled", [])):
         return
-    parts = session_parts(session_key) or {}
     snippet_match = CONTENT_RE.search(line)
     snippet = snippet_match.group("content") if snippet_match else ""
     content = fetch_full_content(parts.get("job_id", ""), parts.get("to_agent_id", ""), snippet)
     reply = build_reply(content, session_key, state)
-    if reply is None or enqueue_reply(session_key, reply):
+    reply_queued = reply is not None and enqueue_reply(session_key, reply)
+    if reply is None or reply_queued:
         state.setdefault("handled", []).append(key)
+        if reply_queued:
+            queue_session_notification(
+                state,
+                job_id=parts.get("job_id", "unknown"),
+                peer_agent_id=parts.get("to_agent_id", "unknown"),
+                message_id=match.group("message"),
+                reviewer=parts.get("to_agent_id", "") in PLATFORM_REVIEW_AGENT_IDS,
+            )
         save_state(state)
 
 
@@ -351,8 +421,18 @@ def follow() -> None:
     pattern = session_regex()
     state = load_state()
     log(f"starting Conviction responder agent={AGENT_ID} listener={LISTENER_LOG}")
+    if queue_notification(
+        state,
+        f"startup|{AGENT_ID}|v1",
+        f"Conviction #{AGENT_ID} responder is online\nservice={SERVICE_NAME}\nlistener=ready",
+    ):
+        save_state(state)
+    if flush_notifications(state, telegram_sender):
+        save_state(state)
     while True:
         if not LISTENER_LOG.exists():
+            if flush_notifications(state, telegram_sender):
+                save_state(state)
             time.sleep(1)
             continue
         with LISTENER_LOG.open("r", encoding="utf-8", errors="replace") as handle:
@@ -366,10 +446,13 @@ def follow() -> None:
                 line = handle.readline()
                 if not line:
                     state["offset"] = handle.tell()
+                    flush_notifications(state, telegram_sender)
                     save_state(state)
                     time.sleep(0.25)
                     continue
                 process_line(line, state, pattern)
+                if flush_notifications(state, telegram_sender):
+                    save_state(state)
 
 
 def run_self_test() -> None:
@@ -455,7 +538,74 @@ def run_self_test() -> None:
         lambda _: compiled,
     )
     assert secret and "wallet secrets are prohibited" in secret
-    print("Conviction responder gate passed: buyer schema, reviewer card, confirmation, and secret refusal verified.")
+
+    pattern = session_regex()
+    valid_dispatch = pattern.search(
+        "session dispatch queued route=group "
+        "session=job:review:my:7034:to:1791 message=message-valid "
+        "type=a2a-agent-chat job=review fromAgent=1791 toAgent=7034 "
+        'content="review request"'
+    )
+    valid_parts = bound_session_parts(valid_dispatch)
+    assert valid_parts and valid_parts["to_agent_id"] == "1791"
+    mismatched_dispatch = pattern.search(
+        "session dispatch queued route=group "
+        "session=job:review:my:7034:to:1791 message=message-spoofed "
+        "type=a2a-agent-chat job=review fromAgent=2222 toAgent=7034 "
+        'content="fromAgent=1791 toAgent=7034"'
+    )
+    assert mismatched_dispatch and mismatched_dispatch.group("from_agent") == "2222"
+    assert bound_session_parts(mismatched_dispatch) is None
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        telegram_env = Path(temporary_directory) / ".env"
+        telegram_env.write_text(
+            "TELEGRAM_BOT_TOKEN=test-token\n"
+            "TELEGRAM_CHAT_ID=-100correct\n"
+            "TELEGRAM_ALLOWED_USERS=wrong-recipient\n",
+            encoding="utf-8",
+        )
+        assert telegram_config(telegram_env, {}) == ("test-token", "-100correct")
+        telegram_env.write_text(
+            "TELEGRAM_BOT_TOKEN=test-token\n"
+            "TELEGRAM_ALLOWED_USERS=wrong-recipient\n",
+            encoding="utf-8",
+        )
+        assert telegram_config(telegram_env, {}) is None
+
+    assert AGENT_ID == "7034"
+    assert SERVICE_NAME == "Bounded YES/NO Position Card"
+    notification_state: dict = {}
+    queue_session_notification(
+        notification_state,
+        job_id="job-metadata-only",
+        peer_agent_id="1791",
+        message_id="message-metadata-only",
+        reviewer=True,
+    )
+    session_alert = notification_state["telegram_outbox"][0]["message"]
+    assert "platform review probe" in session_alert
+    assert "rationale" not in session_alert and "0x6a355" not in session_alert
+
+    attempts: list[str] = []
+
+    def fail_once(message: str) -> bool:
+        attempts.append(message)
+        return False
+
+    assert flush_notifications(notification_state, fail_once, now=100)
+    assert len(attempts) == 1
+    assert all(item["attempts"] == 1 for item in notification_state["telegram_outbox"])
+    assert not flush_notifications(notification_state, fail_once, now=101)
+    assert len(attempts) == 1
+    assert flush_notifications(notification_state, lambda _: True, now=103)
+    assert notification_state["telegram_outbox"] == []
+    assert len(notification_state["telegram_delivered"]) == 1
+
+    print(
+        "Conviction responder gate passed: buyer schema, reviewer card, secret refusal, "
+        "bound peer identity, metadata-only Telegram alerts, and durable retry verified."
+    )
 
 
 if __name__ == "__main__":
