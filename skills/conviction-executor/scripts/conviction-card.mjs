@@ -367,7 +367,13 @@ function validatePluginOrderFields(validated, data, { preview }) {
   const { intent, outcome, tokenId, marketId, bounds } = validated;
   const market = intent.market;
   fail(String(data.condition_id || "").toLowerCase() === lower(market.conditionId), "plugin_mismatch", "Plugin condition ID differs from card");
-  fail(String(data.market_id || "") === marketId, "plugin_mismatch", "Plugin market ID differs from card");
+  // The V2 live response can omit the request-only market_id after resolving
+  // the canonical condition and token. The dry run must always echo it, and a
+  // live result that does include it must still match. condition_id and
+  // token_id remain mandatory for both paths.
+  if (preview || data.market_id !== undefined) {
+    fail(String(data.market_id || "") === marketId, "plugin_mismatch", "Plugin market ID differs from card");
+  }
   fail(String(data.outcome || "").toUpperCase() === outcome, "plugin_mismatch", "Plugin outcome differs from card");
   fail(String(data.token_id || "") === tokenId, "plugin_mismatch", "Plugin outcome token differs from card");
   fail(data.side === "BUY" && data.order_type === "FAK", "plugin_mismatch", "Plugin order must be a FAK BUY");
