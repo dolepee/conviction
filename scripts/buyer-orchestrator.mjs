@@ -16,6 +16,7 @@ import { parseDecimal } from "../src/decimal.mjs";
 import { fetchAndVerifyClose } from "../src/exit-receipt-verifier.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchPositionSnapshot } from "../src/position-client.mjs";
+import { fetchAllOpenOrders } from "../src/polymarket-open-orders.mjs";
 import {
   POSITION_CARD_SERVICE,
   POSITION_MANAGER_SERVICE,
@@ -312,15 +313,21 @@ export function normalizeOpenOrders(input) {
       code: "invalid_tool_output",
     });
   }
+  const active = new Set(["OPEN", "LIVE", "UNMATCHED", "ORDER_STATUS_OPEN", "ORDER_STATUS_LIVE", "ORDER_STATUS_UNMATCHED"]);
+  const inactive = new Set(["MATCHED", "CANCELED", "CANCELLED", "EXPIRED", "ORDER_STATUS_MATCHED", "ORDER_STATUS_CANCELED", "ORDER_STATUS_CANCELLED", "ORDER_STATUS_EXPIRED"]);
   return orders.filter((order) => {
-    const state = String(order?.status ?? order?.state ?? "OPEN").toUpperCase();
-    return state === "OPEN" || state === "LIVE" || state === "UNMATCHED";
+    const state = String(order?.status ?? order?.state ?? "").toUpperCase();
+    if (active.has(state)) return true;
+    if (inactive.has(state)) return false;
+    throw Object.assign(new Error("Polymarket returned an order with an unknown status"), {
+      code: "invalid_tool_output",
+    });
   });
 }
 
 export function summarizeOpenSellReservations(input, outcomeTokenId) {
   const tokenId = String(outcomeTokenId || "");
-  if (!/^\d+$/.test(tokenId)) {
+  if (!/^(0|[1-9]\d*)$/.test(tokenId)) {
     throw Object.assign(new Error("Selected outcome token ID is invalid"), {
       code: "invalid_tool_output",
     });
@@ -331,7 +338,7 @@ export function summarizeOpenSellReservations(input, outcomeTokenId) {
   for (const order of normalizeOpenOrders(input)) {
     const side = String(order?.side || "").toUpperCase();
     const orderTokenId = String(order?.token_id ?? order?.asset_id ?? "");
-    if ((side !== "BUY" && side !== "SELL") || !/^\d+$/.test(orderTokenId)) {
+    if ((side !== "BUY" && side !== "SELL") || !/^(0|[1-9]\d*)$/.test(orderTokenId)) {
       throw Object.assign(new Error("Polymarket returned an open order with an invalid side or token"), {
         code: "invalid_tool_output",
       });
@@ -339,8 +346,13 @@ export function summarizeOpenSellReservations(input, outcomeTokenId) {
     if (side !== "SELL" || orderTokenId !== tokenId) continue;
 
     try {
-      const originalRaw = parseDecimal(order?.original_size, 6, "open SELL original size");
-      const matchedRaw = parseDecimal(order?.size_matched ?? "0", 6, "open SELL matched size");
+      const originalSize = String(order?.original_size ?? "");
+      const matchedSize = String(order?.size_matched ?? "0");
+      if (!/^(0|[1-9]\d*)$/.test(originalSize) || !/^(0|[1-9]\d*)$/.test(matchedSize)) {
+        throw new Error("sizes are not canonical atomic integers");
+      }
+      const originalRaw = BigInt(originalSize);
+      const matchedRaw = BigInt(matchedSize);
       if (matchedRaw > originalRaw) throw new Error("matched size exceeds original size");
       const remainingRaw = originalRaw - matchedRaw;
       if (remainingRaw > 0n) {
@@ -981,16 +993,21 @@ async function main() {
     },
     checkReadiness: loadReadiness,
     checkCloseReadiness: async ({ outcomeTokenId }) => {
-      const [readiness, position, ordersResult] = await Promise.all([
+      const [readiness, position] = await Promise.all([
         loadReadiness(),
         fetchPositionSnapshot(tradingWallet, outcomeTokenId),
-        commandJson(
-          "polymarket-plugin",
-          ["orders", "--state", "OPEN"],
-          "Polymarket open-orders check",
-        ),
       ]);
-      const openOrders = normalizeOpenOrders(ordersResult);
+      const completeOpenOrders = await fetchAllOpenOrders({
+        signerAddress: readiness.paymentPayer,
+        depositWallet: tradingWallet,
+        outcomeTokenId: position.outcomeTokenId,
+      });
+      if (completeOpenOrders.complete !== true) {
+        throw Object.assign(new Error("Polymarket open-order pagination is incomplete"), {
+          code: "incomplete_open_orders",
+        });
+      }
+      const openOrders = normalizeOpenOrders(completeOpenOrders.orders);
       const reservations = summarizeOpenSellReservations(openOrders, position.outcomeTokenId);
       latestCloseReadiness = {
         ...readiness,
@@ -1002,6 +1019,8 @@ async function main() {
         reservedSharesRaw: reservations.reservedSharesRaw,
         openSellOrderCount: reservations.openSellOrderCount,
         totalOpenOrderCount: openOrders.length,
+        openOrderPageCount: completeOpenOrders.pageCount,
+        openOrdersComplete: true,
       };
       return latestCloseReadiness;
     },

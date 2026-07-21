@@ -308,16 +308,16 @@ test("buyer CLI normalizes only active open orders", () => {
   );
 });
 
-test("buyer CLI reserves only unmatched SELL shares for the selected outcome token", () => {
+test("buyer CLI reserves official V2 atomic SELL shares only for the selected outcome token", () => {
   const orders = {
     ok: true,
     data: {
       orders: [
-        { status: "OPEN", side: "BUY", token_id: "1", original_size: "99", size_matched: "0" },
-        { status: "LIVE", side: "SELL", token_id: "2", original_size: "8", size_matched: "0" },
-        { status: "OPEN", side: "sell", token_id: "1", original_size: "5", size_matched: "1.25" },
-        { status: "OPEN", side: "SELL", token_id: "1", original_size: "2", size_matched: "2" },
-        { status: "MATCHED", side: "SELL", token_id: "1", original_size: "4", size_matched: "4" },
+        { status: "ORDER_STATUS_LIVE", side: "BUY", token_id: "1", original_size: "99000000", size_matched: "0" },
+        { status: "ORDER_STATUS_LIVE", side: "SELL", token_id: "2", original_size: "8000000", size_matched: "0" },
+        { status: "ORDER_STATUS_LIVE", side: "sell", token_id: "1", original_size: "5000000", size_matched: "1250000" },
+        { status: "ORDER_STATUS_LIVE", side: "SELL", token_id: "1", original_size: "2000000", size_matched: "2000000" },
+        { status: "ORDER_STATUS_MATCHED", side: "SELL", token_id: "1", original_size: "4000000", size_matched: "4000000" },
       ],
     },
   };
@@ -354,6 +354,12 @@ test("buyer CLI fail-closes on malformed selected-token SELL reservations", () =
   assert.throws(
     () => summarizeOpenSellReservations({
       orders: [{ status: "OPEN", side: "SELL", token_id: "1", original_size: "1", size_matched: "2" }],
+    }, "1"),
+    (error) => error?.code === "invalid_tool_output",
+  );
+  assert.throws(
+    () => summarizeOpenSellReservations({
+      orders: [{ status: "ORDER_STATUS_LIVE", side: "SELL", token_id: "01", original_size: "1", size_matched: "0" }],
     }, "1"),
     (error) => error?.code === "invalid_tool_output",
   );
