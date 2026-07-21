@@ -171,6 +171,30 @@ test("buyer CLI records only pinned non-secret EIP-3009 authorization metadata",
     nonce,
   });
   assert.equal("signature" in metadata, false);
+  const epochNowSeconds = 1_784_667_653;
+  const epochOrigin = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+  epochOrigin.payload.authorization.validAfter = "0";
+  epochOrigin.payload.authorization.validBefore = String(epochNowSeconds + 300);
+  assert.equal(paymentAuthorizationMetadata(
+    Buffer.from(JSON.stringify(epochOrigin)).toString("base64"),
+    {
+      paymentPayer: payer,
+      service: POSITION_MANAGER_SERVICE,
+      now: epochNowSeconds * 1_000,
+    },
+  ).validAfter, "0");
+  epochOrigin.payload.authorization.validBefore = String(epochNowSeconds + 306);
+  assert.throws(
+    () => paymentAuthorizationMetadata(
+      Buffer.from(JSON.stringify(epochOrigin)).toString("base64"),
+      {
+        paymentPayer: payer,
+        service: POSITION_MANAGER_SERVICE,
+        now: epochNowSeconds * 1_000,
+      },
+    ),
+    (error) => error?.code === "payment_authorization_mismatch",
+  );
   assert.throws(
     () => paymentAuthorizationMetadata(encoded, {
       paymentPayer: "0x2222222222222222222222222222222222222222",

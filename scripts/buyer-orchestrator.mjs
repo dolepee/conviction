@@ -588,6 +588,8 @@ export function paymentAuthorizationMetadata(headerValue, {
   const validWindow = DECIMAL_UINT_RE.test(validAfter) && DECIMAL_UINT_RE.test(validBefore)
     ? BigInt(validBefore) - BigInt(validAfter)
     : -1n;
+  // OKX's standard EIP-3009 signer uses an epoch origin and bounds exposure with validBefore.
+  const epochOrigin = validAfter === "0";
   const nowSeconds = BigInt(Math.floor(now / 1_000));
   if (
     decoded?.x402Version !== 2 || accepted?.scheme !== "exact" ||
@@ -600,8 +602,8 @@ export function paymentAuthorizationMetadata(headerValue, {
     !ADDRESS_RE.test(from) || from !== String(paymentPayer || "").toLowerCase() ||
     to !== SERVICE_PAYEE || value !== service.priceAtomic ||
     !DECIMAL_UINT_RE.test(validAfter) || !DECIMAL_UINT_RE.test(validBefore) ||
-    validWindow <= 0n || validWindow > BigInt(SERVICE_PAYMENT_TIMEOUT_SECONDS + 5) ||
-    BigInt(validAfter) < nowSeconds - 60n || BigInt(validAfter) > nowSeconds + 5n ||
+    validWindow <= 0n || (!epochOrigin && validWindow > BigInt(SERVICE_PAYMENT_TIMEOUT_SECONDS + 5)) ||
+    (!epochOrigin && (BigInt(validAfter) < nowSeconds - 60n || BigInt(validAfter) > nowSeconds + 5n)) ||
     BigInt(validBefore) <= nowSeconds || BigInt(validBefore) > nowSeconds + BigInt(SERVICE_PAYMENT_TIMEOUT_SECONDS + 5) ||
     !HASH_RE.test(nonce) || !/^0x[0-9a-f]{130}$/i.test(signature)
   ) {
@@ -632,6 +634,7 @@ function validateStoredPaymentAuthorization(metadata, {
   const validWindow = DECIMAL_UINT_RE.test(validAfter) && DECIMAL_UINT_RE.test(validBefore)
     ? BigInt(validBefore) - BigInt(validAfter)
     : -1n;
+  const epochOrigin = validAfter === "0";
   if (
     metadata?.version !== "conviction-x402-authorization-v1" ||
     metadata?.scheme !== "exact-eip3009" || metadata?.network !== SERVICE_NETWORK ||
@@ -639,7 +642,7 @@ function validateStoredPaymentAuthorization(metadata, {
     String(metadata?.from || "").toLowerCase() !== String(paymentPayer || "").toLowerCase() ||
     String(metadata?.to || "").toLowerCase() !== SERVICE_PAYEE ||
     String(metadata?.value || "") !== service.priceAtomic ||
-    validWindow <= 0n || validWindow > BigInt(SERVICE_PAYMENT_TIMEOUT_SECONDS + 5) ||
+    validWindow <= 0n || (!epochOrigin && validWindow > BigInt(SERVICE_PAYMENT_TIMEOUT_SECONDS + 5)) ||
     !HASH_RE.test(String(metadata?.nonce || ""))
   ) {
     throw Object.assign(new Error("Stored x402 authorization differs from the pinned payment"), {
