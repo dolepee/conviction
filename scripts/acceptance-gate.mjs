@@ -163,6 +163,10 @@ if (mode === "live") {
     process.stderr.write(`Missing live arguments: ${missing.join(", ")}\n`);
     process.exit(2);
   }
+  if (required.paymentPayer.toLowerCase() === SERVICE_PAYEE) {
+    process.stderr.write("Release-live Gate A requires a buyer-seat payer distinct from the service treasury.\n");
+    process.exit(2);
+  }
   const trustedIssuerDocument = JSON.parse(readFileSync(productionRegistryPath, "utf8"));
   const trustedIssuers = trustedIssuerRegistry(trustedIssuerDocument.issuers || trustedIssuerDocument);
   const gateStartedAt = Date.now();

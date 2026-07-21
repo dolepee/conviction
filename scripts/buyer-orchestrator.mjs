@@ -255,6 +255,16 @@ export function paymentTransaction(paymentResponse) {
   return String(transaction).toLowerCase();
 }
 
+export function requireDistinctPaymentPayer(paymentPayer) {
+  if (String(paymentPayer || "").toLowerCase() === SERVICE_PAYEE) {
+    throw Object.assign(
+      new Error("Buyer-seat payment payer must differ from Conviction's service treasury"),
+      { code: "self_payment_disallowed" },
+    );
+  }
+  return String(paymentPayer || "").toLowerCase();
+}
+
 export function validatePaymentChallenge(decoded) {
   const requirement = decoded?.accepts?.[0];
   if (
@@ -274,6 +284,7 @@ export function validatePaymentChallenge(decoded) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  requireDistinctPaymentPayer(options.paymentPayer);
   const trustedIssuers = JSON.parse(await readFile(options.issuerRegistry, "utf8"));
   const pinnedRecords = trustedIssuers?.issuers || trustedIssuers;
   const pinnedRegistry = trustedIssuerRegistry(pinnedRecords);

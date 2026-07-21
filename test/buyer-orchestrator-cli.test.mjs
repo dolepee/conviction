@@ -9,6 +9,7 @@ import {
   parseJsonOutput,
   paymentTransaction,
   normalizePluginReadiness,
+  requireDistinctPaymentPayer,
   validatePaymentChallenge,
   writeReconciliationJournal,
 } from "../scripts/buyer-orchestrator.mjs";
@@ -79,6 +80,17 @@ test("buyer CLI accepts only the exact pinned x402 challenge", () => {
       (error) => error?.code === "payment_challenge_mismatch",
     );
   }
+});
+
+test("buyer CLI rejects a service-treasury self-payment", () => {
+  assert.throws(
+    () => requireDistinctPaymentPayer(SERVICE_PAYEE.toUpperCase()),
+    (error) => error?.code === "self_payment_disallowed",
+  );
+  assert.equal(
+    requireDistinctPaymentPayer("0x1111111111111111111111111111111111111111"),
+    "0x1111111111111111111111111111111111111111",
+  );
 });
 
 test("buyer CLI normalizes the installed deposit-wallet quickstart shape", () => {
