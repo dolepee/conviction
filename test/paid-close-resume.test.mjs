@@ -164,7 +164,8 @@ function adapters(overrides = {}) {
         return { ok: true, dry_run: true };
       },
       validateCloseDryRun: async () => ({ ok: true }),
-      execute: async () => {
+      execute: async (_argv, executionOptions = {}) => {
+        executionOptions.onStart?.();
         calls.executions += 1;
         return { ok: true, data: { order_id: CLOSE_ORDER, tx_hashes: [CLOSE_TX] } };
       },
@@ -306,7 +307,8 @@ test("paid CLOSE resume rejects any non-exact or already-attempted checkpoint be
 test("paid CLOSE resume retains both locks and fails closed after an ambiguous live call", async () => {
   const f = await fixture({
     adapterOverrides: {
-      execute: async () => {
+      execute: async (_argv, executionOptions = {}) => {
+        executionOptions.onStart?.();
         f.calls.executions += 1;
         throw Object.assign(new Error("connection closed after submission"), { code: "tool_failed" });
       },
@@ -347,6 +349,42 @@ test("paid CLOSE resume releases only its execution lock when a locked dry run f
       `close-${retryable.replayKey.slice(2)}.lock.json`,
       "journey.json",
     ]);
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("paid CLOSE resume rechecks expiry after its durable marker and releases an unstarted execution lock", async () => {
+  let current = NOW;
+  let validations = 0;
+  const f = await fixture({
+    adapterOverrides: {
+      validateCloseCard: async () => {
+        validations += 1;
+        if (validations === 4) current = Date.parse(validatedCard.expiresAt) - 9_999;
+        return structuredClone(validatedCard);
+      },
+    },
+  });
+  try {
+    await assert.rejects(
+      resumePaidCloseJournal({
+        file: f.journal,
+        trustedIssuers: new Map(),
+        adapters: f.value,
+        now: () => current,
+        stateDirectory: f.directory,
+      }),
+      (error) => error?.code === "insufficient_execution_window",
+    );
+    assert.equal(f.calls.executions, 0);
+    const retryable = JSON.parse(await readFile(f.journal, "utf8"));
+    assert.equal(retryable.stage, "trade_confirmed");
+    assert.equal(retryable.executionArgv, null);
+    assert.equal(retryable.executionArgvHash, null);
+    assert.equal(retryable.executionAttemptedAt, null);
+    assert.equal(retryable.executionLockPath, null);
+    assert.equal(retryable.replayLockPath, f.replayLockPath);
   } finally {
     await rm(f.directory, { recursive: true, force: true });
   }

@@ -19,6 +19,7 @@ import {
   resumePaidCloseJournal,
   normalizePluginReadiness,
   requireDistinctPaymentPayer,
+  requireExecutionLaunchWindow,
   requirePinnedCloseExecutionReadiness,
   shouldPersistFailureCheckpoint,
   settleExecutionLock,
@@ -95,6 +96,19 @@ test("buyer CLI accepts one source-bound bounded CLOSE contract", () => {
   });
   assert.equal("budget" in parsed, false);
   assert.equal("confirmPayment" in parsed, false);
+});
+
+test("buyer execution launch window is absolute and leaves safe headroom", () => {
+  const now = Date.parse("2026-07-21T02:00:00.000Z");
+  const card = { expiresAt: "2026-07-21T02:00:30.000Z" };
+  assert.deepEqual(requireExecutionLaunchWindow(card, { now: () => now }), {
+    observedAt: now,
+    deadlineEpochMs: Date.parse(card.expiresAt),
+  });
+  assert.throws(
+    () => requireExecutionLaunchWindow(card, { now: () => now + 20_001 }),
+    (error) => error?.code === "insufficient_execution_window",
+  );
 });
 
 test("buyer CLI does not persist an empty journal for parse or other preflight-only failures", () => {

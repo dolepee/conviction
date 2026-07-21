@@ -535,10 +535,24 @@ export function requirePinnedCloseExecutionReadiness(readiness, { wallet, tokenI
   }
 }
 
-async function commandJson(file, args, label) {
+async function commandJson(file, args, label, {
+  deadlineEpochMs,
+  clock = Date.now,
+  onStart = () => {},
+} = {}) {
+  const commandStartedAt = Number(clock());
+  const boundedTimeout = deadlineEpochMs === undefined
+    ? 60_000
+    : Math.min(60_000, Math.floor(Number(deadlineEpochMs) - commandStartedAt));
+  if (!Number.isFinite(commandStartedAt) || !Number.isFinite(boundedTimeout) || boundedTimeout <= 0) {
+    throw Object.assign(new Error(`${label} cannot start after the signed execution deadline`), {
+      code: "execution_deadline_elapsed",
+    });
+  }
   try {
+    onStart();
     const { stdout: output } = await execFileAsync(file, args, {
-      timeout: 60_000,
+      timeout: boundedTimeout,
       maxBuffer: 2 * 1024 * 1024,
       encoding: "utf8",
     });
@@ -567,12 +581,30 @@ async function postJson(url, body, { headers = {} } = {}) {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
+    redirect: "error",
     signal: AbortSignal.timeout(30_000),
   });
   const text = await response.text();
   let json;
   try { json = text ? JSON.parse(text) : null; } catch { json = null; }
   return { response, json, text };
+}
+
+export function requireExecutionLaunchWindow(card, {
+  now = Date.now,
+  minimumHeadroomMs = 10_000,
+} = {}) {
+  const observedAt = Number(now());
+  const deadlineEpochMs = Date.parse(String(card?.expiresAt || ""));
+  if (
+    !Number.isFinite(observedAt) || !Number.isFinite(deadlineEpochMs) ||
+    deadlineEpochMs - observedAt < minimumHeadroomMs
+  ) {
+    throw Object.assign(new Error("Signed execution card has too little time left for locked submission"), {
+      code: "insufficient_execution_window",
+    });
+  }
+  return Object.freeze({ observedAt, deadlineEpochMs });
 }
 
 function decodeHeader(value, label) {
@@ -1273,7 +1305,7 @@ export async function resumePaidCloseJournal({
       now: now(),
     });
     bindResumeCard({ state, request, validated, verifiedSource });
-    const consent = validateResumeConsent({ state, validated, paymentProof, now: now() });
+    let consent = validateResumeConsent({ state, validated, paymentProof, now: now() });
     const readiness = await adapters.checkCloseReadiness({
       paymentPayer: state.paymentPayer,
       sellerWallet: state.buyerWallet,
@@ -1290,23 +1322,44 @@ export async function resumePaidCloseJournal({
       tokenId: validated.tokenId,
       sharesRaw: BigInt(validated.bounds.sharesRaw),
     });
-    const dryRun = await adapters.dryRun(validated.executionCard.argv);
+    const preDryRunWindow = requireExecutionLaunchWindow(validated, { now });
+    const dryRun = await adapters.dryRun(validated.executionCard.argv, {
+      deadlineEpochMs: preDryRunWindow.deadlineEpochMs,
+      clock: now,
+    });
     await adapters.validateCloseDryRun(state.paidCard, dryRun, {
       trustedIssuers,
       now: now(),
     });
+    validated = await adapters.validateCloseCard(state.paidCard, {
+      trustedIssuers,
+      now: now(),
+    });
+    bindResumeCard({ state, request, validated, verifiedSource });
+    consent = validateResumeConsent({ state, validated, paymentProof, now: now() });
+    requireExecutionLaunchWindow(validated, { now });
 
-    // The durable marker is written before the first possibly-live call. Any
-    // crash or error after this point is ambiguous and is never auto-retried.
+    // The durable marker is written before the first possibly-live call. A
+    // final pre-spawn refusal clears it; once onStart fires, every failure is
+    // ambiguous and is never auto-retried.
     state.stage = "execution_attempted";
     state.executionArgv = [...validated.executionCard.argv];
     state.executionArgvHash = consent.argvHash;
     state.executionAttemptedAt = new Date(now()).toISOString();
     state.reconciliationRequired = true;
     await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
-    liveAttempted = true;
-
-    const liveResult = await adapters.execute(validated.executionCard.argv);
+    validated = await adapters.validateCloseCard(state.paidCard, {
+      trustedIssuers,
+      now: now(),
+    });
+    bindResumeCard({ state, request, validated, verifiedSource });
+    consent = validateResumeConsent({ state, validated, paymentProof, now: now() });
+    const launchWindow = requireExecutionLaunchWindow(validated, { now });
+    const liveResult = await adapters.execute(validated.executionCard.argv, {
+      deadlineEpochMs: launchWindow.deadlineEpochMs,
+      clock: now,
+      onStart: () => { liveAttempted = true; },
+    });
     const receiptRequest = await adapters.buildCloseReceiptRequest(state.paidCard, liveResult, {
       trustedIssuers,
     });
@@ -1395,7 +1448,12 @@ export async function resumePaidCloseJournal({
           journal,
           fields: ["executionLockPath"],
         });
-        if (lockStateVerified) state.stage = "trade_confirmed";
+        if (lockStateVerified) {
+          state.stage = "trade_confirmed";
+          state.executionArgv = null;
+          state.executionArgvHash = null;
+          state.executionAttemptedAt = null;
+        }
       } catch (releaseError) {
         state.resumeError.lockReleaseError = releaseError?.code || "lock_release_failed";
       }
@@ -1593,13 +1651,19 @@ async function main() {
             openSellOrderCount: reservations.openSellOrderCount,
           };
         },
-        dryRun: (executionArgv) => commandJson(
+        dryRun: (executionArgv, executionOptions) => commandJson(
           "polymarket-plugin",
           [...executionArgv, "--dry-run"],
           "Resumed Polymarket dry run",
+          executionOptions,
         ),
         validateCloseDryRun: (card, dryRun, validationOptions) => validateClosePluginPreview(card, dryRun, validationOptions),
-        execute: (executionArgv) => commandJson("polymarket-plugin", executionArgv, "Resumed Polymarket live order"),
+        execute: (executionArgv, executionOptions) => commandJson(
+          "polymarket-plugin",
+          executionArgv,
+          "Resumed Polymarket live order",
+          executionOptions,
+        ),
         buildCloseReceiptRequest: (card, liveResult, validationOptions) => buildCloseReceiptRequest(card, liveResult, validationOptions),
         fetchCloseProof: (receiptRequest) => fetchAndVerifyClose(receiptRequest.transactionHash, {
           intent: receiptRequest.intent,
@@ -2032,24 +2096,31 @@ async function main() {
             tokenId,
             sharesRaw,
           });
-          const lockedCard = validateCloseCard(checkpoint.paidCard, {
+          let lockedCard = validateCloseCard(checkpoint.paidCard, {
             trustedIssuers: pinnedRegistry,
             now: Date.now(),
           });
-          if (Date.parse(lockedCard.expiresAt) - Date.now() < 10_000) {
-            throw Object.assign(new Error("Signed CLOSE card has too little time left for locked submission"), {
-              code: "insufficient_execution_window",
-            });
-          }
+          const preDryRunWindow = requireExecutionLaunchWindow(lockedCard);
           const lockedDryRun = await commandJson(
             "polymarket-plugin",
             [...argv, "--dry-run"],
             "Locked final Polymarket dry run",
+            { deadlineEpochMs: preDryRunWindow.deadlineEpochMs },
           );
           validateClosePluginPreview(checkpoint.paidCard, lockedDryRun, {
             trustedIssuers: pinnedRegistry,
             now: Date.now(),
           });
+          lockedCard = validateCloseCard(checkpoint.paidCard, {
+            trustedIssuers: pinnedRegistry,
+            now: Date.now(),
+          });
+          requireExecutionLaunchWindow(lockedCard);
+          if (sha256(lockedCard.executionCard.argv) !== checkpoint.tradeConsent?.executionArgvHash) {
+            throw Object.assign(new Error("Locked CLOSE differs from the confirmed order"), {
+              code: "trade_consent_mismatch",
+            });
+          }
         } else {
           const lockedReadiness = await loadReadiness();
           if (
@@ -2061,15 +2132,56 @@ async function main() {
               code: "trading_wallet_mismatch",
             });
           }
+          let lockedCard = validateCard(checkpoint.paidCard, {
+            trustedIssuers: pinnedRegistry,
+            now: Date.now(),
+          });
+          const preDryRunWindow = requireExecutionLaunchWindow(lockedCard);
+          const lockedDryRun = await commandJson(
+            "polymarket-plugin",
+            [...argv, "--dry-run"],
+            "Locked final Polymarket OPEN dry run",
+            { deadlineEpochMs: preDryRunWindow.deadlineEpochMs },
+          );
+          validatePluginPreview(checkpoint.paidCard, lockedDryRun, {
+            trustedIssuers: pinnedRegistry,
+            now: Date.now(),
+          });
+          lockedCard = validateCard(checkpoint.paidCard, {
+            trustedIssuers: pinnedRegistry,
+            now: Date.now(),
+          });
+          requireExecutionLaunchWindow(lockedCard);
         }
 
-        executionAttempted = true;
         checkpoint.stage = "execution_attempted";
         checkpoint.reconciliationRequired = true;
         checkpoint.executionArgv = [...argv];
         checkpoint.executionArgvHash = sha256(argv);
         await writeReconciliationJournal(checkpoint);
-        const result = await commandJson("polymarket-plugin", argv, "Polymarket live order");
+        let result;
+        try {
+          const launchCard = closeMode
+            ? validateCloseCard(checkpoint.paidCard, { trustedIssuers: pinnedRegistry, now: Date.now() })
+            : validateCard(checkpoint.paidCard, { trustedIssuers: pinnedRegistry, now: Date.now() });
+          const launchWindow = requireExecutionLaunchWindow(launchCard);
+          if (sha256(launchCard.executionCard.argv) !== checkpoint.executionArgvHash) {
+            throw Object.assign(new Error("Live order differs from the persisted bounded execution"), {
+              code: "trade_consent_mismatch",
+            });
+          }
+          result = await commandJson("polymarket-plugin", argv, "Polymarket live order", {
+            deadlineEpochMs: launchWindow.deadlineEpochMs,
+            onStart: () => { executionAttempted = true; },
+          });
+        } catch (error) {
+          if (!executionAttempted) {
+            checkpoint.stage = "execution_blocked_before_launch";
+            checkpoint.reconciliationRequired = closeMode;
+            await writeReconciliationJournal(checkpoint);
+          }
+          throw error;
+        }
         checkpoint.liveResult = result;
         const data = result?.data || result;
         checkpoint.stage = "live_result_received";

@@ -216,7 +216,11 @@ async function updateReservation(file, update) {
   return next;
 }
 
-async function commandJson(file, args, label, { deadlineEpochMs, clock = Date.now } = {}) {
+async function commandJson(file, args, label, {
+  deadlineEpochMs,
+  clock = Date.now,
+  onStart = () => {},
+} = {}) {
   const commandStartedAt = Number(clock());
   const boundedTimeout = deadlineEpochMs === undefined
     ? 60_000
@@ -227,6 +231,7 @@ async function commandJson(file, args, label, { deadlineEpochMs, clock = Date.no
     `${label} cannot start after the signed placement deadline`,
   );
   try {
+    onStart();
     const { stdout: output } = await execFileAsync(file, args, {
       timeout: boundedTimeout,
       maxBuffer: 2 * 1024 * 1024,
@@ -986,22 +991,21 @@ export async function runTakeProfitCli(options, {
         state.executionAttempted = true;
         state.reconciliationRequired = true;
         await persist("execution_attempted");
-        executionAttempted = true;
-        const launchCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
-        const launchWindow = requireTakeProfitLaunchWindow(launchCard, { now });
-        fail(sha256(launchCard.executionCard.argv) === state.tradeConsent.executionArgvHash, "trade_consent_mismatch", "Live TAKE_PROFIT differs from the confirmed order");
         let result;
         try {
+          const launchCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
+          const launchWindow = requireTakeProfitLaunchWindow(launchCard, { now });
+          fail(sha256(launchCard.executionCard.argv) === state.tradeConsent.executionArgvHash, "trade_consent_mismatch", "Live TAKE_PROFIT differs from the confirmed order");
           result = await commandJson("polymarket-plugin", argv, "Polymarket TAKE_PROFIT live order", {
             deadlineEpochMs: launchWindow.placementDeadlineMs,
             clock: now,
+            onStart: () => { executionAttempted = true; },
           });
         } catch (error) {
-          if (error?.code === "placement_deadline_elapsed") {
-            executionAttempted = false;
+          if (!executionAttempted) {
             state.executionAttempted = false;
             state.reconciliationRequired = false;
-            await persist("execution_expired_before_launch");
+            await persist("execution_blocked_before_launch");
           }
           throw error;
         }
@@ -1052,7 +1056,8 @@ export async function runTakeProfitCli(options, {
     await persist();
     return { ...result, journalPath: journal, reservationLockPath: state.reservationLockPath };
   } catch (error) {
-    state.reconciliationRequired = Boolean(
+    const safelyUnlaunched = state.stage === "execution_blocked_before_launch" && !executionAttempted;
+    state.reconciliationRequired = safelyUnlaunched ? false : Boolean(
       executionAttempted || state.paymentAuthorization || state.paymentTx || state.reservationLockPath,
     );
     state.lastError = {
