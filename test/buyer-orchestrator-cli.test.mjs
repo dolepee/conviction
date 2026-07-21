@@ -20,6 +20,7 @@ import {
   normalizePluginReadiness,
   requireDistinctPaymentPayer,
   requirePinnedCloseExecutionReadiness,
+  shouldPersistFailureCheckpoint,
   settleExecutionLock,
   summarizeOpenSellReservations,
   validatePaymentChallenge,
@@ -90,6 +91,14 @@ test("buyer CLI accepts one source-bound bounded CLOSE contract", () => {
   });
   assert.equal("budget" in parsed, false);
   assert.equal("confirmPayment" in parsed, false);
+});
+
+test("buyer CLI does not persist an empty journal for parse or other preflight-only failures", () => {
+  assert.equal(shouldPersistFailureCheckpoint({ stage: "not_started" }, { executionStarted: false }), false);
+  assert.equal(shouldPersistFailureCheckpoint({ stage: "previewed" }, { executionStarted: false }), false);
+  assert.equal(shouldPersistFailureCheckpoint({ paymentRequestedAt: "2026-07-21T22:00:00.000Z" }, { executionStarted: false }), true);
+  assert.equal(shouldPersistFailureCheckpoint({ replayLockPath: "/private/replay.lock" }, { executionStarted: false }), true);
+  assert.equal(shouldPersistFailureCheckpoint({ stage: "not_started" }, { executionStarted: true }), true);
 });
 
 test("buyer CLI accepts the read-only CLOSE reconciliation command", () => {

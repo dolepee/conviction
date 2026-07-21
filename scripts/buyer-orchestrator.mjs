@@ -2153,12 +2153,21 @@ function isMain() {
   return process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
 }
 
+export function shouldPersistFailureCheckpoint(state, { executionStarted = executionAttempted } = {}) {
+  return Boolean(
+    executionStarted || state?.replayLockPath || state?.executionLockPath ||
+    state?.paymentRequestedAt || state?.paymentAuthorization || state?.paymentTx ||
+    state?.paidCard || state?.liveResult,
+  );
+}
+
 if (isMain()) {
   try {
     await main();
   } catch (error) {
     const stateCommand = process.argv[2] === "reconcile-close" || process.argv[2] === "resume-close";
-    if (!stateCommand) {
+    const persistCheckpoint = !stateCommand && shouldPersistFailureCheckpoint(checkpoint);
+    if (persistCheckpoint) {
       checkpoint.reconciliationRequired = Boolean(
         executionAttempted ||
         (checkpoint.replayLockPath && checkpoint.stage !== "complete"),
@@ -2171,9 +2180,8 @@ if (isMain()) {
       message: error?.message || "Buyer journey failed",
       ...(stateCommand ? {} : {
         ordersPlaced: executionAttempted ? "unknown" : 0,
-        reconciliationRequired: checkpoint.reconciliationRequired,
-        journalPath,
-        checkpoint,
+        reconciliationRequired: persistCheckpoint ? checkpoint.reconciliationRequired : false,
+        ...(persistCheckpoint ? { journalPath, checkpoint } : {}),
       }),
     })}\n`);
     process.exitCode = 1;

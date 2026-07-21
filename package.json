@@ -1,6 +1,6 @@
 {
   "name": "conviction",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Non-custodial bounded prediction-market execution for OKX.AI",

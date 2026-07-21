@@ -1,8 +1,8 @@
-# Bounded YES/NO OPEN and CLOSE — Service Contract
+# Bounded YES/NO OPEN and Position Manager — Service Contract
 
-Conviction turns an explicit user thesis into a ready-to-sign, fee-inclusive Polymarket YES or NO OPEN card, computes the objective exposure before signing, and independently verifies the resulting Polygon settlement. Its source-bound position manager can then produce an exact-share CLOSE card with a hard minimum price and independently verify the sale. It does not recommend an outcome or take custody.
+Conviction has exactly two paid products. OPEN turns an explicit user thesis into a ready-to-sign, fee-inclusive Polymarket YES or NO FAK buy and independently verifies the resulting Polygon settlement. Position Manager consumes a verified OPEN source and produces exactly one selected action: an immediate exact-share FOK CLOSE above a hard floor, or a post-only GTD TAKE_PROFIT at a target and venue expiry. It does not recommend an outcome or take custody.
 
-The OPEN routes are free `POST /api/preview`, paid `POST /api/service` at `0.05 USD₮0`, and proof-only `POST /api/receipt`. The CLOSE routes are free `POST /api/manage-preview`, paid `POST /api/manage` at `0.10 USD₮0`, and proof-only `POST /api/close-receipt`. The public web app remains an OPEN preview and verifier; the public agent/CLI can run a paid OPEN or source-bound CLOSE through bounds, one trade confirmation, execution, and proof in the same session.
+The OPEN routes are free `POST /api/preview`, paid `POST /api/service` at `0.05 USD₮0`, and proof-only `POST /api/receipt`. Both manager actions use free `POST /api/manage-preview` and paid `POST /api/manage` at `0.10 USD₮0`; the request's explicit `action` selects `close` or `take_profit`. CLOSE proof uses `POST /api/close-receipt`. TAKE_PROFIT returns an authenticated ARMED order proof immediately, then its buyer-side journal supports read-only status, independent Polygon fill proof, and exact-order cancellation. The public web app remains an OPEN preview/manual verifier; the repository-backed buyer agent/CLI runs the complete action without asking the user to type plugin commands.
 
 ## OPEN request
 
@@ -71,6 +71,7 @@ Send the paid manager or free manager preview:
 
 ```json
 {
+  "action": "close",
   "market": "will-gpt-6-be-released-by-december-31-2026-834-362-194-984-527",
   "outcome": "no",
   "shares": "7",
@@ -109,11 +110,56 @@ The public agent/CLI repeats the seller balance, standard V2 outcome-token appro
 
 The buyer runtime keys its replay lock to the canonical condition, selected token, seller, source proof, shares, and floor—not to a URL spelling or payment sponsor—and serializes the final deposit-wallet check through submission. An ambiguous CLOSE is never retried. `buyer-orchestrator.mjs reconcile-close` can release the scoped lock only after independently verifying a recorded settlement, or after confirming that execution never began and the signed card has expired; every other state remains locked for manual investigation.
 
-The OPEN source is a provenance link, not a consumable tax lot or one-time nullifier. Reusing a legacy source proof after shares have left and later returned to the wallet can still describe lineage; it does not prove those later tokens are the identical economic lot. Fresh seller-owned balance is the authority to sell. Conviction does not currently provide take-profit, stop-loss, or resting-order automation.
+The OPEN source is a provenance link, not a consumable tax lot or one-time nullifier. Reusing a legacy source proof after shares have left and later returned to the wallet can still describe lineage; it does not prove those later tokens are the identical economic lot. Fresh seller-owned balance is the authority to sell for either Position Manager action.
+
+## TAKE_PROFIT request
+
+Send the paid manager or free manager preview:
+
+```json
+{
+  "action": "take_profit",
+  "market": "will-gpt-6-be-released-by-december-31-2026-834-362-194-984-527",
+  "outcome": "no",
+  "shares": "7",
+  "targetPrice": "0.20",
+  "venueExpiresAt": "<canonical UTC ISO timestamp on a whole second>",
+  "wallet": "0x1111111111111111111111111111111111111111",
+  "sourcePosition": {
+    "transactionHash": "0x…",
+    "orderId": "0x…",
+    "intentHash": "0x…",
+    "intent": { "version": "conviction-intent-v4", "...": "original OPEN intent" },
+    "issuance": { "version": "conviction-issuance-v1", "...": "trusted Ed25519 signature" },
+    "positionProofHash": "0x…"
+  },
+  "rationale": "I chose this exact target and venue expiry for seven NO shares."
+}
+```
+
+Rules:
+
+- `action` must be exactly `take_profit`; omission selects legacy-compatible `close`, so public callers should always send it explicitly.
+- `market`, `outcome`, `wallet`, and `sourcePosition` must resolve to the same independently reverified standard V2 position.
+- `shares` must be positive whole shares, meet the market's resting-order minimum, not exceed the verified source or fresh wallet balance, and have no selected-token SELL reservation.
+- `targetPrice` must be in `(0, 1)`, align to the current market tick, produce cent-aligned full-fill proceeds, and be strictly above the freshly observed best bid so the order cannot cross on placement.
+- `venueExpiresAt` must be a canonical whole-second UTC timestamp with enough headroom to outlive the five-minute placement card, and cannot exceed the market end.
+
+## TAKE_PROFIT placement, lifecycle, and proof
+
+The free and paid manager share the same source, balance, approval, market, precision, expiry, fee, and proceeds checks. The free response is non-executable. The paid response is a signed five-minute placement card whose exact plugin vector is `SELL`, selected token, whole shares, target price, `GTD`, `--post-only`, and the signed venue expiry. The card expiry controls when placement may occur; it does not shorten an already submitted GTD order.
+
+Before payment and again after trade consent, the buyer runtime requires the exact deposit wallet, standard V2 approval, sufficient selected-token balance, a complete authenticated open-order snapshot, and zero selected-token SELL reservations. Payment consent never authorizes placement. After one fresh `confirm live mode`, the runtime advances beyond the confirmation second, repeats the identical dry run and readiness checks, and submits once. It then authenticates the exact CLOB order and returns `conviction-resting-order-proof-v1` plus `conviction-take-profit-passport-v1`, both explicitly `ARMED` and `onChain:false`.
+
+`tp-status` is read-only. It re-fetches the exact order with the buyer's owner-only local CLOB credentials. Zero-match `LIVE` remains `ARMED`; matched quantities are never hidden by a canceled or expired label. When associated trades exist, Conviction fetches every exact trade ID from the authenticated CLOB, attributes the pinned order as maker or taker without ambiguity, and independently verifies each unique Polygon settlement receipt. The versioned fill proof aggregates partial fills across trades and transactions while binding the exact order, wallet, selected token, gross proceeds, venue fee, net pUSD credit, target price, and signed quantity cap.
+
+`cancel-tp` requires the distinct exact phrase `confirm cancel take profit`. It invokes only `polymarket-plugin cancel --order-id <pinned-order-id>`, never a market-wide or all-order cancel, and then re-fetches the exact order. A fill/cancel race returns the matched quantity and still requires chain proof. A missing or indeterminate lookup remains `UNKNOWN` with reconciliation required; a plugin cancel acknowledgement alone is not proof of cancellation.
+
+TAKE_PROFIT is one bounded venue-hosted order. It is not a monitor daemon, recurring strategy, stop loss, autonomous re-entry, hidden price amendment, portfolio grant, or guaranteed fill.
 
 ## Refusal conditions
 
-Conviction fails closed for stale or unavailable market or position data, inactive or closed markets, non-binary markets, neg-risk markets, outcomes other than YES/NO, an OPEN other than FAK, a CLOSE other than exact FOK, an OPEN principal or CLOSE proceeds below the CLOB marketable-order floor, insufficient bounded liquidity, price/tick mismatch, inconsistent outcome-token mappings, invalid wallets, missing balance or approval, source substitution, fee/debit/credit mutation, intent mutation, or receipt substitution. Venue/plugin regional eligibility still applies at execution.
+Conviction fails closed for stale or unavailable market, position, order, trade, or receipt data; inactive or closed markets; non-binary or neg-risk markets; outcomes other than YES/NO; an OPEN other than FAK; a CLOSE other than exact FOK; a TAKE_PROFIT other than post-only GTD; sub-minimum or non-whole quantities; insufficient bounded liquidity; crossed targets; price/tick or expiry mismatch; selected-token SELL reservations; inconsistent outcome-token mappings; invalid wallets; missing balance or approval; source, token, order, trade, transaction, fee, debit, credit, or intent substitution; incomplete pagination; ambiguous maker/taker attribution; or unresolved fill/cancel state. Venue/plugin regional eligibility still applies at execution.
 
 ## Approval disclosure
 

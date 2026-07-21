@@ -37,8 +37,8 @@ export const POSITION_MANAGER_SERVICE = Object.freeze({
   priceAtomic: MANAGE_SERVICE_PRICE_ATOMIC,
   priceDisplay: MANAGE_SERVICE_PRICE_DISPLAY,
   serviceName: "Bounded Position Manager",
-  description: "Create one source-bound, ready-to-sign bounded CLOSE card",
-  deliveryNoun: "bounded CLOSE card",
+  description: "Create one source-bound bounded CLOSE or TAKE_PROFIT card",
+  deliveryNoun: "bounded position-manager card",
 });
 
 function servicePaywallHtml(service) {

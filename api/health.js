@@ -7,8 +7,18 @@ export default function handler(request, response) {
   return response.status(200).json({
     ok: true,
     product: "Conviction",
-    version: "0.3.6",
+    version: "0.4.0",
     execution: "non-custodial",
-    supported: { venue: "Polymarket", clob: "V2", outcomes: ["YES", "NO"], orderType: "FAK" },
+    products: [
+      { name: "OPEN", price: "0.05 USD₮0", path: "/api/service" },
+      { name: "POSITION_MANAGER", price: "0.10 USD₮0", path: "/api/manage", actions: ["CLOSE", "TAKE_PROFIT"] },
+    ],
+    supported: {
+      venue: "Polymarket",
+      clob: "V2",
+      outcomes: ["YES", "NO"],
+      actions: ["OPEN", "CLOSE", "TAKE_PROFIT"],
+      orderTypes: ["FAK", "FOK", "GTD"],
+    },
   });
 }
