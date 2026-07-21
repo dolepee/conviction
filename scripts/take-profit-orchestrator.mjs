@@ -52,7 +52,7 @@ import {
   buildTakeProfitLookupFailureStatus,
   buildTakeProfitStatus,
   TAKE_PROFIT_CANCEL_CONFIRMATION,
-  validateArmedTakeProfitJournal,
+  validateTakeProfitJournal,
 } from "../src/take-profit-lifecycle.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -332,7 +332,7 @@ async function loadLifecycleContext(options, { stateDirectory = STATE_DIRECTORY 
   const trustedDocument = JSON.parse(trustedText);
   const trustedIssuers = trustedIssuerRegistry(trustedDocument?.issuers || trustedDocument);
   fail(trustedIssuers.size > 0, "missing_trusted_issuer", "Pinned issuer registry is empty");
-  const binding = validateArmedTakeProfitJournal(journal, { trustedIssuers });
+  const binding = validateTakeProfitJournal(journal, { trustedIssuers });
   return { journalPath, journal, trustedIssuers, binding };
 }
 
@@ -1030,20 +1030,24 @@ export async function runTakeProfitCli(options, {
       emit,
       now,
     });
-    state.stage = "armed";
+    const armed = result.status === "ARMED";
+    state.stage = armed ? "armed" : "submitted";
+    state.status = result.status;
     state.orderId = result.orderId;
     state.takeProfitPassport = result.takeProfitPassport;
     state.takeProfitPassportHash = result.takeProfitPassportHash;
     state.restingOrderProofHash = result.restingOrderProofHash;
-    state.reconciliationRequired = false;
-    await settleExecutionLock(state, { liveAttempted: true, proofVerified: true });
+    state.initialOrderSnapshot = result.initialOrderSnapshot;
+    state.initialOrderSnapshotHash = result.initialOrderSnapshotHash;
+    state.reconciliationRequired = !armed;
+    await settleExecutionLock(state, { liveAttempted: true, proofVerified: armed });
     await updateReservation(state.reservationLockPath, {
       orderId: result.orderId,
       intentHash: result.intentHash,
       takeProfitPassportHash: result.takeProfitPassportHash,
       restingOrderProofHash: result.restingOrderProofHash,
-      status: "ARMED",
-      armedAt: new Date(now()).toISOString(),
+      status: result.status,
+      ...(armed ? { armedAt: new Date(now()).toISOString() } : { recoveryBoundAt: new Date(now()).toISOString() }),
     });
     await persist();
     return { ...result, journalPath: journal, reservationLockPath: state.reservationLockPath };

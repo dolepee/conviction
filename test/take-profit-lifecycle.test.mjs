@@ -11,6 +11,7 @@ import {
   buildTakeProfitStatus,
   TAKE_PROFIT_CANCEL_CONFIRMATION,
   validateArmedTakeProfitJournal,
+  validateTakeProfitJournal,
 } from "../src/take-profit-lifecycle.mjs";
 
 const NOW = Date.parse("2026-07-21T02:00:14.000Z");
@@ -152,6 +153,24 @@ function fixtureJournal() {
   };
 }
 
+function filledBeforeFirstFetchJournal() {
+  const journal = structuredClone(fixtureJournal());
+  const proof = journal.takeProfitPassport.restingOrderProof;
+  journal.stage = "submitted";
+  journal.status = "FILLED_PENDING_CHAIN_PROOF";
+  proof.version = "conviction-submitted-order-proof-v1";
+  proof.status = "FILLED_PENDING_CHAIN_PROOF";
+  proof.observed.status = "MATCHED";
+  proof.observed.matchedSharesRaw = "10000000";
+  proof.checks.zeroInitiallyMatched = false;
+  proof.checks.initialMatchedSharesBounded = true;
+  proof.checks.authenticatedInitialExactOrder = true;
+  journal.takeProfitPassport.status = "FILLED_PENDING_CHAIN_PROOF";
+  journal.restingOrderProofHash = sha256(proof);
+  journal.takeProfitPassportHash = sha256(journal.takeProfitPassport);
+  return journal;
+}
+
 function snapshot(overrides = {}) {
   const orderOverrides = overrides.order || {};
   return {
@@ -194,6 +213,29 @@ test("validates the signed ARMED passport/journal binding while ignoring mutable
   assert.equal(first.orderId, ORDER_ID);
   assert.equal(first.passportHash, second.passportHash);
   assert.equal(first.issuanceVerification.ok, true);
+});
+
+test("a first-fetch maker fill remains a validated, status-queryable journal", () => {
+  const journal = filledBeforeFirstFetchJournal();
+  const binding = validateTakeProfitJournal(journal, options());
+  assert.equal(binding.initialStatus, "FILLED_PENDING_CHAIN_PROOF");
+  assert.equal(binding.initialMatchedRaw, 10_000_000n);
+  assert.throws(
+    () => validateArmedTakeProfitJournal(journal, options()),
+    (error) => error?.code === "invalid_take_profit_journal",
+  );
+  const status = buildTakeProfitStatus(journal, snapshot({
+    order: { status: "MATCHED", sizeMatched: "10000000", associatedTrades: ["maker-trade-1"] },
+  }), options());
+  assert.equal(status.status, "FILLED_PENDING_CHAIN_PROOF");
+  assert.equal(status.settlementProofRequired, true);
+  assert.equal(status.order.id, ORDER_ID);
+  assert.throws(
+    () => buildTakeProfitStatus(journal, snapshot({
+      order: { status: "LIVE", sizeMatched: "4000000", associatedTrades: ["maker-trade-1"] },
+    }), options()),
+    (error) => error?.code === "order_fill_regression",
+  );
 });
 
 test("fails closed on journal, passport, proof, token, wallet, and issuer substitutions", () => {

@@ -375,11 +375,32 @@ export function validateTakeProfitLiveResult(cardInput, resultInput, options = {
   fail(outer.ok === true && outer.dry_run !== true, "not_live_result", "Plugin output is not a successful live result");
   fail(!String(data.note || "").toLowerCase().includes("dry-run"), "not_live_result", "Dry-run output cannot become a take-profit result");
   validatePluginFields(validated, data, { preview: false });
-  fail(["live", "open", "unmatched"].includes(String(data.status || "").toLowerCase()), "take_profit_not_resting", "Take-profit order is not reported resting");
+  const reportedStatus = String(data.status || "").toLowerCase();
+  fail(
+    ["live", "open", "unmatched", "matched", "filled", "partially_filled", "canceled", "cancelled", "expired"].includes(reportedStatus),
+    "invalid_order_status",
+    "Take-profit submission returned an unsupported order status",
+  );
   const orderId = lower(data.order_id);
   fail(HASH_RE.test(orderId), "invalid_order_id", "Live take-profit result has no valid order ID");
-  fail(data.tx_hashes === undefined || (Array.isArray(data.tx_hashes) && data.tx_hashes.length === 0), "unexpected_settlement", "Post-only placement unexpectedly returned a settlement transaction");
-  return { ok: true, validated, orderId, result: data };
+  const reportedTransactions = data.tx_hashes === undefined ? [] : data.tx_hashes;
+  fail(
+    Array.isArray(reportedTransactions) && reportedTransactions.length <= 100 &&
+      reportedTransactions.every((value) => HASH_RE.test(lower(value))) &&
+      new Set(reportedTransactions.map(lower)).size === reportedTransactions.length,
+    "invalid_live_result",
+    "Take-profit submission returned invalid transaction metadata",
+  );
+  return {
+    ok: true,
+    validated,
+    orderId,
+    reportedStatus,
+    // Informational only. Exact authenticated CLOB state and independent
+    // Polygon receipts remain the sole sources of lifecycle/fill truth.
+    reportedTransactions: Object.freeze(reportedTransactions.map(lower)),
+    result: data,
+  };
 }
 
 function validateExactOrderSnapshot(validated, live, snapshotInput) {
@@ -390,31 +411,41 @@ function validateExactOrderSnapshot(validated, live, snapshotInput) {
   fail(snapshot.credentialOwnerVerified === true, "invalid_order_proof", "Credential ownership was not verified");
   fail(lower(snapshot.depositWallet) === validated.wallet, "order_wallet_mismatch", "Exact order belongs to another deposit wallet");
   fail(lower(order.id) === live.orderId, "order_identity_mismatch", "Authenticated CLOB order differs from the submitted order");
-  fail(order.status === "LIVE", "take_profit_not_resting", "Authenticated CLOB order is not LIVE");
+  const venueStatus = String(order.status || "").toUpperCase();
+  fail(
+    venueStatus.length > 0 && venueStatus.length <= 64 && /^[A-Z0-9_]+$/.test(venueStatus),
+    "invalid_order_response",
+    "Authenticated CLOB order status is invalid",
+  );
   fail(lower(order.market) === lower(validated.intent.market.conditionId), "order_market_mismatch", "Authenticated CLOB order belongs to another market");
   fail(String(order.assetId) === validated.tokenId, "order_token_mismatch", "Authenticated CLOB order belongs to another outcome token");
   fail(order.side === "SELL" && order.orderType === "GTD", "order_type_mismatch", "Authenticated order is not a GTD SELL");
-  const originalSizeRaw = parsePolymarketShareAtoms(order.originalSize, "authenticated original size", {
+  const originalSharesRaw = parsePolymarketShareAtoms(order.originalSize, "authenticated original size", {
     code: "take_profit_economics_mismatch",
     positive: true,
   });
-  const sizeMatchedRaw = parsePolymarketShareAtoms(order.sizeMatched, "authenticated matched size", {
+  const matchedSharesRaw = parsePolymarketShareAtoms(order.sizeMatched, "authenticated matched size", {
     code: "take_profit_economics_mismatch",
   });
-  fail(originalSizeRaw === BigInt(validated.bounds.sharesRaw), "take_profit_economics_mismatch", "Authenticated original size disagrees with the take-profit card");
-  fail(sizeMatchedRaw === 0n, "take_profit_economics_mismatch", "Authenticated matched size is not zero");
+  fail(originalSharesRaw === BigInt(validated.bounds.sharesRaw), "take_profit_economics_mismatch", "Authenticated original size disagrees with the take-profit card");
+  fail(matchedSharesRaw >= 0n && matchedSharesRaw <= originalSharesRaw, "invalid_order_response", "Authenticated matched size is invalid");
   sameDecimal(order.price, parseDecimal(validated.bounds.targetPrice, 6, "card target price"), "authenticated target price");
   fail(String(order.expiration) === validated.bounds.venueExpiresAtUnix, "order_expiry_mismatch", "Authenticated order expiry differs from the signed venue expiry");
   if (order.outcome) fail(String(order.outcome).toUpperCase() === validated.outcome, "outcome_mismatch", "Authenticated order outcome differs from the card");
-  fail(Array.isArray(order.associatedTrades) && order.associatedTrades.length === 0, "unexpected_settlement", "New resting order already has associated trades");
+  fail(Array.isArray(order.associatedTrades), "invalid_order_response", "Authenticated order has no associated-trade set");
+  fail(new Set(order.associatedTrades.map(String)).size === order.associatedTrades.length, "invalid_order_response", "Authenticated order has duplicate associated trades");
   const createdAtSeconds = raw(order.createdAt, "order.createdAt", { positive: true });
   const placementStartSeconds = BigInt(Math.floor(timestamp(validated.intent.snapshot.capturedAt, "snapshot.capturedAt") / 1_000));
   const placementEndSeconds = BigInt(Math.floor(timestamp(validated.expiresAt, "snapshot.expiresAt") / 1_000));
   fail(createdAtSeconds >= placementStartSeconds && createdAtSeconds <= placementEndSeconds, "order_outside_signed_window", "Authenticated order was created outside the signed placement window");
   const fetchedAtMs = timestamp(snapshot.fetchedAt, "snapshot.fetchedAt");
   fail(BigInt(Math.floor(fetchedAtMs / 1_000)) >= createdAtSeconds, "invalid_order_proof", "Order snapshot predates order creation");
-  fail(fetchedAtMs < timestamp(validated.bounds.venueExpiresAt, "order.venueExpiresAt"), "order_proof_after_expiry", "An expired GTD order cannot be proved ARMED");
-  return { snapshot, order, createdAtSeconds, originalSizeRaw };
+  const status = classifyTakeProfitOrderSnapshot(snapshot);
+  if (status === "ARMED") {
+    fail(fetchedAtMs < timestamp(validated.bounds.venueExpiresAt, "order.venueExpiresAt"), "order_proof_after_expiry", "An expired GTD order cannot be proved ARMED");
+    fail(order.associatedTrades.length === 0, "unexpected_settlement", "A zero-match ARMED order cannot already have associated trades");
+  }
+  return { snapshot, order, createdAtSeconds, originalSharesRaw, matchedSharesRaw, status };
 }
 
 export function buildTakeProfitOrderProof(cardInput, liveResultInput, snapshotInput, {
@@ -432,9 +463,10 @@ export function buildTakeProfitOrderProof(cardInput, liveResultInput, snapshotIn
     "order_before_confirmation",
     "Authenticated order does not strictly postdate the buyer's take-profit confirmation",
   );
+  const armed = exact.status === "ARMED";
   const proof = {
-    version: "conviction-resting-order-proof-v1",
-    status: "ARMED",
+    version: armed ? "conviction-resting-order-proof-v1" : "conviction-submitted-order-proof-v1",
+    status: exact.status,
     verificationSource: "authenticated-polymarket-clob",
     onChain: false,
     intentHash: live.validated.intentHash,
@@ -460,8 +492,8 @@ export function buildTakeProfitOrderProof(cardInput, liveResultInput, snapshotIn
       status: exact.order.status,
       side: exact.order.side,
       orderType: exact.order.orderType,
-      originalSharesRaw: exact.originalSizeRaw.toString(),
-      matchedSharesRaw: "0",
+      originalSharesRaw: exact.originalSharesRaw.toString(),
+      matchedSharesRaw: exact.matchedSharesRaw.toString(),
       price: exact.order.price,
       expiration: exact.order.expiration,
       createdAt: exact.order.createdAt,
@@ -477,7 +509,9 @@ export function buildTakeProfitOrderProof(cardInput, liveResultInput, snapshotIn
       exactOrderId: true,
       exactGtdSell: true,
       exactSharesOffered: true,
-      zeroInitiallyMatched: true,
+      zeroInitiallyMatched: exact.matchedSharesRaw === 0n,
+      initialMatchedSharesBounded: exact.matchedSharesRaw >= 0n && exact.matchedSharesRaw <= exact.originalSharesRaw,
+      authenticatedInitialExactOrder: true,
       targetPriceBound: true,
       venueExpiryBound: true,
       orderCreatedAfterConfirmation: true,
@@ -486,13 +520,18 @@ export function buildTakeProfitOrderProof(cardInput, liveResultInput, snapshotIn
   };
   const passport = {
     version: "conviction-take-profit-passport-v1",
-    status: "ARMED",
+    status: exact.status,
     issuance: live.validated.issuance,
     intent: live.validated.intent,
     restingOrderProof: proof,
   };
   return {
     ok: true,
+    status: exact.status,
+    recoverable: !armed,
+    settlementProofRequired: exact.matchedSharesRaw > 0n,
+    initialOrderSnapshot: exact.snapshot,
+    initialOrderSnapshotHash: sha256(exact.snapshot),
     orderId: live.orderId,
     restingOrderProof: proof,
     restingOrderProofHash: sha256(proof),

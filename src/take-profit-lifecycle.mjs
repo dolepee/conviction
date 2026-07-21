@@ -130,21 +130,18 @@ function issuerSettlementTime(proof) {
  * Runtime lock/retry metadata is intentionally ignored: it may change without
  * changing the signed intent, passport, or pinned order identity.
  */
-export function validateArmedTakeProfitJournal(journalInput, { trustedIssuers } = {}) {
+export function validateTakeProfitJournal(journalInput, { trustedIssuers } = {}) {
   const journal = record(
     journalInput,
     "invalid_take_profit_journal",
     "Take-profit journal must be an object",
   );
   invariant(
-    journal.version === "conviction-take-profit-journey-v1" &&
-      journal.action === "TAKE_PROFIT" && journal.stage === "armed",
+    journal.version === "conviction-take-profit-journey-v1" && journal.action === "TAKE_PROFIT" &&
+      (journal.stage === "armed" || journal.stage === "submitted"),
     "invalid_take_profit_journal",
-    "Journal is not an ARMED Conviction take-profit journey",
+    "Journal is not a supported Conviction take-profit journey",
   );
-  if (journal.status !== undefined) {
-    invariant(journal.status === "ARMED", "invalid_take_profit_journal", "Stored take-profit status is not ARMED");
-  }
 
   const signerAddress = canonicalAddress(journal.signerAddress, "Journal signer address");
   const depositWallet = canonicalAddress(journal.depositWallet, "Journal deposit wallet");
@@ -166,16 +163,33 @@ export function validateArmedTakeProfitJournal(journalInput, { trustedIssuers } 
 
   invariant(sha256(passport) === passportHash, "take_profit_passport_mismatch", "Stored take-profit passport hash does not match");
   invariant(sha256(proof) === proofHash, "take_profit_passport_mismatch", "Stored resting-order proof hash does not match");
+  const initialStatus = String(passport.status || "");
+  const armed = initialStatus === "ARMED";
   invariant(
-    passport.version === "conviction-take-profit-passport-v1" && passport.status === "ARMED",
-    "invalid_take_profit_passport",
-    "Stored take-profit passport is not ARMED v1",
+    journal.stage === (armed ? "armed" : "submitted") &&
+      (journal.status === undefined || journal.status === initialStatus) && proof.status === initialStatus,
+    "invalid_take_profit_journal",
+    "Stored take-profit stage, status, passport, and order proof disagree",
   );
   invariant(
-    proof.version === "conviction-resting-order-proof-v1" && proof.status === "ARMED" &&
+    passport.version === "conviction-take-profit-passport-v1" &&
+      (armed || [
+        "PARTIAL_PENDING_CHAIN_PROOF",
+        "PARTIAL_CANCELED_PENDING_CHAIN_PROOF",
+        "PARTIAL_EXPIRED_PENDING_CHAIN_PROOF",
+        "FILLED_PENDING_CHAIN_PROOF",
+        "CANCELED",
+        "EXPIRED",
+        "UNKNOWN",
+      ].includes(initialStatus)),
+    "invalid_take_profit_passport",
+    "Stored take-profit passport status is unsupported",
+  );
+  invariant(
+    proof.version === (armed ? "conviction-resting-order-proof-v1" : "conviction-submitted-order-proof-v1") &&
       proof.verificationSource === "authenticated-polymarket-clob" && proof.onChain === false,
     "invalid_take_profit_passport",
-    "Stored resting-order proof is not an authenticated ARMED CLOB proof",
+    "Stored order proof is not an authenticated CLOB binding",
   );
   invariant(
     intent.version === "conviction-take-profit-intent-v1" && intent.action === "TAKE_PROFIT" &&
@@ -237,16 +251,34 @@ export function validateArmedTakeProfitJournal(journalInput, { trustedIssuers } 
     "take_profit_passport_mismatch",
     "Resting-order proof economics differ from the signed take-profit order",
   );
+  const observedStatus = String(observed.status || "").toUpperCase();
   invariant(
-    observed.status === "LIVE" && observed.side === "SELL" && observed.orderType === "GTD" &&
+    observedStatus.length > 0 && observedStatus.length <= 64 && /^[A-Z0-9_]+$/.test(observedStatus) &&
+      observed.side === "SELL" && observed.orderType === "GTD" &&
       String(observed.originalSharesRaw || "") === exactSharesRaw.toString() &&
-      String(observed.matchedSharesRaw || "") === "0" &&
       parseDecimal(observed.price, SHARE_DECIMALS, "Initially observed target price") === targetPriceRaw &&
       String(observed.expiration || "") === venueExpiresAtUnix.toString(),
     "take_profit_passport_mismatch",
-    "Initial ARMED observation differs from the passport bounds",
+    "Initial authenticated order observation differs from the passport bounds",
   );
-  canonicalIso(observed.fetchedAt, "invalid_take_profit_passport", "Initial resting-order observation time");
+  const initialMatchedRaw = canonicalUint(
+    observed.matchedSharesRaw,
+    "invalid_take_profit_passport",
+    "Initially matched take-profit shares",
+  );
+  invariant(initialMatchedRaw <= exactSharesRaw, "take_profit_passport_mismatch", "Initially matched shares exceed the signed take-profit shares");
+  const initialFetchedAt = canonicalIso(observed.fetchedAt, "invalid_take_profit_passport", "Initial order observation time");
+  invariant(
+    classifyExactOrder({
+      matchedRaw: initialMatchedRaw,
+      originalRaw: exactSharesRaw,
+      status: observedStatus,
+      fetchedAtMs: initialFetchedAt.milliseconds,
+      expirationMs: venueExpiresAt.milliseconds,
+    }) === initialStatus,
+    "take_profit_passport_mismatch",
+    "Initial order status does not match the authenticated observation",
+  );
 
   const requiredChecks = [
     "canonicalTakeProfitIntentHash",
@@ -258,14 +290,22 @@ export function validateArmedTakeProfitJournal(journalInput, { trustedIssuers } 
     "exactOrderId",
     "exactGtdSell",
     "exactSharesOffered",
-    "zeroInitiallyMatched",
     "targetPriceBound",
     "venueExpiryBound",
     "orderCreatedAfterConfirmation",
     "orderCreatedInsideSignedPlacementWindow",
   ];
   const checks = record(proof.checks, "invalid_take_profit_passport", "Resting-order proof checks are missing");
-  invariant(requiredChecks.every((field) => checks[field] === true), "take_profit_passport_mismatch", "Stored ARMED proof did not pass every required check");
+  invariant(requiredChecks.every((field) => checks[field] === true), "take_profit_passport_mismatch", "Stored order proof did not pass every required check");
+  if (armed) {
+    invariant(checks.zeroInitiallyMatched === true, "take_profit_passport_mismatch", "Stored ARMED proof was not initially unmatched");
+  } else {
+    invariant(
+      checks.authenticatedInitialExactOrder === true && checks.initialMatchedSharesBounded === true,
+      "take_profit_passport_mismatch",
+      "Stored submitted-order proof did not pass its recovery checks",
+    );
+  }
 
   const issuanceVerification = verifyIntentIssuance({
     intent,
@@ -285,6 +325,8 @@ export function validateArmedTakeProfitJournal(journalInput, { trustedIssuers } 
     proofHash,
     passport,
     proof,
+    initialStatus,
+    initialMatchedRaw,
     marketConditionId,
     outcome,
     outcomeTokenId,
@@ -294,6 +336,12 @@ export function validateArmedTakeProfitJournal(journalInput, { trustedIssuers } 
     venueExpiresAtUnix,
     issuanceVerification,
   });
+}
+
+export function validateArmedTakeProfitJournal(journalInput, options = {}) {
+  const binding = validateTakeProfitJournal(journalInput, options);
+  invariant(binding.initialStatus === "ARMED", "invalid_take_profit_journal", "Journal is not an ARMED Conviction take-profit journey");
+  return binding;
 }
 
 function validateFreshExactOrderSnapshot(binding, snapshotInput, {
@@ -338,11 +386,16 @@ function validateFreshExactOrderSnapshot(binding, snapshotInput, {
   const matchedRaw = parsePolymarketShareAtoms(order.sizeMatched, "Order matched size", {
     code: "invalid_order_response",
   });
-  invariant(originalRaw === binding.exactSharesRaw, "order_size_mismatch", "Order original size differs from the ARMED passport");
+  invariant(originalRaw === binding.exactSharesRaw, "order_size_mismatch", "Order original size differs from the take-profit passport");
   invariant(matchedRaw >= 0n && matchedRaw <= originalRaw, "invalid_order_response", "Order matched size is invalid");
+  invariant(
+    matchedRaw >= binding.initialMatchedRaw,
+    "order_fill_regression",
+    "Order matched quantity decreased below the authenticated initial observation",
+  );
   sameDecimal(order.price, binding.targetPriceRaw, "order_price_mismatch", "Order target price");
-  invariant(String(order.expiration || "") === binding.venueExpiresAtUnix.toString(), "order_expiry_mismatch", "Order expiry differs from the ARMED passport");
-  invariant(String(order.createdAt || "") === String(binding.proof.observed.createdAt), "order_creation_mismatch", "Order creation time differs from the ARMED proof");
+  invariant(String(order.expiration || "") === binding.venueExpiresAtUnix.toString(), "order_expiry_mismatch", "Order expiry differs from the take-profit passport");
+  invariant(String(order.createdAt || "") === String(binding.proof.observed.createdAt), "order_creation_mismatch", "Order creation time differs from the authenticated order proof");
 
   const associatedTrades = Array.isArray(order.associatedTrades) ? order.associatedTrades : null;
   invariant(associatedTrades, "invalid_order_response", "Order associated trades are missing");
@@ -433,7 +486,7 @@ function statusOutput(binding, exact, status) {
 }
 
 export function buildTakeProfitStatus(journalInput, snapshotInput, options = {}) {
-  const binding = validateArmedTakeProfitJournal(journalInput, options);
+  const binding = validateTakeProfitJournal(journalInput, options);
   const exact = validateFreshExactOrderSnapshot(binding, snapshotInput, options);
   return statusOutput(binding, exact, classifyExactOrder(exact));
 }
@@ -442,7 +495,7 @@ export function buildTakeProfitLookupFailureStatus(journalInput, {
   errorCode,
   observedAt,
 } = {}, options = {}) {
-  const binding = validateArmedTakeProfitJournal(journalInput, options);
+  const binding = validateTakeProfitJournal(journalInput, options);
   const code = String(errorCode || "");
   invariant(
     ["order_not_found", "order_unavailable", "unknown"].includes(code),
@@ -492,7 +545,7 @@ export function buildTakeProfitCancelRequest({
     "cancel_confirmation_required",
     `Type exactly: ${TAKE_PROFIT_CANCEL_CONFIRMATION}`,
   );
-  const binding = validateArmedTakeProfitJournal(journal, options);
+  const binding = validateTakeProfitJournal(journal, options);
   const exact = validateFreshExactOrderSnapshot(binding, snapshot, options);
   const status = classifyExactOrder(exact);
   const confirmation = canonicalIso(confirmedAt, "invalid_cancel_confirmation", "Take-profit cancel confirmation time");
@@ -569,7 +622,7 @@ export function buildTakeProfitCancelOutcome({
   afterLookupErrorCode,
   observedAt,
 } = {}, options = {}) {
-  const binding = validateArmedTakeProfitJournal(journal, options);
+  const binding = validateTakeProfitJournal(journal, options);
   const before = validateFreshExactOrderSnapshot(binding, beforeSnapshot, options);
   const acknowledgement = cancelAcknowledgement(cancelResult, binding.orderId);
 

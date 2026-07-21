@@ -157,6 +157,24 @@ function fixtureJournal() {
   };
 }
 
+function filledBeforeFirstFetchJournal() {
+  const journal = structuredClone(fixtureJournal());
+  const proof = journal.takeProfitPassport.restingOrderProof;
+  journal.stage = "submitted";
+  journal.status = "FILLED_PENDING_CHAIN_PROOF";
+  proof.version = "conviction-submitted-order-proof-v1";
+  proof.status = "FILLED_PENDING_CHAIN_PROOF";
+  proof.observed.status = "MATCHED";
+  proof.observed.matchedSharesRaw = "10000000";
+  proof.checks.zeroInitiallyMatched = false;
+  proof.checks.initialMatchedSharesBounded = true;
+  proof.checks.authenticatedInitialExactOrder = true;
+  journal.takeProfitPassport.status = "FILLED_PENDING_CHAIN_PROOF";
+  journal.restingOrderProofHash = sha256(proof);
+  journal.takeProfitPassportHash = sha256(journal.takeProfitPassport);
+  return journal;
+}
+
 function orderSnapshot({ matched = "10000000", status = "MATCHED", trades = [TRADE_1, TRADE_2] } = {}) {
   return {
     version: "conviction-polymarket-order-snapshot-v1",
@@ -375,6 +393,21 @@ test("verifies and aggregates a full take-profit fill across independent Polygon
   assert.equal(result.proof.settlements[0].checks.exactOutcomeDebit, true);
   assert.match(result.proofHash, /^0x[0-9a-f]{64}$/);
   assert.equal(result.proof.finality.status, "FINALIZED");
+});
+
+test("proves a maker fill first observed between POST acknowledgement and the first exact fetch", () => {
+  const result = verifyTakeProfitAggregateFill(input({
+    journal: filledBeforeFirstFetchJournal(),
+  }), options());
+
+  assert.equal(result.ok, true);
+  assert.equal(result.proof.status, "FILLED");
+  assert.equal(result.proof.orderId, ORDER_ID);
+  assert.equal(result.proof.fill.actualSharesRaw, "10000000");
+  assert.equal(result.proof.checks.immutableArmedPassport, undefined);
+  assert.equal(result.proof.checks.immutableSubmittedOrderPassport, true);
+  assert.equal(result.proof.checks.immutableAuthenticatedOrderPassport, true);
+  assert.equal(Object.values(result.proof.checks).every(Boolean), true);
 });
 
 test("proves a partial fill against proportional gross, fee, and net bounds", () => {

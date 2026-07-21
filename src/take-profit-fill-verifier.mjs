@@ -9,7 +9,7 @@ import { formatDecimal, parseDecimal, parseHexUint } from "./decimal.mjs";
 import { ConvictionError, invariant } from "./errors.mjs";
 import {
   buildTakeProfitStatus,
-  validateArmedTakeProfitJournal,
+  validateTakeProfitJournal,
 } from "./take-profit-lifecycle.mjs";
 
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
@@ -649,7 +649,7 @@ export function verifyTakeProfitAggregateFill({
   settlements,
   finalizedBlock,
 } = {}, options = {}) {
-  const binding = validateArmedTakeProfitJournal(journal, options);
+  const binding = validateTakeProfitJournal(journal, options);
   const status = buildTakeProfitStatus(journal, orderSnapshot, options);
   invariant(status.settlementProofRequired === true, "take_profit_not_filled", "Exact order has no matched shares to prove on Polygon");
   const bounds = signedBounds(binding);
@@ -786,7 +786,10 @@ export function verifyTakeProfitAggregateFill({
     issuanceKeyId: binding.issuanceVerification.keyId,
     issuanceFingerprint: binding.issuanceVerification.fingerprint,
     checks: Object.freeze({
-      immutableArmedPassport: true,
+      ...(binding.initialStatus === "ARMED"
+        ? { immutableArmedPassport: true }
+        : { immutableSubmittedOrderPassport: true }),
+      immutableAuthenticatedOrderPassport: true,
       trustedIssuerSignature: true,
       exactOrderAndTradeSet: true,
       exactPolygonSettlementSet: true,

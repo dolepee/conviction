@@ -1,4 +1,5 @@
 import { parseDecimal } from "./decimal.mjs";
+import { sha256 } from "./canonical.mjs";
 
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
 const TRADE_CONFIRMATION_HEADROOM_MS = 30_000;
@@ -924,10 +925,26 @@ export async function runTakeProfitJourney({
     trustedIssuers,
     confirmedAt: confirmed.at,
   });
+  const initialStatus = String(proof?.status || proof?.restingOrderProof?.status || "");
+  const armed = initialStatus === "ARMED";
+  const recoverableStatuses = new Set([
+    "PARTIAL_PENDING_CHAIN_PROOF",
+    "PARTIAL_CANCELED_PENDING_CHAIN_PROOF",
+    "PARTIAL_EXPIRED_PENDING_CHAIN_PROOF",
+    "FILLED_PENDING_CHAIN_PROOF",
+    "CANCELED",
+    "EXPIRED",
+    "UNKNOWN",
+  ]);
   requireValue(
-    proof?.ok === true && proof?.restingOrderProof?.status === "ARMED" && proof.restingOrderProof.onChain === false,
+    proof?.ok === true && proof?.restingOrderProof?.status === initialStatus &&
+      proof.restingOrderProof.onChain === false &&
+      (armed
+        ? proof.restingOrderProof.version === "conviction-resting-order-proof-v1" && proof.recoverable !== true
+        : recoverableStatuses.has(initialStatus) &&
+          proof.restingOrderProof.version === "conviction-submitted-order-proof-v1" && proof.recoverable === true),
     "invalid_take_profit_proof",
-    "TAKE_PROFIT placement did not produce an authenticated ARMED resting-order proof",
+    "TAKE_PROFIT placement did not produce an authenticated order-binding proof",
   );
   requireValue(
     lower(proof.orderId) === lower(live.orderId),
@@ -936,19 +953,29 @@ export async function runTakeProfitJourney({
   );
   requireValue(
     /^0x[0-9a-f]{64}$/.test(lower(proof.restingOrderProofHash)) &&
-      /^0x[0-9a-f]{64}$/.test(lower(proof.takeProfitPassportHash)),
+      /^0x[0-9a-f]{64}$/.test(lower(proof.takeProfitPassportHash)) &&
+      (armed || (
+        /^0x[0-9a-f]{64}$/.test(lower(proof.initialOrderSnapshotHash)) &&
+        proof.initialOrderSnapshot && typeof proof.initialOrderSnapshot === "object" &&
+        lower(proof.initialOrderSnapshotHash) === sha256(orderSnapshot) &&
+        lower(proof.initialOrderSnapshotHash) === sha256(proof.initialOrderSnapshot)
+      )),
     "invalid_take_profit_proof",
     "TAKE_PROFIT proof hashes are invalid",
   );
-  const proved = mark("take_profit_proof_verified", {
+  const proved = mark(armed ? "take_profit_proof_verified" : "take_profit_recovery_binding_verified", {
     orderId: lower(proof.orderId),
     restingOrderProofHash: lower(proof.restingOrderProofHash),
+    status: initialStatus,
   });
 
   return {
     ok: true,
     mode: "take_profit",
-    status: "ARMED",
+    status: initialStatus,
+    recoverable: !armed,
+    reconciliationRequired: !armed,
+    settlementProofRequired: proof.settlementProofRequired === true,
     paymentPayer,
     sellerWallet,
     paymentProof,
@@ -961,6 +988,8 @@ export async function runTakeProfitJourney({
     restingOrderProofHash: lower(proof.restingOrderProofHash),
     takeProfitPassport: proof.takeProfitPassport,
     takeProfitPassportHash: lower(proof.takeProfitPassportHash),
+    initialOrderSnapshot: proof.initialOrderSnapshot || orderSnapshot,
+    initialOrderSnapshotHash: lower(proof.initialOrderSnapshotHash || ""),
     confirmation: { count: confirmationCount, confirmedAt: confirmed.at },
     ordersPlaced: executionCalls,
     events,

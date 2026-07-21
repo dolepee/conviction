@@ -153,6 +153,8 @@ test("builds an authenticated ARMED proof without claiming an on-chain fill", ()
     confirmedAt: NOW + 2_000,
   });
   assert.equal(proof.ok, true);
+  assert.equal(proof.status, "ARMED");
+  assert.equal(proof.recoverable, false);
   assert.equal(proof.orderId, ORDER_ID);
   assert.equal(proof.restingOrderProof.status, "ARMED");
   assert.equal(proof.restingOrderProof.onChain, false);
@@ -183,22 +185,20 @@ test("rejects plugin substitution before take-profit placement", () => {
   }
 });
 
-test("requires a fresh exact LIVE zero-match order after submission", () => {
+test("requires a fresh exact order binding after submission", () => {
   const card = takeProfitCard();
   const cases = [
     [{ order: { id: `0x${"c".repeat(64)}` } }, "order_identity_mismatch"],
     [{ depositWallet: "0x3333333333333333333333333333333333333333" }, "order_wallet_mismatch"],
     [{ order: { assetId: LIVE_MARKET_SNAPSHOT.noTokenId } }, "order_token_mismatch"],
-    [{ order: { status: "MATCHED", sizeMatched: "10000000", associatedTrades: ["trade"] } }, "take_profit_not_resting"],
-    [{ order: { sizeMatched: "1000000" } }, "take_profit_economics_mismatch"],
     [{ order: { originalSize: "10" } }, "take_profit_economics_mismatch"],
     [{ order: { originalSize: "10.0" } }, "take_profit_economics_mismatch"],
     [{ order: { sizeMatched: 0 } }, "take_profit_economics_mismatch"],
+    [{ order: { sizeMatched: "10000001" } }, "invalid_order_response"],
     [{ order: { price: "0.39" } }, "take_profit_economics_mismatch"],
     [{ order: { expiration: String(Number(VENUE_EXPIRES_UNIX) + 1) } }, "order_expiry_mismatch"],
     [{ order: { createdAt: String((NOW + 1_000) / 1_000) } }, "order_before_confirmation"],
     [{ order: { createdAt: String((NOW + 2_000) / 1_000) } }, "order_before_confirmation"],
-    [{ fetchedAt: VENUE_EXPIRES_AT }, "order_proof_after_expiry"],
   ];
   for (const [mutation, code] of cases) {
     assert.throws(
@@ -209,6 +209,32 @@ test("requires a fresh exact LIVE zero-match order after submission", () => {
       (error) => error?.code === code,
     );
   }
+});
+
+test("builds a recoverable authenticated passport when a maker fill lands before the first exact fetch", () => {
+  const card = takeProfitCard();
+  const firstSnapshot = orderSnapshot({
+    order: {
+      status: "MATCHED",
+      sizeMatched: "10000000",
+      associatedTrades: ["maker-trade-1"],
+    },
+  });
+
+  const proof = buildTakeProfitOrderProof(card, liveResult(), firstSnapshot, {
+    trustedIssuers,
+    confirmedAt: NOW + 2_000,
+  });
+
+  assert.equal(proof.ok, true);
+  assert.equal(proof.status, "FILLED_PENDING_CHAIN_PROOF");
+  assert.equal(proof.recoverable, true);
+  assert.equal(proof.settlementProofRequired, true);
+  assert.equal(proof.restingOrderProof.version, "conviction-submitted-order-proof-v1");
+  assert.equal(proof.restingOrderProof.status, "FILLED_PENDING_CHAIN_PROOF");
+  assert.equal(proof.restingOrderProof.observed.matchedSharesRaw, "10000000");
+  assert.deepEqual(proof.initialOrderSnapshot, firstSnapshot);
+  assert.equal(proof.initialOrderSnapshotHash, sha256(firstSnapshot));
 });
 
 test("classifies resting, partial, filled, canceled, expired, and unknown TP states", () => {
@@ -225,19 +251,25 @@ test("classifies resting, partial, filled, canceled, expired, and unknown TP sta
   assert.equal(classifyTakeProfitOrderSnapshot(orderSnapshot({ order: { status: "MYSTERY" } })), "UNKNOWN");
 });
 
-test("rejects live plugin results that settle, rest with another order ID, or do not rest", () => {
+test("accepts transitional plugin acknowledgement only as a prelude to exact-order authentication", () => {
   const card = takeProfitCard();
   const settled = liveResult();
   settled.data.tx_hashes = [`0x${"d".repeat(64)}`];
-  assert.throws(
-    () => validateTakeProfitLiveResult(card, settled, { now: NOW + 2_000, trustedIssuers }),
-    (error) => error?.code === "unexpected_settlement",
-  );
+  settled.data.status = "matched";
+  const transition = validateTakeProfitLiveResult(card, settled, { now: NOW + 2_000, trustedIssuers });
+  assert.equal(transition.reportedStatus, "matched");
+  assert.deepEqual(transition.reportedTransactions, [`0x${"d".repeat(64)}`]);
   const matched = liveResult();
-  matched.data.status = "matched";
+  matched.data.status = "mystery";
   assert.throws(
     () => validateTakeProfitLiveResult(card, matched, { now: NOW + 2_000, trustedIssuers }),
-    (error) => error?.code === "take_profit_not_resting",
+    (error) => error?.code === "invalid_order_status",
+  );
+  const invalidTransactions = liveResult();
+  invalidTransactions.data.tx_hashes = ["not-a-transaction"];
+  assert.throws(
+    () => validateTakeProfitLiveResult(card, invalidTransactions, { now: NOW + 2_000, trustedIssuers }),
+    (error) => error?.code === "invalid_live_result",
   );
   const invalidId = liveResult();
   invalidId.data.order_id = "not-an-order";

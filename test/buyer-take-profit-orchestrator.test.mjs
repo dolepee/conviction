@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { BuyerJourneyError, runTakeProfitJourney } from "../src/buyer-orchestrator.mjs";
+import { sha256 } from "../src/canonical.mjs";
 
 const PAYMENT_PAYER = "0x1111111111111111111111111111111111111111";
 const SELLER_WALLET = "0x2222222222222222222222222222222222222222";
@@ -50,6 +51,7 @@ function fixture({
   validateDryRunError,
   waitReturnsEarly = false,
   proofMutation,
+  exactOrderMutation,
 } = {}) {
   let clock = START;
   let validationCount = 0;
@@ -230,7 +232,7 @@ function fixture({
         orderId: ORDER_ID,
         outcomeTokenId: TOKEN,
       });
-      return {
+      const snapshot = {
         version: "conviction-polymarket-order-snapshot-v1",
         verificationSource: "authenticated-polymarket-clob",
         onChain: false,
@@ -243,6 +245,7 @@ function fixture({
           createdAt: String(Math.floor(waitTarget / 1_000)),
         },
       };
+      return exactOrderMutation ? exactOrderMutation(snapshot) : snapshot;
     },
     buildTakeProfitOrderProof: async (_card, _liveResult, snapshot, options) => {
       calls.push("build_armed_proof");
@@ -250,12 +253,15 @@ function fixture({
       const proof = {
         ok: true,
         orderId: ORDER_ID,
-        restingOrderProof: { status: "ARMED", onChain: false },
+        status: "ARMED",
+        recoverable: false,
+        settlementProofRequired: false,
+        restingOrderProof: { version: "conviction-resting-order-proof-v1", status: "ARMED", onChain: false },
         restingOrderProofHash: PROOF_HASH,
         takeProfitPassport: { version: "conviction-take-profit-passport-v1" },
         takeProfitPassportHash: PASSPORT_HASH,
       };
-      return proofMutation ? proofMutation(proof) : proof;
+      return proofMutation ? proofMutation(proof, snapshot) : proof;
     },
   };
   const confirm = async (kind) => {
@@ -329,6 +335,44 @@ test("take-profit journey pays, confirms, waits, places once, and returns an aut
   assert.equal(trade.bounds.orderType, "GTD");
   assert.equal(trade.bounds.postOnly, true);
   assert.equal(trade.bounds.completedPayment.transactionHash, PAYMENT_TX);
+});
+
+test("a maker fill between POST acknowledgement and the first exact fetch returns a recoverable binding without retrying", async () => {
+  const f = fixture({
+    exactOrderMutation: (snapshot) => ({
+      ...snapshot,
+      order: {
+        ...snapshot.order,
+        status: "MATCHED",
+        sizeMatched: "5000000",
+        associatedTrades: ["trade-1"],
+      },
+    }),
+    proofMutation: (proof, snapshot) => ({
+      ...proof,
+      status: "FILLED_PENDING_CHAIN_PROOF",
+      recoverable: true,
+      settlementProofRequired: true,
+      initialOrderSnapshot: snapshot,
+      initialOrderSnapshotHash: sha256(snapshot),
+      restingOrderProof: {
+        version: "conviction-submitted-order-proof-v1",
+        status: "FILLED_PENDING_CHAIN_PROOF",
+        onChain: false,
+      },
+    }),
+  });
+
+  const result = await run(f);
+
+  assert.equal(result.status, "FILLED_PENDING_CHAIN_PROOF");
+  assert.equal(result.recoverable, true);
+  assert.equal(result.reconciliationRequired, true);
+  assert.equal(result.settlementProofRequired, true);
+  assert.equal(result.ordersPlaced, 1);
+  assert.equal(f.executionCalls(), 1);
+  assert.equal(f.calls.filter((value) => value === "execute").length, 1);
+  assert.equal(result.events.at(-1).type, "take_profit_recovery_binding_verified");
 });
 
 for (const [name, mutate, code] of [
