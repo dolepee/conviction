@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy — Conviction</title>
+    <meta name="description" content="What Conviction processes when it previews a bounded position card or verifies a Polygon fill." />
+    <meta name="robots" content="index,follow" />
+    <link rel="canonical" href="https://conviction-bay.vercel.app/privacy.html" />
+    <link rel="icon" href="/assets/conviction-logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Conviction home"><img src="/assets/conviction-logo.svg" alt="" width="38" height="38" /><span>Conviction</span></a>
+      <a class="text-link" href="/">Back to product</a>
+    </header>
+    <main class="policy-page" id="main">
+      <p class="eyebrow">Trust surface</p>
+      <h1>Privacy</h1>
+      <p class="policy-updated">Effective 21 July 2026</p>
+      <section>
+        <h2>What is processed</h2>
+        <p>For a market lookup or bounds preview, Conviction processes the market reference, selected outcome, total risk budget, and maximum price. A final position card also processes the public Polygon deposit-wallet address and an optional note. Receipt verification processes the submitted transaction hash, order ID, intent, and intent hash.</p>
+      </section>
+      <section>
+        <h2>What the application does not request</h2>
+        <p>Never submit a seed phrase, private key, bearer token, CLOB credential, reusable signature, raw authorization, or live-trading confirmation. The browser does not connect to a wallet, sign, approve, or broadcast.</p>
+      </section>
+      <section>
+        <h2>Storage and infrastructure</h2>
+        <p>Conviction has no application database, user accounts, analytics SDK, advertising tracker, or cookies. The public preview and verifier temporarily retain an IP-shaped client identifier and request count in a warm server instance to limit abuse; those buckets are bounded and are not written to an application database. Hosting, x402 facilitation, Polymarket APIs, and Polygon RPC infrastructure may retain ordinary request, operational, or payment logs under their own policies. A successful paid service notification contains only fixed settlement metadata—service name, amount, network, transaction hash, and time—not the wallet, note, or request body.</p>
+      </section>
+      <section>
+        <h2>Contact</h2>
+        <p>For a privacy or deletion inquiry, contact <a href="https://x.com/Emini_qdee">@Emini_qdee on X</a> and identify the approximate request time. Conviction cannot delete records controlled solely by third-party infrastructure providers.</p>
+      </section>
+    </main>
+  </body>
+</html>

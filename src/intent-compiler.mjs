@@ -24,6 +24,30 @@ function gcd(a, b) {
   return a;
 }
 
+export function minimumMarketableBudget(maxPrice, feeBpsValue) {
+  const priceRaw = parseDecimal(maxPrice, 6, "maxPrice");
+  invariant(priceRaw > 0n && priceRaw < PRICE_SCALE, "invalid_price", "maxPrice must be between 0 and 1");
+  const feeBps = Number(feeBpsValue);
+  invariant(
+    Number.isInteger(feeBps) && feeBps >= 0 && feeBps <= Number(BPS_SCALE),
+    "invalid_market_fee",
+    "Market fee rate is invalid",
+  );
+  const shareQuantum = V2_PRINCIPAL_STEP_RAW / gcd(priceRaw, V2_PRINCIPAL_STEP_RAW);
+  const minimumUnalignedWholeShares = ceilDiv(MARKETABLE_BUY_MIN_PRINCIPAL_RAW, priceRaw);
+  const minimumWholeShares = ceilDiv(minimumUnalignedWholeShares, shareQuantum) * shareQuantum;
+  const minimumPrincipalRaw = minimumWholeShares * priceRaw;
+  const minimumFeeRaw = ceilDiv(minimumPrincipalRaw * BigInt(feeBps), BPS_SCALE);
+  const minimumTotalDebitRaw = minimumPrincipalRaw + minimumFeeRaw;
+  return {
+    minimumOrderPrincipal: formatDecimal(minimumPrincipalRaw, 6),
+    maximumFeeAtMinimum: formatDecimal(minimumFeeRaw, 6),
+    minimumTotalBudget: formatDecimal(minimumTotalDebitRaw, 6),
+    minimumShares: minimumWholeShares.toString(),
+    principalPrecision: "v2-cent-aligned-whole-shares",
+  };
+}
+
 function normalizeOutcome(value) {
   const outcome = String(value || "").trim().toUpperCase();
   invariant(
@@ -71,7 +95,7 @@ function bestBid(bids) {
   );
 }
 
-export function compileIntent(
+function compileBoundedOrder(
   request,
   market,
   {
@@ -87,11 +111,6 @@ export function compileIntent(
   );
   const outcome = normalizeOutcome(request.outcome);
   assertSnapshot(market, outcome, now, maxSnapshotAgeMs);
-  const wallet = String(request.wallet || "").toLowerCase();
-  invariant(ADDRESS_RE.test(wallet), "invalid_wallet", "wallet must be a valid EVM address");
-  const rationale = String(request.rationale || "").trim();
-  invariant(rationale.length >= 20 && rationale.length <= 500, "invalid_rationale", "rationale must be 20 to 500 characters");
-
   const requestedBudgetRaw = parseDecimal(request.spend, 6, "spend");
   const priceRaw = parseDecimal(request.maxPrice, 6, "maxPrice");
   const tickRaw = parseDecimal(market.tickSize, 6, "tickSize");
@@ -124,22 +143,19 @@ export function compileIntent(
     "budget_calculation_error",
     "Compiled order exceeds the requested total spend budget",
   );
-  const minimumUnalignedWholeShares = ceilDiv(MARKETABLE_BUY_MIN_PRINCIPAL_RAW, priceRaw);
-  const minimumWholeShares = ceilDiv(minimumUnalignedWholeShares, shareQuantum) * shareQuantum;
-  const minimumPrincipalRaw = minimumWholeShares * priceRaw;
-  const minimumFeeRaw = ceilDiv(minimumPrincipalRaw * feeBpsRaw, BPS_SCALE);
-  const minimumTotalDebitRaw = minimumPrincipalRaw + minimumFeeRaw;
+  const minimum = minimumMarketableBudget(formatDecimal(priceRaw, 6), feeBps);
+  const minimumPrincipalRaw = parseDecimal(
+    minimum.minimumOrderPrincipal,
+    6,
+    "minimumOrderPrincipal",
+  );
   invariant(
-    orderPrincipalRaw >= MARKETABLE_BUY_MIN_PRINCIPAL_RAW,
+    orderPrincipalRaw >= minimumPrincipalRaw,
     "marketable_order_below_minimum",
     "Total spend budget cannot fund Conviction's cent-aligned whole-share marketable BUY after fees",
     {
       requestedBudget: formatDecimal(requestedBudgetRaw, 6),
-      minimumOrderPrincipal: formatDecimal(minimumPrincipalRaw, 6),
-      maximumFeeAtMinimum: formatDecimal(minimumFeeRaw, 6),
-      minimumTotalBudget: formatDecimal(minimumTotalDebitRaw, 6),
-      minimumShares: minimumWholeShares.toString(),
-      principalPrecision: "v2-cent-aligned-whole-shares",
+      ...minimum,
     },
   );
   invariant(
@@ -185,9 +201,13 @@ export function compileIntent(
     ? Math.max(0, Math.floor((endTimestamp - capturedTimestamp) / 1_000))
     : null;
   const expiresAt = new Date(Date.parse(market.capturedAt) + quoteTtlMs).toISOString();
-  const intent = {
-    version: "conviction-intent-v3",
-    chainId: POLYGON_CHAIN_ID,
+  return {
+    outcome,
+    requestedBudget,
+    orderPrincipal,
+    maximumFee,
+    maxPrice,
+    expiresAt,
     market: {
       source: "polymarket",
       conditionId: market.conditionId.toLowerCase(),
@@ -232,8 +252,6 @@ export function compileIntent(
       feeEnforcement: "dedicated-wallet-balance-cap-plus-post-settlement-verification",
       principalPrecision: "v2-cent-aligned-whole-shares",
     },
-    buyer: { wallet },
-    rationale,
     snapshot: {
       capturedAt: market.capturedAt,
       expiresAt,
@@ -257,6 +275,59 @@ export function compileIntent(
       secondsToResolution,
     },
   };
+}
+
+function disclosuresFor({ requestedBudget, orderPrincipal, maximumFee }) {
+  return [
+    "The buyer's own wallet signs and pays for the order.",
+    "FAK fills immediately at or below maxPrice and cancels any unfilled remainder.",
+    `The ${requestedBudget} pUSD input is a total-debit ceiling; the compiled principal is ${orderPrincipal} pUSD and the maximum venue fee is ${maximumFee} pUSD.`,
+    "The order principal is cent-aligned with a whole-share quantity so the official V2 plugin's live precision pass cannot rewrite the reviewed order.",
+    "Maximum loss includes the venue-fee reserve; actual FAK debit may be lower on a partial fill.",
+    "Polymarket V2 applies fees at match time rather than in the signed order. Keep the dedicated wallet balance at or below the requested budget; Conviction verifies the actual fee and total debit after settlement.",
+    "New deposit-wallet users must review Polymarket's five-approval setup before trading.",
+  ];
+}
+
+export function compilePreview(request, market, options = {}) {
+  const bounded = compileBoundedOrder(request, market, options);
+  return {
+    ok: true,
+    preview: {
+      version: "conviction-preview-v1",
+      chainId: POLYGON_CHAIN_ID,
+      market: bounded.market,
+      order: bounded.order,
+      snapshot: bounded.snapshot,
+      exposure: bounded.exposure,
+      executable: false,
+      requiresWallet: false,
+      requiresPayment: false,
+    },
+    disclosures: disclosuresFor(bounded),
+  };
+}
+
+export function compileIntent(request, market, options = {}) {
+  const wallet = String(request.wallet || "").toLowerCase();
+  invariant(ADDRESS_RE.test(wallet), "invalid_wallet", "wallet must be a valid EVM address");
+  const rationale = String(request.rationale || "").trim();
+  invariant(
+    rationale.length === 0 || (rationale.length >= 20 && rationale.length <= 500),
+    "invalid_rationale",
+    "rationale must be empty or 20 to 500 characters",
+  );
+  const bounded = compileBoundedOrder(request, market, options);
+  const intent = {
+    version: "conviction-intent-v3",
+    chainId: POLYGON_CHAIN_ID,
+    market: bounded.market,
+    order: bounded.order,
+    buyer: { wallet },
+    rationale,
+    snapshot: bounded.snapshot,
+    exposure: bounded.exposure,
+  };
   const intentHash = sha256(intent);
   return {
     ok: true,
@@ -268,30 +339,22 @@ export function compileIntent(
       argv: [
         "buy",
         "--market-id",
-        market.slug || market.conditionId,
+        bounded.market.slug || bounded.market.conditionId,
         "--outcome",
-        outcome.toLowerCase(),
+        bounded.outcome.toLowerCase(),
         "--amount",
-        orderPrincipal,
+        bounded.orderPrincipal,
         "--price",
-        maxPrice,
+        bounded.maxPrice,
         "--order-type",
         "FAK",
       ],
       requiresUserConfirmation: true,
       nonCustodial: true,
       requiresDedicatedBalanceCap: true,
-      maximumFundingBalance: requestedBudget,
-      expiresAt,
+      maximumFundingBalance: bounded.requestedBudget,
+      expiresAt: bounded.expiresAt,
     },
-    disclosures: [
-      "The buyer's own wallet signs and pays for the order.",
-      "FAK fills immediately at or below maxPrice and cancels any unfilled remainder.",
-      `The ${requestedBudget} pUSD input is a total-debit ceiling; the compiled principal is ${orderPrincipal} pUSD and the maximum venue fee is ${maximumFee} pUSD.`,
-      "The order principal is cent-aligned with a whole-share quantity so the official V2 plugin's live precision pass cannot rewrite the reviewed order.",
-      "Maximum loss includes the venue-fee reserve; actual FAK debit may be lower on a partial fill.",
-      "Polymarket V2 applies fees at match time rather than in the signed order. Keep the dedicated wallet balance at or below the requested budget; Conviction verifies the actual fee and total debit after settlement.",
-      "New deposit-wallet users must review Polymarket's five-approval setup before trading.",
-    ],
+    disclosures: disclosuresFor(bounded),
   };
 }

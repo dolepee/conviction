@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { compileIntent } from "../src/intent-compiler.mjs";
+import {
+  compileIntent,
+  compilePreview,
+  minimumMarketableBudget,
+} from "../src/intent-compiler.mjs";
 import { ConvictionError } from "../src/errors.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
@@ -76,6 +80,59 @@ test("compiles the canonical live order exactly", () => {
   ]);
   assert.equal(result.executionCard.requiresDedicatedBalanceCap, true);
   assert.equal(result.executionCard.maximumFundingBalance, "1.35");
+});
+
+test("previews the same economics without a wallet, rationale, intent hash, or execution card", () => {
+  const request = {
+    market: REQUEST.market,
+    outcome: REQUEST.outcome,
+    spend: REQUEST.spend,
+    maxPrice: REQUEST.maxPrice,
+  };
+  const preview = compilePreview(request, LIVE_MARKET_SNAPSHOT, { now: NOW });
+  const final = compileIntent(REQUEST, LIVE_MARKET_SNAPSHOT, { now: NOW });
+
+  assert.equal(preview.ok, true);
+  assert.equal(preview.preview.version, "conviction-preview-v1");
+  assert.equal(preview.preview.executable, false);
+  assert.equal(preview.preview.requiresWallet, false);
+  assert.equal(preview.preview.requiresPayment, false);
+  assert.deepEqual(preview.preview.order, final.intent.order);
+  assert.deepEqual(preview.preview.exposure, final.intent.exposure);
+  assert.equal("buyer" in preview.preview, false);
+  assert.equal("rationale" in preview.preview, false);
+  assert.equal("intentHash" in preview, false);
+  assert.equal("executionCard" in preview, false);
+});
+
+test("keeps the rationale optional but validates it when present", () => {
+  const withoutRationale = compileIntent(
+    { ...REQUEST, rationale: "" },
+    LIVE_MARKET_SNAPSHOT,
+    { now: NOW },
+  );
+  assert.equal(withoutRationale.intent.rationale, "");
+  errorCode(
+    () => compileIntent({ ...REQUEST, rationale: "too short" }, LIVE_MARKET_SNAPSHOT, { now: NOW }),
+    "invalid_rationale",
+  );
+});
+
+test("reports the exact viable fee-inclusive minimum at a selected price", () => {
+  assert.deepEqual(minimumMarketableBudget("0.27", 0), {
+    minimumOrderPrincipal: "1.08",
+    maximumFeeAtMinimum: "0",
+    minimumTotalBudget: "1.08",
+    minimumShares: "4",
+    principalPrecision: "v2-cent-aligned-whole-shares",
+  });
+  assert.deepEqual(minimumMarketableBudget("0.88", 1000), {
+    minimumOrderPrincipal: "1.76",
+    maximumFeeAtMinimum: "0.176",
+    minimumTotalBudget: "1.936",
+    minimumShares: "2",
+    principalPrecision: "v2-cent-aligned-whole-shares",
+  });
 });
 
 test("compiles NO from the canonical NO token and selected order book", () => {

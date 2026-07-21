@@ -1,9 +1,8 @@
 import { ConvictionError } from "../src/errors.mjs";
-import { compileIntent } from "../src/intent-compiler.mjs";
+import { compilePreview } from "../src/intent-compiler.mjs";
 import { resolveMarket } from "../src/market-client.mjs";
 import { createPublicApiGuard, PublicApiError } from "../src/public-api-guard.mjs";
-
-export const PUBLIC_INTENT_QUOTE_TTL_MS = 300_000;
+import { createShortCache } from "../src/short-cache.mjs";
 
 function send(response, status, body) {
   response.status(status).setHeader("content-type", "application/json; charset=utf-8");
@@ -11,11 +10,12 @@ function send(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-export function createIntentHandler({
-  compileOptions = { maxSnapshotAgeMs: 30_000, quoteTtlMs: PUBLIC_INTENT_QUOTE_TTL_MS },
-  publicAccess = true,
-  publicGuard = createPublicApiGuard(),
+export function createPreviewHandler({
   resolveMarketImpl = resolveMarket,
+  compilePreviewImpl = compilePreview,
+  compileOptions = undefined,
+  publicGuard = createPublicApiGuard(),
+  cache = createShortCache(),
 } = {}) {
   return async function handler(request, response) {
     if (request.method !== "POST") {
@@ -24,11 +24,16 @@ export function createIntentHandler({
     }
     try {
       const body = request.body && typeof request.body === "object" ? request.body : {};
-      const compile = async () => {
+      const key = JSON.stringify([
+        String(body.market || "").trim(),
+        String(body.outcome || "").trim().toLowerCase(),
+        String(body.spend || "").trim(),
+        String(body.maxPrice || "").trim(),
+      ]);
+      const result = await publicGuard.run(request, () => cache.get(key, async () => {
         const market = await resolveMarketImpl(body.market, { outcome: body.outcome });
-        return compileIntent(body, market, compileOptions);
-      };
-      const result = publicAccess ? await publicGuard.run(request, compile) : await compile();
+        return compilePreviewImpl(body, market, compileOptions);
+      }));
       return send(response, 200, result);
     } catch (error) {
       if (error instanceof PublicApiError) {
@@ -47,13 +52,13 @@ export function createIntentHandler({
           error: { code: error.code, message: error.message, details: error.details },
         });
       }
-      console.error("intent handler failed", error);
+      console.error("preview handler failed", error);
       return send(response, 500, {
         ok: false,
-        error: { code: "internal_error", message: "Intent compilation failed" },
+        error: { code: "internal_error", message: "Bounds preview failed" },
       });
     }
   };
 }
 
-export default createIntentHandler();
+export default createPreviewHandler();

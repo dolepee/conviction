@@ -14,7 +14,7 @@ Description:
 
 > Conviction turns your prediction-market call into a real YES or NO position: you set the budget and maximum price, your own wallet signs and holds the fill, and every order is bounded and independently verifiable on Polygon.
 
-Avatar: `assets/conviction-avatar.png`
+Avatar: `assets/conviction-avatar-square.png` (full-bleed 1:1 marketplace asset)
 
 ## Service
 

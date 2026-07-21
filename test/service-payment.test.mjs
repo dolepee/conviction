@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
 
-import { createServiceApp } from "../api/service.js";
+import { createPaidIntentHandler, createServiceApp } from "../api/service.js";
 import {
   readFacilitatorCredentials,
   SERVICE_ASSET,
@@ -13,6 +13,7 @@ import {
   SERVICE_RESOURCE,
   serviceRouteConfiguration,
 } from "../src/service-payment.mjs";
+import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
 const TEST_ENVIRONMENT = Object.freeze({
   OKX_API_KEY: "test-api-key",
@@ -572,4 +573,52 @@ test("even a throwing logger cannot break a paid response after settlement", asy
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true });
   });
+});
+
+test("the paid route bypasses public preview limits only after payment verification", async () => {
+  const facilitator = trackedFacilitator();
+  const compileHandler = createPaidIntentHandler({
+    compileOptions: {
+      now: Date.parse("2026-07-21T02:00:10.000Z"),
+      maxSnapshotAgeMs: 30_000,
+      quoteTtlMs: 120_000,
+    },
+    publicGuard: {
+      run() {
+        throw new Error("public guard must not run on the paid route");
+      },
+    },
+    async resolveMarketImpl() {
+      return LIVE_MARKET_SNAPSHOT;
+    },
+  });
+  const app = createServiceApp(TEST_ENVIRONMENT, {
+    facilitatorClient: facilitator.client,
+    logger: quietLogger(),
+    compileHandler,
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/service`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": paidHeader(),
+      },
+      body: JSON.stringify({
+        market: LIVE_MARKET_SNAPSHOT.slug,
+        outcome: "yes",
+        spend: "1.35",
+        maxPrice: "0.27",
+        wallet: "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+        rationale: "",
+        ignoredPadding: "x".repeat(9_000),
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).ok, true);
+  });
+
+  assert.equal(facilitator.calls.verify, 1);
+  assert.equal(facilitator.calls.settle, 1);
 });
