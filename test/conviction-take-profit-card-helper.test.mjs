@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { compileTakeProfitIntent } from "../src/take-profit-intent-compiler.mjs";
 import { createIntentIssuer } from "../src/intent-issuer.mjs";
+import { sha256 } from "../src/canonical.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 import {
   buildTakeProfitOrderProof,
@@ -241,4 +242,26 @@ test("rejects live plugin results that settle, rest with another order ID, or do
     () => validateTakeProfitLiveResult(card, invalidId, { now: NOW + 2_000, trustedIssuers }),
     (error) => error?.code === "invalid_order_id",
   );
+});
+
+test("rejects issuer-signed precision fields that disagree with the execution snapshot", () => {
+  for (const field of ["tickSize", "minOrderSize"]) {
+    const compilation = compileTakeProfitIntent({
+      action: "take_profit",
+      market: LIVE_MARKET_SNAPSHOT.slug,
+      outcome: "yes",
+      shares: "10",
+      targetPrice: "0.4",
+      venueExpiresAt: VENUE_EXPIRES_AT,
+      wallet: WALLET,
+      source,
+    }, LIVE_MARKET_SNAPSHOT, position, { now: NOW });
+    compilation.intent.market[field] = field === "tickSize" ? "0.02" : "6";
+    compilation.intentHash = sha256(compilation.intent);
+    const signed = issuer(compilation);
+    assert.throws(
+      () => validateTakeProfitCard(signed, { now: NOW + 2_000, trustedIssuers }),
+      (error) => error?.code === "market_snapshot_mismatch",
+    );
+  }
 });

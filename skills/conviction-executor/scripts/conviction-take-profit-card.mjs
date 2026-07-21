@@ -235,6 +235,12 @@ export function validateTakeProfitCard(input, {
   fail(snapshot.positionBlockNumber === position.observedAtBlock && snapshot.positionBlockHash === position.observedAtBlockHash, "position_binding_mismatch", "Position blocks disagree");
   const tickRaw = parseDecimal(snapshot.tickSize, 6, "tickSize");
   const minOrderSizeRaw = parseDecimal(snapshot.minOrderSize, 6, "minOrderSize");
+  fail(
+    parseDecimal(market.tickSize, 6, "market.tickSize") === tickRaw &&
+      parseDecimal(market.minOrderSize, 6, "market.minOrderSize") === minOrderSizeRaw,
+    "market_snapshot_mismatch",
+    "Signed market precision differs from the signed execution snapshot",
+  );
   fail(tickRaw > 0n && targetPriceRaw % tickRaw === 0n, "price_tick_mismatch", "Target price does not align to the signed tick size");
   fail(minOrderSizeRaw > 0n && sharesRaw >= minOrderSizeRaw, "resting_order_below_minimum", "Take-profit shares are below the signed venue minimum");
   const bestBidRaw = snapshot.bestBid === null ? null : parseDecimal(snapshot.bestBid, 6, "bestBid");
