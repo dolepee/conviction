@@ -169,7 +169,7 @@ Return a compact result:
 
 Never label a submitted order, plugin success message, unsigned intent, authenticated ARMED order, or unverified transaction as a verified fill.
 
-For TAKE_PROFIT cancellation, require a new exact typed phrase **`confirm cancel take profit`**, cancel only the pinned order ID, and immediately re-fetch it to detect a fill/cancel race. A cancel acknowledgement alone is not cancellation proof. If the cancel path retains the global execution lock, use `reconcile-tp`; it performs no payment, order, or cancellation and releases only the owner-verified exact lock after terminal zero-fill state or terminal finalized fill proof. Never manually delete the lock or use broad cancel, amend, replacement, or re-entry behavior.
+For TAKE_PROFIT cancellation, require a new exact typed phrase **`confirm cancel take profit`**, cancel only the pinned order ID, and immediately re-fetch it to detect a fill/cancel race. A cancel acknowledgement alone is not cancellation proof. Use `reconcile-tp` for an unresolved TAKE_PROFIT journal; it performs no payment, order, or cancellation. It may authenticate an exact order ID already persisted before the first fetch, clean an expired reservation only when finalized X Layer state proves its authorization unused or a paid card is proven expired and unstarted, and release an order's execution lock only after terminal zero-fill state or terminal finalized fill proof. Consumed or ambiguous state stays locked. Never manually delete a lock or use broad cancel, amend, replacement, or re-entry behavior.
 
 ## Failure behavior
 

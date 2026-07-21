@@ -161,7 +161,7 @@ node scripts/take-profit-orchestrator.mjs cancel-tp \
   --issuer-registry config/trusted-issuer.production.json --json
 ```
 
-If cancellation races a fill or Polygon evidence is not finalized yet, the global execution lock remains. Reconcile it without another payment, placement, or cancellation; the command releases only an owner-verified lock after a terminal zero-fill status or a terminal finalized fill proof:
+If cancellation races a fill or Polygon evidence is not finalized yet, the global execution lock remains. Reconcile it without another payment, placement, or cancellation. The same command can bootstrap a passport only from an exact live order ID already persisted before the first CLOB fetch. Before any order exists, it releases a reservation only for an expired authorization proven unused at a finalized X Layer block, or an expired paid card proven never spawned; consumed or ambiguous payment state remains locked. After an order exists, it releases the owner-verified execution lock only after a terminal zero-fill status or terminal finalized fill proof:
 
 ```sh
 node scripts/take-profit-orchestrator.mjs reconcile-tp \

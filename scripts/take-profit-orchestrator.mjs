@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
-import { mkdir, open, readFile, realpath, rename, unlink, writeFile, chmod } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, rename, stat, unlink, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -28,6 +28,7 @@ import { fetchAndVerifyX402Payment } from "../src/x402-payment-verifier.mjs";
 import { fetchAndVerifyTakeProfitAggregateFill } from "../src/take-profit-fill-verifier.mjs";
 import {
   claimExecutionLock,
+  fetchEip3009AuthorizationState,
   normalizeOpenOrders,
   normalizePluginReadiness,
   normalizeSourcePosition,
@@ -59,6 +60,7 @@ const execFileAsync = promisify(execFile);
 const PAYMENT_SIGNATURE_HEADER = "PAYMENT-SIGNATURE";
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 const HASH_RE = /^0x[0-9a-f]{64}$/;
+const UINT_RE = /^(?:0|[1-9][0-9]*)$/;
 const STATE_DIRECTORY = join(homedir(), ".local", "state", "conviction", "reconciliation");
 
 function fail(condition, code, message, details = undefined) {
@@ -86,6 +88,8 @@ function usage() {
     "The flow separately requires `confirm payment`, then `confirm live mode`.",
     "It places one post-only GTD order and returns an authenticated ARMED proof.",
     "`tp-status` automatically proves any matched shares from CLOB trades and Polygon receipts.",
+    "`reconcile-tp` can recover only an exact order ID already persisted with a valid live result; it never pays or places again.",
+    "It cleans pre-order reservations only after authorization/card expiry and exact unused/unstarted proof.",
   ].join("\n");
 }
 
@@ -265,6 +269,23 @@ export function requireTakeProfitLaunchWindow(card, {
   return Object.freeze({ observedAt, placementDeadlineMs, venueDeadlineMs });
 }
 
+export function markTakeProfitPreSpawnFailure(state, error, {
+  liveSpawnStarted,
+  now = Date.now(),
+} = {}) {
+  if (liveSpawnStarted) return false;
+  const observedAt = Number(typeof now === "function" ? now() : now);
+  fail(Number.isFinite(observedAt), "invalid_reconciliation_clock", "TAKE_PROFIT failure clock is invalid");
+  state.executionAttempted = false;
+  state.reconciliationRequired = true;
+  state.stage = "execution_blocked_before_launch";
+  state.preSpawnError = {
+    code: error?.code || "take_profit_pre_spawn_failed",
+    at: new Date(observedAt).toISOString(),
+  };
+  return true;
+}
+
 async function postJson(url, body, { headers = {} } = {}) {
   const response = await fetch(url, {
     method: "POST",
@@ -309,6 +330,589 @@ async function fetchExactOrderWithPropagation(argumentsObject) {
   throw lastError;
 }
 
+function record(value, code, message) {
+  fail(value !== null && typeof value === "object" && !Array.isArray(value), code, message);
+  return value;
+}
+
+function canonicalIso(value, code, message) {
+  const text = String(value || "");
+  const milliseconds = Date.parse(text);
+  fail(Number.isFinite(milliseconds) && new Date(milliseconds).toISOString() === text, code, message);
+  return { text, milliseconds };
+}
+
+function requireCanonicalAddress(value, code, message) {
+  const address = String(value || "");
+  fail(ADDRESS_RE.test(address), code, message);
+  return address;
+}
+
+function requireCanonicalHash(value, code, message) {
+  const hash = String(value || "");
+  fail(HASH_RE.test(hash), code, message);
+  return hash;
+}
+
+async function requireOwnerOnlyRecoveryState(journalPath, stateDirectory, {
+  statImpl = stat,
+} = {}) {
+  const rootPath = await realpath(resolve(stateDirectory));
+  const [rootStat, journalStat] = await Promise.all([statImpl(rootPath), statImpl(journalPath)]);
+  const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
+  fail(rootStat.isDirectory() && (rootStat.mode & 0o077) === 0, "unsafe_state_permissions", "Conviction state directory must be owner-only before pre-passport recovery");
+  fail(journalStat.isFile() && (journalStat.mode & 0o077) === 0, "unsafe_state_permissions", "TAKE_PROFIT journal must be owner-only before pre-passport recovery");
+  if (expectedUid !== null) {
+    fail(rootStat.uid === expectedUid && journalStat.uid === expectedUid, "unsafe_state_owner", "TAKE_PROFIT recovery state must belong to the current OS user");
+  }
+  return true;
+}
+
+function validateTakeProfitAuthorizationCheckpoint(journalInput) {
+  const journal = record(
+    journalInput,
+    "invalid_payment_reconciliation",
+    "TAKE_PROFIT payment checkpoint must be an object",
+  );
+  const stages = new Set([
+    "payment_authorization_starting",
+    "payment_authorization_created",
+    "payment_header_rejected_after_authorization",
+    "paid_request_ambiguous",
+  ]);
+  fail(
+    journal.version === "conviction-take-profit-journey-v1" && journal.action === "TAKE_PROFIT" &&
+      stages.has(journal.stage),
+    "invalid_payment_reconciliation",
+    "Journal is not a recoverable TAKE_PROFIT payment-authorization checkpoint",
+  );
+  const response = journal.paidServiceResponse;
+  fail(
+    (journal.stage === "paid_request_ambiguous"
+      ? Number.isInteger(response?.status) && typeof response.paymentResponsePresent === "boolean"
+      : response == null),
+    "invalid_payment_reconciliation",
+    "Paid-service response metadata disagrees with the authorization checkpoint",
+  );
+  fail(
+    journal.paidCard == null && journal.paymentTx == null && journal.paymentProof == null &&
+      journal.tradeConsent == null && journal.liveResult == null && journal.orderId == null &&
+      journal.takeProfitPassport == null && journal.takeProfitPassportHash == null &&
+      journal.restingOrderProofHash == null && journal.executionLockPath == null &&
+      journal.executionAttempted === false,
+    "invalid_payment_reconciliation",
+    "Payment-only reconciliation cannot touch a card, consent, or possible order",
+  );
+  const paymentPayer = requireCanonicalAddress(
+    journal.paymentPayer,
+    "invalid_payment_reconciliation",
+    "TAKE_PROFIT payment payer is invalid",
+  );
+  const signerAddress = requireCanonicalAddress(
+    journal.signerAddress,
+    "invalid_payment_reconciliation",
+    "TAKE_PROFIT signer address is invalid",
+  );
+  const depositWallet = requireCanonicalAddress(
+    journal.depositWallet,
+    "invalid_payment_reconciliation",
+    "TAKE_PROFIT deposit wallet is invalid",
+  );
+  fail(paymentPayer === signerAddress && paymentPayer !== SERVICE_PAYEE, "payment_identity_mismatch", "TAKE_PROFIT payment checkpoint has another payer");
+  const request = record(journal.request, "invalid_payment_reconciliation", "TAKE_PROFIT payment request is missing");
+  fail(
+    String(request.action || "").toLowerCase() === "take_profit" && request.wallet === depositWallet,
+    "payment_request_mismatch",
+    "TAKE_PROFIT payment request has another action or wallet",
+  );
+  const replayKey = requireCanonicalHash(
+    journal.replayKey,
+    "invalid_payment_reconciliation",
+    "TAKE_PROFIT payment replay key is invalid",
+  );
+  fail(
+    replayKey === takeProfitReplayKey({ request: {
+      outcome: request.outcome,
+      shares: request.shares,
+      targetPrice: request.targetPrice,
+      venueExpiresAt: request.venueExpiresAt,
+      sourcePosition: request.sourcePosition,
+    }, sellerWallet: depositWallet }),
+    "payment_replay_mismatch",
+    "TAKE_PROFIT payment replay identity changed",
+  );
+  fail(typeof journal.reservationLockPath === "string", "missing_reservation_lock", "TAKE_PROFIT payment reservation is missing");
+
+  if (journal.stage === "payment_authorization_starting") {
+    fail(journal.paymentAuthorization == null, "invalid_payment_reconciliation", "Unsigned payment checkpoint unexpectedly contains authorization metadata");
+    return Object.freeze({
+      journal,
+      authorization: null,
+      paymentPayer,
+      signerAddress,
+      depositWallet,
+      replayKey,
+    });
+  }
+
+  const authorization = record(
+    journal.paymentAuthorization,
+    "invalid_payment_authorization",
+    "Stored TAKE_PROFIT payment authorization is missing",
+  );
+  const validAfter = String(authorization.validAfter || "");
+  const validBefore = String(authorization.validBefore || "");
+  const validWindow = UINT_RE.test(validAfter) && UINT_RE.test(validBefore)
+    ? BigInt(validBefore) - BigInt(validAfter)
+    : -1n;
+  fail(
+    authorization.version === "conviction-x402-authorization-v1" &&
+      authorization.scheme === "exact-eip3009" && authorization.network === "eip155:196" &&
+      authorization.asset === SERVICE_ASSET && authorization.from === paymentPayer &&
+      authorization.to === SERVICE_PAYEE && authorization.value === POSITION_MANAGER_SERVICE.priceAtomic &&
+      validWindow > 0n && (validAfter === "0" || validWindow <= 305n) &&
+      HASH_RE.test(String(authorization.nonce || "")),
+    "invalid_payment_authorization",
+    "Stored TAKE_PROFIT authorization differs from the exact Position Manager payment",
+  );
+  return Object.freeze({ journal, authorization, paymentPayer, signerAddress, depositWallet, replayKey });
+}
+
+async function validateTakeProfitReservationOwnership(context, recovery, {
+  stateDirectory,
+  statImpl = stat,
+} = {}) {
+  const expected = join(stateDirectory, `take-profit-${recovery.replayKey.slice(2)}.lock.json`);
+  let actual;
+  try {
+    actual = await realpath(resolve(String(recovery.journal.reservationLockPath || "")));
+  } catch {
+    fail(false, "reservation_ownership_mismatch", "TAKE_PROFIT reservation cannot be resolved");
+  }
+  fail(actual === expected, "reservation_ownership_mismatch", "TAKE_PROFIT reservation path differs from its replay identity");
+  const lockStat = await statImpl(actual);
+  const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
+  fail(lockStat.isFile() && (lockStat.mode & 0o077) === 0, "unsafe_state_permissions", "TAKE_PROFIT reservation must be owner-only");
+  if (expectedUid !== null) {
+    fail(lockStat.uid === expectedUid, "unsafe_state_owner", "TAKE_PROFIT reservation must belong to the current OS user");
+  }
+  const lock = JSON.parse(await readFile(actual, "utf8"));
+  let lockJournal;
+  try { lockJournal = await realpath(resolve(String(lock?.journalPath || ""))); } catch { lockJournal = null; }
+  fail(
+    lock?.version === "conviction-take-profit-reservation-v1" &&
+      lock?.replayKey === recovery.replayKey && lockJournal === context.journalPath &&
+      lock?.orderId == null && lock?.status === "PAYMENT_PENDING",
+    "reservation_ownership_mismatch",
+    "TAKE_PROFIT reservation belongs to another request or has progressed to an order",
+  );
+  return actual;
+}
+
+function validatePaidUnstartedTakeProfitCheckpoint(journal, options) {
+  const unstartedStages = new Set([
+    "trade_confirmed",
+    "execution_lock_acquired",
+    "execution_blocked_before_launch",
+  ]);
+  fail(
+    unstartedStages.has(journal?.stage) && journal.executionAttempted === false &&
+      journal.reconciliationRequired === true && journal.executionLockPath == null &&
+      journal.liveResult == null && journal.orderId == null && journal.takeProfitPassport == null &&
+      journal.takeProfitPassportHash == null && journal.restingOrderProofHash == null,
+    "invalid_unstarted_checkpoint",
+    "Journal is not a proven-unstarted paid TAKE_PROFIT checkpoint",
+  );
+  return validatePaidTakeProfitCheckpoint(journal, options);
+}
+
+async function reconcileTakeProfitNonOrderState(context, {
+  now = Date.now,
+  stateDirectory,
+  authorizationStateImpl = fetchEip3009AuthorizationState,
+  writeState = writeTakeProfitState,
+  unlinkImpl = unlink,
+  statImpl = stat,
+} = {}) {
+  const timestamp = Number(now());
+  fail(Number.isFinite(timestamp), "invalid_reconciliation_clock", "TAKE_PROFIT reconciliation clock is invalid");
+  const isAuthorizationOnly = new Set([
+    "payment_authorization_starting",
+    "payment_authorization_created",
+    "payment_header_rejected_after_authorization",
+    "paid_request_ambiguous",
+  ]).has(context.journal.stage);
+  const isPaidUnstarted = new Set([
+    "trade_confirmed",
+    "execution_lock_acquired",
+    "execution_blocked_before_launch",
+  ]).has(context.journal.stage);
+  if (!isAuthorizationOnly && !isPaidUnstarted) return null;
+
+  await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
+  const canonicalStateDirectory = await realpath(resolve(stateDirectory));
+  const recovery = isAuthorizationOnly
+    ? validateTakeProfitAuthorizationCheckpoint(context.journal)
+    : validatePaidUnstartedTakeProfitCheckpoint(context.journal, {
+        trustedIssuers: context.trustedIssuers,
+        now: timestamp,
+      });
+  const reservationPath = await validateTakeProfitReservationOwnership(context, recovery, {
+    stateDirectory: canonicalStateDirectory,
+    statImpl,
+  });
+
+  if (isAuthorizationOnly) {
+    if (recovery.authorization == null) {
+      return Object.freeze({
+        ok: true,
+        status: "manual_reconciliation_required",
+        reason: "payment_authorization_metadata_missing",
+        reconciliationRequired: true,
+        reservationReleased: false,
+        journalPath: context.journalPath,
+      });
+    }
+    const validBeforeMs = Number(BigInt(recovery.authorization.validBefore) * 1_000n);
+    fail(Number.isSafeInteger(validBeforeMs), "invalid_payment_authorization", "Stored TAKE_PROFIT authorization expiry is unsafe");
+    if (timestamp <= validBeforeMs) {
+      return Object.freeze({
+        ok: true,
+        status: "waiting_for_authorization_expiry",
+        expiresAt: new Date(validBeforeMs).toISOString(),
+        reconciliationRequired: true,
+        reservationReleased: false,
+        journalPath: context.journalPath,
+      });
+    }
+    const authorizationState = await authorizationStateImpl(recovery.authorization);
+    fail(UINT_RE.test(String(authorizationState?.blockTimestamp || "")), "invalid_authorization_state", "Finalized authorization-state timestamp is invalid");
+    if (BigInt(authorizationState.blockTimestamp) <= BigInt(recovery.authorization.validBefore)) {
+      return Object.freeze({
+        ok: true,
+        status: "waiting_for_finalized_authorization_expiry",
+        expiresAt: new Date(validBeforeMs).toISOString(),
+        reconciliationRequired: true,
+        reservationReleased: false,
+        journalPath: context.journalPath,
+      });
+    }
+    if (authorizationState.used !== false) {
+      return Object.freeze({
+        ok: true,
+        status: "manual_reconciliation_required",
+        reason: "payment_authorization_consumed_or_ambiguous",
+        reconciliationRequired: true,
+        reservationReleased: false,
+        journalPath: context.journalPath,
+      });
+    }
+    fail(
+      UINT_RE.test(String(authorizationState.blockNumber || "")) &&
+        HASH_RE.test(String(authorizationState.blockHash || "")),
+      "invalid_authorization_state",
+      "Unused authorization state is not pinned to a finalized X Layer block",
+    );
+    recovery.journal.reconciliationAuthorizationState = authorizationState;
+    recovery.journal.reconciliationReason = "expired_unused_payment_authorization";
+    recovery.journal.stage = "expired_unused_payment_authorization_reconciled";
+  } else {
+    const expiresAtMs = Date.parse(recovery.validated.expiresAt);
+    if (timestamp <= expiresAtMs) {
+      return Object.freeze({
+        ok: true,
+        status: "waiting_for_card_expiry",
+        expiresAt: recovery.validated.expiresAt,
+        reconciliationRequired: true,
+        reservationReleased: false,
+        journalPath: context.journalPath,
+      });
+    }
+    recovery.journal.reconciliationReason = "expired_paid_card_without_order_spawn";
+    recovery.journal.stage = "expired_paid_unstarted_reconciled";
+  }
+
+  const currentText = await readFile(context.journalPath, "utf8");
+  fail(currentText === context.journalText, "reconciliation_journal_changed", "TAKE_PROFIT journal changed during reconciliation");
+  await unlinkImpl(reservationPath);
+  recovery.journal.reservationLockPath = null;
+  recovery.journal.reconciliationRequired = false;
+  recovery.journal.reconciledAt = new Date(timestamp).toISOString();
+  await writeState(recovery.journal, { directory: canonicalStateDirectory, file: context.journalPath });
+  return Object.freeze({
+    ok: true,
+    status: recovery.journal.stage,
+    reconciliationRequired: false,
+    reservationReleased: true,
+    journalPath: context.journalPath,
+  });
+}
+
+function validatePaidTakeProfitCheckpoint(journalInput, {
+  trustedIssuers,
+  now = Date.now(),
+} = {}) {
+  const observedNow = Number(typeof now === "function" ? now() : now);
+  fail(Number.isFinite(observedNow), "invalid_prepassport_clock", "Pre-passport recovery clock is invalid");
+  const journal = record(
+    journalInput,
+    "invalid_prepassport_journal",
+    "Pre-passport TAKE_PROFIT journal must be an object",
+  );
+  fail(
+    journal.version === "conviction-take-profit-journey-v1" && journal.action === "TAKE_PROFIT",
+    "invalid_prepassport_journal",
+    "Journal is not a TAKE_PROFIT buyer journey",
+  );
+
+  const paymentPayer = requireCanonicalAddress(
+    journal.paymentPayer,
+    "invalid_prepassport_journal",
+    "Journal payment payer is invalid",
+  );
+  const signerAddress = requireCanonicalAddress(
+    journal.signerAddress,
+    "invalid_prepassport_journal",
+    "Journal signer address is invalid",
+  );
+  const depositWallet = requireCanonicalAddress(
+    journal.depositWallet,
+    "invalid_prepassport_journal",
+    "Journal deposit wallet is invalid",
+  );
+  fail(signerAddress === paymentPayer, "prepassport_identity_mismatch", "Journal signer and x402 payer differ");
+  fail(paymentPayer !== SERVICE_PAYEE, "prepassport_identity_mismatch", "Service payee cannot recover as the buyer payer");
+
+  const validated = validateTakeProfitCard(journal.paidCard, {
+    trustedIssuers,
+    now: observedNow,
+    allowExpired: true,
+  });
+  fail(validated.wallet === depositWallet, "prepassport_identity_mismatch", "Signed TAKE_PROFIT card belongs to another Polygon wallet");
+  const intentHash = requireCanonicalHash(
+    journal.intentHash,
+    "invalid_prepassport_journal",
+    "Journal intent hash is invalid",
+  );
+  fail(intentHash === validated.intentHash, "prepassport_intent_mismatch", "Journal intent differs from the trusted signed TAKE_PROFIT card");
+
+  const request = record(
+    journal.request,
+    "invalid_prepassport_journal",
+    "Journal request is missing",
+  );
+  fail(String(request.action || "").toLowerCase() === "take_profit", "prepassport_request_mismatch", "Journal request is not TAKE_PROFIT");
+  fail(String(request.wallet || "") === depositWallet, "prepassport_request_mismatch", "Journal request wallet differs from the signed card");
+  fail(String(request.outcome || "").toUpperCase() === validated.outcome, "prepassport_request_mismatch", "Journal request outcome differs from the signed card");
+  fail(parseDecimal(request.shares, 6, "journal TAKE_PROFIT shares").toString() === validated.bounds.sharesRaw, "prepassport_request_mismatch", "Journal request shares differ from the signed card");
+  fail(parseDecimal(request.targetPrice, 6, "journal TAKE_PROFIT target price") === parseDecimal(validated.bounds.targetPrice, 6, "signed TAKE_PROFIT target price"), "prepassport_request_mismatch", "Journal request target differs from the signed card");
+  fail(String(request.venueExpiresAt || "") === validated.bounds.venueExpiresAt, "prepassport_request_mismatch", "Journal request venue expiry differs from the signed card");
+  const requestedMarket = String(request.market || "").toLowerCase();
+  fail(
+    requestedMarket === String(validated.intent.market.slug || "").toLowerCase() ||
+      requestedMarket === String(validated.intent.market.conditionId || "").toLowerCase(),
+    "prepassport_request_mismatch",
+    "Journal request market differs from the signed card",
+  );
+  const source = record(
+    request.sourcePosition,
+    "invalid_prepassport_journal",
+    "Journal source position is missing",
+  );
+  for (const field of ["intentHash", "positionProofHash", "transactionHash", "orderId"]) {
+    requireCanonicalHash(source[field], "invalid_prepassport_journal", `Journal source ${field} is invalid`);
+  }
+  fail(
+    source.intentHash === validated.intent.source.intentHash &&
+      source.positionProofHash === validated.intent.source.positionProofHash &&
+      source.transactionHash === validated.intent.source.transactionHash &&
+      source.orderId === validated.intent.source.orderId,
+    "prepassport_source_mismatch",
+    "Journal source position differs from the signed card",
+  );
+
+  const replayKey = requireCanonicalHash(
+    journal.replayKey,
+    "invalid_prepassport_journal",
+    "Journal TAKE_PROFIT replay key is invalid",
+  );
+  fail(
+    replayKey === takeProfitReplayKey({ request: {
+      outcome: request.outcome,
+      shares: request.shares,
+      targetPrice: request.targetPrice,
+      venueExpiresAt: request.venueExpiresAt,
+      sourcePosition: source,
+    }, sellerWallet: depositWallet }),
+    "prepassport_replay_mismatch",
+    "Journal replay identity differs from the paid TAKE_PROFIT request",
+  );
+
+  const paymentTx = requireCanonicalHash(
+    journal.paymentTx,
+    "invalid_prepassport_journal",
+    "Journal x402 payment transaction is invalid",
+  );
+  const paymentProof = record(
+    journal.paymentProof,
+    "invalid_prepassport_journal",
+    "Journal has no independently verified x402 payment proof",
+  );
+  fail(
+    paymentProof.version === "conviction-x402-payment-v1" && paymentProof.chainId === 196 &&
+      paymentProof.transactionHash === paymentTx && paymentProof.payer === paymentPayer &&
+      paymentProof.payee === SERVICE_PAYEE && paymentProof.asset === SERVICE_ASSET &&
+      paymentProof.amountAtomic === POSITION_MANAGER_SERVICE.priceAtomic &&
+      ["transactionSucceeded", "receiptBoundToBlock", "freshPayment", "exactAsset", "exactPayer", "exactPayee", "exactAmount"]
+        .every((field) => paymentProof.checks?.[field] === true),
+    "prepassport_payment_mismatch",
+    "Stored x402 payment proof is not the exact Position Manager payment",
+  );
+  fail(/^\d+$/.test(String(paymentProof.blockTimestamp || "")), "invalid_prepassport_journal", "Stored x402 payment timestamp is invalid");
+
+  const consent = record(
+    journal.tradeConsent,
+    "invalid_prepassport_journal",
+    "Journal has no recorded TAKE_PROFIT trade consent",
+  );
+  const confirmed = canonicalIso(
+    consent.confirmedAt,
+    "invalid_prepassport_journal",
+    "TAKE_PROFIT consent time is invalid",
+  );
+  fail(
+    consent.version === "conviction-take-profit-consent-v1" &&
+      consent.intentHash === validated.intentHash &&
+      consent.executionArgvHash === sha256(validated.executionCard.argv) &&
+      consent.paymentTx === paymentTx && consent.replayKey === replayKey &&
+      consent.placementExpiresAt === validated.expiresAt &&
+      consent.venueExpiresAt === validated.bounds.venueExpiresAt,
+    "prepassport_consent_mismatch",
+    "Recorded TAKE_PROFIT consent does not authorize the trusted signed card",
+  );
+  fail(
+    confirmed.milliseconds >= Number(BigInt(paymentProof.blockTimestamp) * 1_000n) &&
+      confirmed.milliseconds >= Date.parse(validated.issuanceVerification.issuedAt) &&
+      confirmed.milliseconds < Date.parse(validated.expiresAt),
+    "prepassport_consent_mismatch",
+    "Recorded TAKE_PROFIT consent is not strictly inside the paid placement window",
+  );
+
+  return Object.freeze({
+    journal,
+    validated,
+    paymentPayer,
+    signerAddress,
+    depositWallet,
+    intentHash,
+    confirmedAt: confirmed.text,
+    replayKey,
+  });
+}
+
+/**
+ * Validate only the narrow journal state written after a live order command
+ * returned but before the first authenticated exact-order fetch completed.
+ *
+ * This intentionally accepts no candidate order ID: recovery is possible only
+ * from the exact live result already persisted before the ambiguity occurred.
+ */
+export function validatePrePassportTakeProfitJournal(journalInput, options = {}) {
+  const journal = record(
+    journalInput,
+    "invalid_prepassport_journal",
+    "Pre-passport TAKE_PROFIT journal must be an object",
+  );
+  fail(
+    journal.stage === "live_result_received" && journal.executionAttempted === true &&
+      journal.reconciliationRequired === true,
+    "invalid_prepassport_journal",
+    "Journal is not the supported ambiguous post-submit/pre-passport TAKE_PROFIT state",
+  );
+  fail(
+    journal.takeProfitPassport == null && journal.takeProfitPassportHash == null &&
+      journal.restingOrderProofHash == null,
+    "invalid_prepassport_journal",
+    "Pre-passport recovery cannot replace an existing take-profit passport",
+  );
+  const checkpoint = validatePaidTakeProfitCheckpoint(journal, options);
+  const observedNow = Number(typeof options.now === "function" ? options.now() : options.now ?? Date.now());
+  fail(Number.isFinite(observedNow), "invalid_prepassport_clock", "Pre-passport recovery clock is invalid");
+  const live = validateTakeProfitLiveResult(journal.paidCard, journal.liveResult, {
+    trustedIssuers: options.trustedIssuers,
+    now: observedNow,
+    allowExpired: true,
+  });
+  const orderId = requireCanonicalHash(
+    journal.orderId,
+    "missing_prepassport_order_id",
+    "Pre-passport recovery requires the exact persisted live order ID",
+  );
+  fail(orderId === live.orderId, "prepassport_order_mismatch", "Persisted order ID differs from the authenticated live result");
+  return Object.freeze({ ...checkpoint, live, orderId });
+}
+
+export function recoverPrePassportTakeProfitJournal(journalInput, snapshot, {
+  trustedIssuers,
+  now = Date.now(),
+  buildOrderProof = buildTakeProfitOrderProof,
+} = {}) {
+  const observedNow = Number(typeof now === "function" ? now() : now);
+  fail(Number.isFinite(observedNow), "invalid_prepassport_clock", "Pre-passport recovery clock is invalid");
+  const recovery = validatePrePassportTakeProfitJournal(journalInput, { trustedIssuers, now: observedNow });
+  const proof = buildOrderProof(
+    recovery.journal.paidCard,
+    recovery.journal.liveResult,
+    snapshot,
+    { trustedIssuers, confirmedAt: Date.parse(recovery.confirmedAt) },
+  );
+  const status = String(proof?.status || proof?.restingOrderProof?.status || "");
+  const armed = status === "ARMED";
+  const recoverableStatuses = new Set([
+    "PARTIAL_PENDING_CHAIN_PROOF",
+    "PARTIAL_CANCELED_PENDING_CHAIN_PROOF",
+    "PARTIAL_EXPIRED_PENDING_CHAIN_PROOF",
+    "FILLED_PENDING_CHAIN_PROOF",
+    "CANCELED",
+    "EXPIRED",
+    "UNKNOWN",
+  ]);
+  fail(
+    proof?.ok === true && proof?.orderId === recovery.orderId &&
+      proof?.restingOrderProof?.status === status && proof.restingOrderProof.onChain === false &&
+      HASH_RE.test(String(proof.restingOrderProofHash || "")) &&
+      HASH_RE.test(String(proof.takeProfitPassportHash || "")) &&
+      (armed
+        ? proof.restingOrderProof.version === "conviction-resting-order-proof-v1" && proof.recoverable !== true
+        : recoverableStatuses.has(status) &&
+          proof.restingOrderProof.version === "conviction-submitted-order-proof-v1" && proof.recoverable === true),
+    "invalid_prepassport_order_proof",
+    "Recovered exact order did not produce a valid TAKE_PROFIT passport",
+  );
+
+  const next = structuredClone(recovery.journal);
+  next.stage = armed ? "armed" : "submitted";
+  next.status = status;
+  next.orderId = proof.orderId;
+  next.takeProfitPassport = proof.takeProfitPassport;
+  next.takeProfitPassportHash = proof.takeProfitPassportHash;
+  next.restingOrderProofHash = proof.restingOrderProofHash;
+  next.initialOrderSnapshot = proof.initialOrderSnapshot || snapshot;
+  next.initialOrderSnapshotHash = proof.initialOrderSnapshotHash || sha256(snapshot);
+  next.reconciliationRequired = true;
+  next.prePassportRecoveredAt = new Date(observedNow).toISOString();
+  next.prePassportRecovery = {
+    version: "conviction-take-profit-prepassport-recovery-v1",
+    orderId: proof.orderId,
+    intentHash: recovery.intentHash,
+    confirmedAt: recovery.confirmedAt,
+    initialOrderSnapshotHash: next.initialOrderSnapshotHash,
+    noPaymentOrPlacementPerformed: true,
+  };
+  const binding = validateTakeProfitJournal(next, { trustedIssuers });
+  return Object.freeze({ journal: next, binding, snapshot: next.initialOrderSnapshot });
+}
+
 export async function safeTakeProfitJournalPath(value, stateDirectory = STATE_DIRECTORY) {
   const requested = resolve(String(value || ""));
   let root;
@@ -327,7 +931,7 @@ export async function safeTakeProfitJournalPath(value, stateDirectory = STATE_DI
   return file;
 }
 
-async function loadLifecycleContext(options, { stateDirectory = STATE_DIRECTORY } = {}) {
+async function loadRawLifecycleContext(options, { stateDirectory = STATE_DIRECTORY } = {}) {
   const journalPath = await safeTakeProfitJournalPath(options.journal, stateDirectory);
   const [journalText, trustedText] = await Promise.all([
     readFile(journalPath, "utf8"),
@@ -337,12 +941,89 @@ async function loadLifecycleContext(options, { stateDirectory = STATE_DIRECTORY 
   const trustedDocument = JSON.parse(trustedText);
   const trustedIssuers = trustedIssuerRegistry(trustedDocument?.issuers || trustedDocument);
   fail(trustedIssuers.size > 0, "missing_trusted_issuer", "Pinned issuer registry is empty");
-  const binding = validateTakeProfitJournal(journal, { trustedIssuers });
-  return { journalPath, journal, trustedIssuers, binding };
+  return { journalPath, journalText, journal, trustedIssuers };
 }
 
-async function exactLifecycleSnapshot(binding) {
-  return fetchExactOrderWithPropagation({
+async function loadLifecycleContext(options, { stateDirectory = STATE_DIRECTORY } = {}) {
+  const context = await loadRawLifecycleContext(options, { stateDirectory });
+  const binding = validateTakeProfitJournal(context.journal, { trustedIssuers: context.trustedIssuers });
+  return { ...context, binding };
+}
+
+async function loadReconcileContext(options, {
+  now = Date.now,
+  stateDirectory = STATE_DIRECTORY,
+  fetchExactOrderImpl = fetchExactOrderWithPropagation,
+  buildOrderProof = buildTakeProfitOrderProof,
+  writeState = writeTakeProfitState,
+  authorizationStateImpl = fetchEip3009AuthorizationState,
+  unlinkImpl = unlink,
+  statImpl = stat,
+} = {}) {
+  const context = await loadRawLifecycleContext(options, { stateDirectory });
+  const canonicalStateDirectory = await realpath(resolve(stateDirectory));
+  const earlyResult = await reconcileTakeProfitNonOrderState(context, {
+    now,
+    stateDirectory,
+    authorizationStateImpl,
+    writeState,
+    unlinkImpl,
+    statImpl,
+  });
+  if (earlyResult) {
+    return {
+      ...context,
+      stateDirectory: canonicalStateDirectory,
+      earlyResult,
+    };
+  }
+  const hasPassportMaterial = context.journal.takeProfitPassport != null ||
+    context.journal.takeProfitPassportHash != null || context.journal.restingOrderProofHash != null;
+  if (hasPassportMaterial || context.journal.stage === "armed" || context.journal.stage === "submitted") {
+    const binding = validateTakeProfitJournal(context.journal, { trustedIssuers: context.trustedIssuers });
+    return {
+      ...context,
+      stateDirectory: canonicalStateDirectory,
+      binding,
+      recoveredSnapshot: null,
+      prePassportRecovered: false,
+    };
+  }
+
+  await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
+  const recovery = validatePrePassportTakeProfitJournal(context.journal, {
+    trustedIssuers: context.trustedIssuers,
+    now: now(),
+  });
+  const snapshot = await fetchExactOrderImpl({
+    signerAddress: recovery.signerAddress,
+    depositWallet: recovery.depositWallet,
+    orderId: recovery.orderId,
+    outcomeTokenId: recovery.validated.tokenId,
+  });
+  const recovered = recoverPrePassportTakeProfitJournal(context.journal, snapshot, {
+    trustedIssuers: context.trustedIssuers,
+    now,
+    buildOrderProof,
+  });
+  const currentText = await readFile(context.journalPath, "utf8");
+  fail(currentText === context.journalText, "prepassport_journal_changed", "TAKE_PROFIT journal changed while its exact order was being recovered");
+  await writeState(recovered.journal, { directory: canonicalStateDirectory, file: context.journalPath });
+  return {
+    ...context,
+    journalText: `${JSON.stringify(recovered.journal, null, 2)}\n`,
+    journal: recovered.journal,
+    stateDirectory: canonicalStateDirectory,
+    binding: recovered.binding,
+    recoveredSnapshot: recovered.snapshot,
+    prePassportRecovered: true,
+  };
+}
+
+async function exactLifecycleSnapshot(binding, {
+  fetchExactOrderImpl = fetchExactOrderWithPropagation,
+} = {}) {
+  return fetchExactOrderImpl({
     signerAddress: binding.signerAddress,
     depositWallet: binding.depositWallet,
     orderId: binding.orderId,
@@ -490,13 +1171,30 @@ export async function settleTakeProfitReconciliation({
 export async function runTakeProfitReconcileCli(options, {
   now = Date.now,
   stateDirectory = STATE_DIRECTORY,
+  fetchExactOrderImpl = fetchExactOrderWithPropagation,
   fetchTradeContributions = fetchExactAssociatedTradeContributions,
   verifyAggregateFill = fetchAndVerifyTakeProfitAggregateFill,
+  buildOrderProof = buildTakeProfitOrderProof,
+  writeState = writeTakeProfitState,
+  releaseLocks = releaseReconciledLocks,
+  authorizationStateImpl = fetchEip3009AuthorizationState,
+  unlinkImpl = unlink,
+  statImpl = stat,
 } = {}) {
-  const context = await loadLifecycleContext(options, { stateDirectory });
+  const context = await loadReconcileContext(options, {
+    now,
+    stateDirectory,
+    fetchExactOrderImpl,
+    buildOrderProof,
+    writeState,
+    authorizationStateImpl,
+    unlinkImpl,
+    statImpl,
+  });
+  if (context.earlyResult) return context.earlyResult;
   let status;
   try {
-    const snapshot = await exactLifecycleSnapshot(context.binding);
+    const snapshot = context.recoveredSnapshot || await exactLifecycleSnapshot(context.binding, { fetchExactOrderImpl });
     const clobStatus = buildTakeProfitStatus(context.journal, snapshot, {
       trustedIssuers: context.trustedIssuers,
       now: now(),
@@ -524,9 +1222,11 @@ export async function runTakeProfitReconcileCli(options, {
   return settleTakeProfitReconciliation({
     context,
     status,
-    stateDirectory,
+    stateDirectory: context.stateDirectory,
   }, {
     now,
+    releaseLocks,
+    writeState,
   });
 }
 
@@ -895,6 +1595,7 @@ export async function runTakeProfitCli(options, {
         journal,
         directory: stateDirectory,
       });
+      state.reconciliationRequired = true;
       await persist("payment_authorization_starting");
       let signed;
       try {
@@ -906,6 +1607,7 @@ export async function runTakeProfitCli(options, {
       } catch (error) {
         await unlink(state.reservationLockPath);
         state.reservationLockPath = null;
+        state.reconciliationRequired = false;
         await persist("payment_authorization_failed_before_replay");
         throw error;
       }
@@ -919,6 +1621,7 @@ export async function runTakeProfitCli(options, {
       } catch (error) {
         await unlink(state.reservationLockPath);
         state.reservationLockPath = null;
+        state.reconciliationRequired = false;
         await persist("payment_authorization_rejected_before_replay");
         throw error;
       }
@@ -963,11 +1666,17 @@ export async function runTakeProfitCli(options, {
     validateTakeProfitDryRun: (card, result, validationOptions) => validateTakeProfitPluginPreview(card, result, validationOptions),
     waitUntil: sleepUntil,
     execute: async (argv) => {
-      state.executionLockPath = await claimExecutionLock({ journal });
-      await persist("execution_lock_acquired");
+      try {
+        state.executionLockPath = await claimExecutionLock({ journal });
+      } catch (error) {
+        markTakeProfitPreSpawnFailure(state, error, { liveSpawnStarted: false, now });
+        await persist();
+        throw error;
+      }
       const tokenIndex = argv.indexOf("--token-id");
       const tokenId = tokenIndex >= 0 ? String(argv[tokenIndex + 1] || "") : "";
       try {
+        await persist("execution_lock_acquired");
         await ensureTradingMode();
         const lockedReadiness = await loadTakeProfitReadiness({ outcomeTokenId: tokenId });
         requirePinnedTakeProfitExecutionReadiness(lockedReadiness, {
@@ -991,28 +1700,23 @@ export async function runTakeProfitCli(options, {
         state.executionAttempted = true;
         state.reconciliationRequired = true;
         await persist("execution_attempted");
-        let result;
-        try {
-          const launchCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
-          const launchWindow = requireTakeProfitLaunchWindow(launchCard, { now });
-          fail(sha256(launchCard.executionCard.argv) === state.tradeConsent.executionArgvHash, "trade_consent_mismatch", "Live TAKE_PROFIT differs from the confirmed order");
-          result = await commandJson("polymarket-plugin", argv, "Polymarket TAKE_PROFIT live order", {
-            deadlineEpochMs: launchWindow.placementDeadlineMs,
-            clock: now,
-            onStart: () => { executionAttempted = true; },
-          });
-        } catch (error) {
-          if (!executionAttempted) {
-            state.executionAttempted = false;
-            state.reconciliationRequired = false;
-            await persist("execution_blocked_before_launch");
-          }
-          throw error;
-        }
+        const launchCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
+        const launchWindow = requireTakeProfitLaunchWindow(launchCard, { now });
+        fail(sha256(launchCard.executionCard.argv) === state.tradeConsent.executionArgvHash, "trade_consent_mismatch", "Live TAKE_PROFIT differs from the confirmed order");
+        const result = await commandJson("polymarket-plugin", argv, "Polymarket TAKE_PROFIT live order", {
+          deadlineEpochMs: launchWindow.placementDeadlineMs,
+          clock: now,
+          onStart: () => { executionAttempted = true; },
+        });
         state.liveResult = result;
         state.orderId = String((result?.data || result)?.order_id || "").toLowerCase();
         await persist("live_result_received");
         return result;
+      } catch (error) {
+        if (markTakeProfitPreSpawnFailure(state, error, { liveSpawnStarted: executionAttempted, now })) {
+          await persist();
+        }
+        throw error;
       } finally {
         await settleExecutionLock(state, { liveAttempted: executionAttempted, proofVerified: false });
         await persist();
@@ -1056,8 +1760,7 @@ export async function runTakeProfitCli(options, {
     await persist();
     return { ...result, journalPath: journal, reservationLockPath: state.reservationLockPath };
   } catch (error) {
-    const safelyUnlaunched = state.stage === "execution_blocked_before_launch" && !executionAttempted;
-    state.reconciliationRequired = safelyUnlaunched ? false : Boolean(
+    state.reconciliationRequired = Boolean(
       executionAttempted || state.paymentAuthorization || state.paymentTx || state.reservationLockPath,
     );
     state.lastError = {
