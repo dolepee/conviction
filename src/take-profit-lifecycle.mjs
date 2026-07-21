@@ -462,7 +462,11 @@ export function buildTakeProfitLookupFailureStatus(journalInput, {
     observedAt: observation.text,
     lookupErrorCode: code,
     orderTerminal: false,
-    settlementProofRequired: false,
+    // The last authenticated state started at zero matched, but a fill may
+    // have landed before this failed lookup. Require reconciliation instead
+    // of treating missing status data as evidence that no settlement exists.
+    settlementProofRequired: true,
+    potentialFillUnresolved: true,
     cancelEligible: false,
     cancellationObserved: false,
   });
@@ -572,7 +576,8 @@ export function buildTakeProfitCancelOutcome({
       cancelNotAcknowledgedReason: acknowledgement.reason,
       cancelConfirmedFromFreshOrder: false,
       fillCancelRaceOccurred: false,
-      settlementProofRequired: before.matchedRaw > 0n,
+      settlementProofRequired: true,
+      potentialFillUnresolved: true,
       matchedSharesBeforeRaw: before.matchedRaw.toString(),
       matchedSharesAfterRaw: null,
     });

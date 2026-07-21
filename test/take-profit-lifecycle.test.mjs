@@ -302,6 +302,8 @@ test("404 and indeterminate lookup failures remain UNKNOWN, never canceled", () 
     assert.equal(status.orderTerminal, false);
     assert.equal(status.cancellationObserved, false);
     assert.equal(status.cancelEligible, false);
+    assert.equal(status.settlementProofRequired, true);
+    assert.equal(status.potentialFillUnresolved, true);
   }
 });
 
@@ -391,6 +393,8 @@ test("cancel acknowledgement alone never turns 404, UNKNOWN, or still-LIVE into 
   assert.equal(missing.status, "UNKNOWN");
   assert.equal(missing.cancelAcknowledgedByPlugin, true);
   assert.equal(missing.cancelConfirmedFromFreshOrder, false);
+  assert.equal(missing.settlementProofRequired, true);
+  assert.equal(missing.potentialFillUnresolved, true);
 
   const missingAfterKnownPartial = buildTakeProfitCancelOutcome({
     journal: fixtureJournal(),
