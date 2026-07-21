@@ -6,6 +6,8 @@ import {
 } from "@okxweb3/x402-express";
 import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server";
 
+import { createTelegramNotifier } from "./telegram-notifier.mjs";
+
 export const SERVICE_PATH = "/api/service";
 export const SERVICE_RESOURCE = "https://conviction-bay.vercel.app/api/service";
 export const SERVICE_NETWORK = "eip155:196";
@@ -117,13 +119,58 @@ export function serviceRouteConfiguration() {
 
 export function createPaymentGate(
   environment,
-  { facilitatorClient = undefined, logger = console } = {},
+  {
+    facilitatorClient = undefined,
+    logger = console,
+    notifyPaidCall = createTelegramNotifier(environment),
+  } = {},
 ) {
   const credentials = readFacilitatorCredentials(environment);
   const facilitator =
     facilitatorClient ?? new OKXFacilitatorClient(credentials);
   const resourceServer = new x402ResourceServer(facilitator)
     .register(SERVICE_NETWORK, new ExactEvmScheme())
+    .onAfterSettle(async ({ result, requirements, transportContext }) => {
+      try {
+        const requestContext = transportContext?.request;
+        const responseBody = transportContext?.responseBody;
+        if (
+          requestContext?.method !== "POST" ||
+          requestContext?.path !== SERVICE_PATH ||
+          result?.success !== true ||
+          result?.status !== "success" ||
+          typeof result?.transaction !== "string" ||
+          !result.transaction ||
+          result.network !== SERVICE_NETWORK ||
+          requirements?.network !== SERVICE_NETWORK ||
+          requirements?.amount !== SERVICE_PRICE_ATOMIC ||
+          requirements?.asset !== SERVICE_ASSET ||
+          requirements?.payTo?.toLowerCase() !== SERVICE_PAYEE ||
+          !responseBody
+        ) {
+          return;
+        }
+
+        const delivered = JSON.parse(responseBody.toString("utf8"));
+        if (delivered?.ok !== true) return;
+
+        await notifyPaidCall({
+          serviceName: "Bounded YES/NO Position Card",
+          amount: SERVICE_PRICE_DISPLAY,
+          network: SERVICE_NETWORK,
+          transaction: result.transaction,
+          settledAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        try {
+          logger.error("paid call notification failed", {
+            name: error?.name,
+            code: error?.code,
+            status: error?.status,
+          });
+        } catch {}
+      }
+    })
     .onVerifyFailure(async ({ error }) => {
       logger.error("payment verification failed", {
         name: error?.name,
