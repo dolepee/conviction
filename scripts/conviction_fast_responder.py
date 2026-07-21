@@ -14,6 +14,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -24,6 +25,7 @@ from telegram_outbox import (
     normalize_outbox_state,
     queue_notification,
     send_telegram,
+    telegram_config,
 )
 
 
@@ -69,7 +71,8 @@ def session_regex() -> re.Pattern[str]:
         rf"session dispatch queued route=group "
         rf"session=(?P<session>job:[^ ]+:my:{re.escape(AGENT_ID)}:to:(?P<to_agent>[^ ]+)) "
         rf"message=(?P<message>[^ ]+) "
-        rf".*type=a2a-agent-chat .*fromAgent=(?P<from_agent>[^ ]+) toAgent={re.escape(AGENT_ID)}"
+        rf"type=a2a-agent-chat job=[^ ]+ "
+        rf"fromAgent=(?P<from_agent>[^ ]+) toAgent={re.escape(AGENT_ID)}(?= content=)"
     )
 
 
@@ -540,16 +543,35 @@ def run_self_test() -> None:
     valid_dispatch = pattern.search(
         "session dispatch queued route=group "
         "session=job:review:my:7034:to:1791 message=message-valid "
-        "type=a2a-agent-chat fromAgent=1791 toAgent=7034"
+        "type=a2a-agent-chat job=review fromAgent=1791 toAgent=7034 "
+        'content="review request"'
     )
     valid_parts = bound_session_parts(valid_dispatch)
     assert valid_parts and valid_parts["to_agent_id"] == "1791"
     mismatched_dispatch = pattern.search(
         "session dispatch queued route=group "
         "session=job:review:my:7034:to:1791 message=message-spoofed "
-        "type=a2a-agent-chat fromAgent=2222 toAgent=7034"
+        "type=a2a-agent-chat job=review fromAgent=2222 toAgent=7034 "
+        'content="fromAgent=1791 toAgent=7034"'
     )
+    assert mismatched_dispatch and mismatched_dispatch.group("from_agent") == "2222"
     assert bound_session_parts(mismatched_dispatch) is None
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        telegram_env = Path(temporary_directory) / ".env"
+        telegram_env.write_text(
+            "TELEGRAM_BOT_TOKEN=test-token\n"
+            "TELEGRAM_CHAT_ID=-100correct\n"
+            "TELEGRAM_ALLOWED_USERS=wrong-recipient\n",
+            encoding="utf-8",
+        )
+        assert telegram_config(telegram_env, {}) == ("test-token", "-100correct")
+        telegram_env.write_text(
+            "TELEGRAM_BOT_TOKEN=test-token\n"
+            "TELEGRAM_ALLOWED_USERS=wrong-recipient\n",
+            encoding="utf-8",
+        )
+        assert telegram_config(telegram_env, {}) is None
 
     assert AGENT_ID == "7034"
     assert SERVICE_NAME == "Bounded YES/NO Position Card"

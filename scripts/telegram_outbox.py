@@ -44,10 +44,8 @@ def telegram_config(
         source.get("TELEGRAM_HOME_CHANNEL")
         or source.get("TELEGRAM_CHAT_ID")
         or dotenv.get("TELEGRAM_HOME_CHANNEL", "")
+        or dotenv.get("TELEGRAM_CHAT_ID", "")
     )
-    if not chat_id:
-        allowed = source.get("TELEGRAM_ALLOWED_USERS") or dotenv.get("TELEGRAM_ALLOWED_USERS", "")
-        chat_id = allowed.split(",", 1)[0].strip()
     return (token, chat_id) if token and chat_id else None
 
 
