@@ -48,8 +48,7 @@ export function createManageHandler({
         resolveMarketImpl(body.market, { outcome: body.outcome }),
         verifySourceImpl(body.sourcePosition, { trustedIssuers: trusted }),
       ]);
-      const position = await fetchPositionImpl(body.wallet, market.outcomeTokenId);
-      const compilation = compileCloseIntent(
+      const compile = (position) => compileCloseIntent(
         {
           ...body,
           action: "close",
@@ -59,6 +58,21 @@ export function createManageHandler({
         position,
         compileOptions,
       );
+      let position = await fetchPositionImpl(body.wallet, market.outcomeTokenId);
+      let compilation;
+      try {
+        compilation = compile(position);
+      } catch (error) {
+        if (!(error instanceof ConvictionError) || error.code !== "stale_position_snapshot") {
+          throw error;
+        }
+        // Public RPC load balancers can briefly serve a lagging `latest` head.
+        // Preserve the 30-second safety bound and refetch once; a second stale
+        // snapshot still fails closed and, because this is a 4xx response, x402
+        // does not settle the signed payment authorization.
+        position = await fetchPositionImpl(body.wallet, market.outcomeTokenId);
+        compilation = compile(position);
+      }
       return send(response, 200, await issue(compilation));
     } catch (error) {
       if (error instanceof ConvictionError) {

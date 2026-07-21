@@ -23,6 +23,7 @@ import {
   SERVICE_ASSET,
   SERVICE_NETWORK,
   SERVICE_PAYEE,
+  SERVICE_PAYMENT_TIMEOUT_SECONDS,
 } from "../src/service-payment.mjs";
 import { fetchAndVerifyX402Payment } from "../src/x402-payment-verifier.mjs";
 import {
@@ -61,6 +62,8 @@ const checkpoint = {
   paidCard: null,
   liveResult: null,
   paymentProof: null,
+  paymentAuthorization: null,
+  paidServiceResponse: null,
   request: null,
   paymentPayer: null,
   buyerWallet: null,
@@ -185,7 +188,10 @@ export function parseJsonOutput(text, label) {
   throw Object.assign(new Error(`${label} did not return JSON`), { code: "invalid_tool_output" });
 }
 
+const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
 const HASH_RE = /^0x[0-9a-f]{64}$/i;
+const DECIMAL_UINT_RE = /^(?:0|[1-9][0-9]*)$/;
+const AUTHORIZATION_STATE_SELECTOR = "e94a0102";
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -561,6 +567,163 @@ function decodeHeader(value, label) {
   }
 }
 
+export function paymentAuthorizationMetadata(headerValue, {
+  paymentPayer,
+  service = POSITION_CARD_SERVICE,
+  now = Date.now(),
+} = {}) {
+  const decoded = decodeHeader(headerValue, "PAYMENT-SIGNATURE");
+  const accepted = decoded?.accepted;
+  const authorization = decoded?.payload?.authorization;
+  const signature = String(decoded?.payload?.signature || "");
+  const from = String(authorization?.from || "").toLowerCase();
+  const to = String(authorization?.to || "").toLowerCase();
+  const asset = String(accepted?.asset || "").toLowerCase();
+  const network = String(accepted?.network || "");
+  const value = String(authorization?.value || "");
+  const validAfter = String(authorization?.validAfter || "");
+  const validBefore = String(authorization?.validBefore || "");
+  const nonce = String(authorization?.nonce || "").toLowerCase();
+  const extra = accepted?.extra;
+  const validWindow = DECIMAL_UINT_RE.test(validAfter) && DECIMAL_UINT_RE.test(validBefore)
+    ? BigInt(validBefore) - BigInt(validAfter)
+    : -1n;
+  const nowSeconds = BigInt(Math.floor(now / 1_000));
+  if (
+    decoded?.x402Version !== 2 || accepted?.scheme !== "exact" ||
+    network !== SERVICE_NETWORK || asset !== SERVICE_ASSET ||
+    String(accepted?.amount || "") !== service.priceAtomic ||
+    String(accepted?.payTo || "").toLowerCase() !== SERVICE_PAYEE ||
+    accepted?.maxTimeoutSeconds !== SERVICE_PAYMENT_TIMEOUT_SECONDS ||
+    extra?.name !== "USD₮0" || extra?.version !== "1" ||
+    Object.keys(extra || {}).sort().join(",") !== "name,version" ||
+    !ADDRESS_RE.test(from) || from !== String(paymentPayer || "").toLowerCase() ||
+    to !== SERVICE_PAYEE || value !== service.priceAtomic ||
+    !DECIMAL_UINT_RE.test(validAfter) || !DECIMAL_UINT_RE.test(validBefore) ||
+    validWindow <= 0n || validWindow > BigInt(SERVICE_PAYMENT_TIMEOUT_SECONDS + 5) ||
+    BigInt(validAfter) < nowSeconds - 60n || BigInt(validAfter) > nowSeconds + 5n ||
+    BigInt(validBefore) <= nowSeconds || BigInt(validBefore) > nowSeconds + BigInt(SERVICE_PAYMENT_TIMEOUT_SECONDS + 5) ||
+    !HASH_RE.test(nonce) || !/^0x[0-9a-f]{130}$/i.test(signature)
+  ) {
+    throw Object.assign(new Error("x402 authorization differs from the pinned payment"), {
+      code: "payment_authorization_mismatch",
+    });
+  }
+  return Object.freeze({
+    version: "conviction-x402-authorization-v1",
+    scheme: "exact-eip3009",
+    network,
+    asset,
+    from,
+    to,
+    value,
+    validAfter,
+    validBefore,
+    nonce,
+  });
+}
+
+function validateStoredPaymentAuthorization(metadata, {
+  paymentPayer,
+  service = POSITION_MANAGER_SERVICE,
+} = {}) {
+  const validAfter = String(metadata?.validAfter || "");
+  const validBefore = String(metadata?.validBefore || "");
+  const validWindow = DECIMAL_UINT_RE.test(validAfter) && DECIMAL_UINT_RE.test(validBefore)
+    ? BigInt(validBefore) - BigInt(validAfter)
+    : -1n;
+  if (
+    metadata?.version !== "conviction-x402-authorization-v1" ||
+    metadata?.scheme !== "exact-eip3009" || metadata?.network !== SERVICE_NETWORK ||
+    String(metadata?.asset || "").toLowerCase() !== SERVICE_ASSET ||
+    String(metadata?.from || "").toLowerCase() !== String(paymentPayer || "").toLowerCase() ||
+    String(metadata?.to || "").toLowerCase() !== SERVICE_PAYEE ||
+    String(metadata?.value || "") !== service.priceAtomic ||
+    validWindow <= 0n || validWindow > BigInt(SERVICE_PAYMENT_TIMEOUT_SECONDS + 5) ||
+    !HASH_RE.test(String(metadata?.nonce || ""))
+  ) {
+    throw Object.assign(new Error("Stored x402 authorization differs from the pinned payment"), {
+      code: "invalid_payment_authorization",
+    });
+  }
+  return metadata;
+}
+
+function isRecoverablePaymentAuthorizationState(state) {
+  const allowedStages = new Set([
+    "payment_authorization_created",
+    "paid_request_rejected_pre_settlement",
+    "paid_request_settlement_ambiguous",
+  ]);
+  const response = state?.paidServiceResponse;
+  const responseMatchesStage = state?.stage === "payment_authorization_created"
+    ? response === null || response === undefined
+    : state?.stage === "paid_request_rejected_pre_settlement"
+      ? Number.isInteger(response?.status) && response.status >= 400 && response.paymentResponsePresent === false
+      : response && Number.isInteger(response.status);
+  return allowedStages.has(state?.stage) && responseMatchesStage &&
+    state.reconciliationRequired === true && !state.executionArgvHash && !state.executionArgv &&
+    !state.paidCard && !state.paymentTx && !state.orderId && !state.settlementTx &&
+    !state.executionLockPath && !state.tradeConfirmedAt && !state.liveResult &&
+    HASH_RE.test(String(state.replayKey || "")) && Boolean(state.replayLockPath) &&
+    state.paymentAuthorization?.version === "conviction-x402-authorization-v1";
+}
+
+async function xlayerRpc(method, params, { fetchImpl = fetch, rpcUrl = "https://rpc.xlayer.tech" } = {}) {
+  const response = await fetchImpl(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const body = await response.json();
+  if (!response.ok || body?.error || body?.result === undefined || body?.result === null) {
+    throw Object.assign(new Error("X Layer authorization-state RPC failed"), {
+      code: "payment_rpc_error",
+    });
+  }
+  return body.result;
+}
+
+export async function fetchEip3009AuthorizationState(metadata, options = {}) {
+  const from = String(metadata?.from || "").toLowerCase();
+  const nonce = String(metadata?.nonce || "").toLowerCase();
+  const asset = String(metadata?.asset || "").toLowerCase();
+  if (!ADDRESS_RE.test(from) || !HASH_RE.test(nonce) || asset !== SERVICE_ASSET) {
+    throw Object.assign(new Error("Stored payment authorization is invalid"), {
+      code: "invalid_payment_authorization",
+    });
+  }
+  const chainHex = await xlayerRpc("eth_chainId", [], options);
+  if (Number(BigInt(chainHex)) !== 196) {
+    throw Object.assign(new Error("Payment authorization RPC is not X Layer"), {
+      code: "wrong_payment_chain",
+    });
+  }
+  const block = await xlayerRpc("eth_getBlockByNumber", ["finalized", false], options);
+  if (
+    !/^0x[0-9a-f]+$/i.test(String(block?.number || "")) ||
+    !/^0x[0-9a-f]+$/i.test(String(block?.timestamp || "")) ||
+    !HASH_RE.test(String(block?.hash || ""))
+  ) {
+    throw Object.assign(new Error("X Layer finalized block is invalid"), { code: "payment_rpc_error" });
+  }
+  const data = `0x${AUTHORIZATION_STATE_SELECTOR}${from.slice(2).padStart(64, "0")}${nonce.slice(2)}`;
+  const result = await xlayerRpc("eth_call", [
+    { to: asset, data },
+    { blockHash: String(block.hash).toLowerCase(), requireCanonical: true },
+  ], options);
+  if (!/^0x[0-9a-f]+$/i.test(String(result || "")) || (BigInt(result) !== 0n && BigInt(result) !== 1n)) {
+    throw Object.assign(new Error("X Layer authorization state is invalid"), { code: "payment_rpc_error" });
+  }
+  return Object.freeze({
+    used: BigInt(result) === 1n,
+    blockNumber: BigInt(block.number).toString(),
+    blockHash: String(block.hash).toLowerCase(),
+    blockTimestamp: BigInt(block.timestamp).toString(),
+  });
+}
+
 function findAddress(addresses, chainIndex) {
   return addresses?.data?.xlayer?.find((entry) => String(entry.chainIndex) === String(chainIndex))?.address;
 }
@@ -593,24 +756,82 @@ function safeStatePath(value, kind, stateDirectory = journalDirectory) {
   return candidate;
 }
 
-async function releaseReconciledLocks(state, { stateDirectory = journalDirectory } = {}) {
-  const released = [];
-  for (const [field, kind] of [
-    ["replayLockPath", "replay lock"],
-    ["executionLockPath", "execution lock"],
-  ]) {
-    if (!state[field]) continue;
+export async function releaseReconciledLocks(
+  state,
+  {
+    stateDirectory = journalDirectory,
+    journal,
+    fields = ["replayLockPath", "executionLockPath"],
+  } = {},
+) {
+  const definitions = {
+    replayLockPath: "replay lock",
+    executionLockPath: "execution lock",
+  };
+  const checked = [];
+  for (const field of fields) {
+    const kind = definitions[field];
+    if (!kind || !state[field]) continue;
     const file = safeStatePath(state[field], kind, stateDirectory);
+    let lock;
     try {
-      await unlink(file);
-      released.push(file);
-      state[field] = null;
+      lock = JSON.parse(await readFile(file, "utf8"));
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-      state[field] = null;
+      if (error?.code === "ENOENT") {
+        checked.push({ field, file, missing: true });
+        continue;
+      }
+      throw Object.assign(new Error(`${kind} cannot be verified before release`), {
+        code: "lock_ownership_mismatch",
+      });
     }
+    const owned = field === "replayLockPath"
+      ? HASH_RE.test(String(state.replayKey || "")) &&
+        basename(file) === `close-${String(state.replayKey).slice(2)}.lock.json` &&
+        lock?.version === "conviction-close-replay-lock-v1" &&
+        lock?.replayKey === state.replayKey && lock?.journalPath === journal
+      : basename(file) === "polymarket-execution.lock.json" &&
+        lock?.version === "conviction-polymarket-execution-lock-v1" &&
+        lock?.journalPath === journal;
+    if (!owned) {
+      throw Object.assign(new Error(`${kind} belongs to another journey`), {
+        code: "lock_ownership_mismatch",
+      });
+    }
+    checked.push({ field, file, missing: false });
+  }
+
+  const released = [];
+  for (const { field, file, missing } of checked) {
+    if (!missing) {
+      try {
+        await unlink(file);
+        released.push(file);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+    state[field] = null;
   }
   return released;
+}
+
+async function releaseUnsentReplayLock(state, { journal = journalPath } = {}) {
+  try {
+    await releaseReconciledLocks(state, {
+      journal,
+      fields: ["replayLockPath"],
+    });
+    state.replayKey = null;
+    state.replayLockReleaseError = null;
+  } catch (error) {
+    state.replayLockReleaseError = error?.code || "lock_release_failed";
+    state.reconciliationRequired = true;
+    throw Object.assign(new Error("Unsent payment replay lock could not be released safely"), {
+      code: "replay_lock_release_failed",
+      cause: error,
+    });
+  }
 }
 
 export async function reconcileCloseJournal({
@@ -619,6 +840,7 @@ export async function reconcileCloseJournal({
   now = Date.now(),
   verifyClose = fetchAndVerifyClose,
   validateCardImpl = validateCloseCard,
+  authorizationStateImpl = fetchEip3009AuthorizationState,
   stateDirectory = journalDirectory,
 } = {}) {
   const journal = safeStatePath(file, "journal", stateDirectory);
@@ -654,6 +876,42 @@ export async function reconcileCloseJournal({
       };
     }
     reason = "expired_without_execution";
+  } else if (isRecoverablePaymentAuthorizationState(state)) {
+    const authorization = validateStoredPaymentAuthorization(state.paymentAuthorization, {
+      paymentPayer: state.paymentPayer,
+      service: POSITION_MANAGER_SERVICE,
+    });
+    if (now <= Number(BigInt(authorization.validBefore) * 1_000n)) {
+      return {
+        ok: true,
+        status: "waiting_for_authorization_expiry",
+        expiresAt: new Date(Number(BigInt(authorization.validBefore) * 1_000n)).toISOString(),
+        reconciliationRequired: true,
+        journalPath: journal,
+      };
+    }
+    const authorizationState = await authorizationStateImpl(authorization);
+    if (BigInt(authorizationState?.blockTimestamp ?? -1) <= BigInt(authorization.validBefore)) {
+      return {
+        ok: true,
+        status: "waiting_for_authorization_expiry",
+        expiresAt: new Date(Number(BigInt(authorization.validBefore) * 1_000n)).toISOString(),
+        reconciliationRequired: true,
+        journalPath: journal,
+      };
+    }
+    if (authorizationState?.used !== false) {
+      return {
+        ok: true,
+        status: "manual_reconciliation_required",
+        reason: "payment_authorization_consumed_or_ambiguous",
+        reconciliationRequired: true,
+        journalPath: journal,
+        stage: state.stage,
+      };
+    }
+    state.reconciliationAuthorizationState = authorizationState;
+    reason = "expired_unsettled_authorization";
   } else {
     return {
       ok: true,
@@ -667,8 +925,18 @@ export async function reconcileCloseJournal({
     };
   }
 
-  const releasedLocks = await releaseReconciledLocks(state, { stateDirectory });
-  state.stage = reason === "verified_settlement" ? "complete_reconciled" : "expired_unexecuted_reconciled";
+  const releasedLocks = await releaseReconciledLocks(state, {
+    stateDirectory,
+    journal,
+    fields: reason === "expired_unsettled_authorization"
+      ? ["replayLockPath"]
+      : ["replayLockPath", "executionLockPath"],
+  });
+  state.stage = reason === "verified_settlement"
+    ? "complete_reconciled"
+    : reason === "expired_unsettled_authorization"
+      ? "expired_unsettled_authorization_reconciled"
+      : "expired_unexecuted_reconciled";
   state.reconciliationRequired = false;
   state.reconciledAt = new Date(now).toISOString();
   state.reconciliationReason = reason;
@@ -772,12 +1040,16 @@ export function requireDistinctPaymentPayer(paymentPayer) {
 
 export function validatePaymentChallenge(decoded, service = POSITION_CARD_SERVICE) {
   const requirement = decoded?.accepts?.[0];
+  const extra = requirement?.extra;
   if (
     decoded?.x402Version !== 2 || decoded?.resource?.url !== service.resource ||
     requirement?.scheme !== "exact" || requirement?.network !== SERVICE_NETWORK ||
     requirement?.asset?.toLowerCase() !== SERVICE_ASSET ||
     requirement?.payTo?.toLowerCase() !== SERVICE_PAYEE ||
-    requirement?.amount !== service.priceAtomic
+    requirement?.amount !== service.priceAtomic ||
+    requirement?.maxTimeoutSeconds !== SERVICE_PAYMENT_TIMEOUT_SECONDS ||
+    extra?.name !== "USD₮0" || extra?.version !== "1" ||
+    Object.keys(extra || {}).sort().join(",") !== "name,version"
   ) {
     throw Object.assign(
       new Error("x402 challenge differs from Conviction's pinned price"),
@@ -975,6 +1247,18 @@ async function main() {
     return latestReadiness;
   };
 
+  const releaseCreatedReplayLock = async (releasedStage) => {
+    try {
+      await releaseUnsentReplayLock(checkpoint);
+    } catch (cleanupError) {
+      checkpoint.stage = "replay_lock_release_failed_before_replay";
+      await writeReconciliationJournal(checkpoint);
+      throw cleanupError;
+    }
+    checkpoint.stage = releasedStage;
+    await writeReconciliationJournal(checkpoint);
+  };
+
   const adapters = {
     ensureTradingMode: async () => {
       const switched = await commandJson(
@@ -1081,11 +1365,7 @@ async function main() {
         );
       } catch (error) {
         if (createdReplayLock) {
-          try { await unlink(checkpoint.replayLockPath); } catch {}
-          checkpoint.replayLockPath = null;
-          checkpoint.replayKey = null;
-          checkpoint.stage = "payment_authorization_failed_before_replay";
-          await writeReconciliationJournal(checkpoint);
+          await releaseCreatedReplayLock("payment_authorization_failed_before_replay");
         }
         throw error;
       }
@@ -1093,23 +1373,41 @@ async function main() {
       const headerName = data.header_name || "PAYMENT-SIGNATURE";
       if (!data.authorization_header || String(data.wallet || "").toLowerCase() !== options.paymentPayer) {
         if (createdReplayLock) {
-          try { await unlink(checkpoint.replayLockPath); } catch {}
-          checkpoint.replayLockPath = null;
-          checkpoint.replayKey = null;
+          await releaseCreatedReplayLock("payment_authorization_rejected_before_replay");
         }
         throw Object.assign(new Error("x402 authorization was not signed by the pinned payer"), { code: "payment_wallet_mismatch" });
+      }
+      try {
+        checkpoint.paymentAuthorization = paymentAuthorizationMetadata(data.authorization_header, {
+          paymentPayer: options.paymentPayer,
+          service,
+        });
+      } catch (error) {
+        if (createdReplayLock) {
+          await releaseCreatedReplayLock("payment_authorization_rejected_before_replay");
+        }
+        throw error;
       }
       checkpoint.stage = "payment_authorization_created";
       await writeReconciliationJournal(checkpoint);
       const { response, json } = await postJson(`${options.origin}${service.path}`, requestBody, {
         headers: { [headerName]: data.authorization_header },
       });
+      const paymentResponseRaw = response.headers.get("payment-response");
+      checkpoint.paidServiceResponse = {
+        status: response.status,
+        paymentResponsePresent: Boolean(paymentResponseRaw),
+      };
       if (!response.ok || json?.ok !== true) {
+        checkpoint.stage = response.status >= 400 && !paymentResponseRaw
+          ? "paid_request_rejected_pre_settlement"
+          : "paid_request_settlement_ambiguous";
+        checkpoint.reconciliationRequired = true;
+        await writeReconciliationJournal(checkpoint);
         throw Object.assign(new Error(json?.error?.message || "Paid service request failed"), {
           code: json?.error?.code || "paid_service_failed",
         });
       }
-      const paymentResponseRaw = response.headers.get("payment-response");
       const paymentResponse = decodeHeader(paymentResponseRaw, "PAYMENT-RESPONSE");
       const paymentTx = paymentTransaction(paymentResponse);
       checkpoint.stage = "paid_card_received";
