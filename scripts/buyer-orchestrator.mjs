@@ -16,6 +16,7 @@ import { parseDecimal } from "../src/decimal.mjs";
 import { fetchAndVerifyClose } from "../src/exit-receipt-verifier.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchPositionSnapshot } from "../src/position-client.mjs";
+import { fetchAllOpenOrders } from "../src/polymarket-open-orders.mjs";
 import {
   POSITION_CARD_SERVICE,
   POSITION_MANAGER_SERVICE,
@@ -312,9 +313,63 @@ export function normalizeOpenOrders(input) {
       code: "invalid_tool_output",
     });
   }
+  const active = new Set(["OPEN", "LIVE", "UNMATCHED", "ORDER_STATUS_OPEN", "ORDER_STATUS_LIVE", "ORDER_STATUS_UNMATCHED"]);
+  const inactive = new Set(["MATCHED", "CANCELED", "CANCELLED", "EXPIRED", "ORDER_STATUS_MATCHED", "ORDER_STATUS_CANCELED", "ORDER_STATUS_CANCELLED", "ORDER_STATUS_EXPIRED"]);
   return orders.filter((order) => {
-    const state = String(order?.status ?? order?.state ?? "OPEN").toUpperCase();
-    return state === "OPEN" || state === "LIVE" || state === "UNMATCHED";
+    const state = String(order?.status ?? order?.state ?? "").toUpperCase();
+    if (active.has(state)) return true;
+    if (inactive.has(state)) return false;
+    throw Object.assign(new Error("Polymarket returned an order with an unknown status"), {
+      code: "invalid_tool_output",
+    });
+  });
+}
+
+export function summarizeOpenSellReservations(input, outcomeTokenId) {
+  const tokenId = String(outcomeTokenId || "");
+  if (!/^(0|[1-9]\d*)$/.test(tokenId)) {
+    throw Object.assign(new Error("Selected outcome token ID is invalid"), {
+      code: "invalid_tool_output",
+    });
+  }
+
+  let reservedSharesRaw = 0n;
+  let openSellOrderCount = 0;
+  for (const order of normalizeOpenOrders(input)) {
+    const side = String(order?.side || "").toUpperCase();
+    const orderTokenId = String(order?.token_id ?? order?.asset_id ?? "");
+    if ((side !== "BUY" && side !== "SELL") || !/^(0|[1-9]\d*)$/.test(orderTokenId)) {
+      throw Object.assign(new Error("Polymarket returned an open order with an invalid side or token"), {
+        code: "invalid_tool_output",
+      });
+    }
+    if (side !== "SELL" || orderTokenId !== tokenId) continue;
+
+    try {
+      const originalSize = String(order?.original_size ?? "");
+      const matchedSize = String(order?.size_matched ?? "0");
+      if (!/^(0|[1-9]\d*)$/.test(originalSize) || !/^(0|[1-9]\d*)$/.test(matchedSize)) {
+        throw new Error("sizes are not canonical atomic integers");
+      }
+      const originalRaw = BigInt(originalSize);
+      const matchedRaw = BigInt(matchedSize);
+      if (matchedRaw > originalRaw) throw new Error("matched size exceeds original size");
+      const remainingRaw = originalRaw - matchedRaw;
+      if (remainingRaw > 0n) {
+        openSellOrderCount += 1;
+        reservedSharesRaw += remainingRaw;
+      }
+    } catch (error) {
+      throw Object.assign(new Error("Polymarket returned an invalid matching open SELL order"), {
+        code: "invalid_tool_output",
+        cause: error,
+      });
+    }
+  }
+
+  return Object.freeze({
+    openSellOrderCount,
+    reservedSharesRaw: reservedSharesRaw.toString(),
   });
 }
 
@@ -453,7 +508,7 @@ export function requirePinnedCloseExecutionReadiness(readiness, { wallet, tokenI
   if (BigInt(readiness?.outcomeBalanceRaw ?? -1) < sharesRaw) {
     throw Object.assign(new Error("Final outcome-token balance is below the exact CLOSE shares"), { code: "insufficient_position" });
   }
-  if (BigInt(readiness?.reservedSharesRaw ?? -1) !== 0n || Number(readiness?.openOrderCount ?? -1) !== 0) {
+  if (BigInt(readiness?.reservedSharesRaw ?? -1) !== 0n || Number(readiness?.openSellOrderCount ?? -1) !== 0) {
     throw Object.assign(new Error("An open order appeared before CLOSE submission"), { code: "position_reserved" });
   }
 }
@@ -846,7 +901,7 @@ async function main() {
             `  Post-settlement net verification floor: ${b.minimumNetProceedsRaw} atomic pUSD`,
             "  Fee/net note: V2 does not sign the operator fee; these are detected after settlement, not preventive controls.",
             `  Current position balance: ${latestCloseReadiness?.outcomeBalanceRaw || "unknown"} atomic shares`,
-            `  Open-order reservations: ${latestCloseReadiness?.openOrderCount ?? "unknown"}`,
+            `  Matching open SELL reservations: ${latestCloseReadiness?.openSellOrderCount ?? "unknown"}`,
             `  Seller wallet: ${b.wallet}`,
             `  Source OPEN intent: ${b.sourceIntentHash}`,
             `  Source position proof: ${b.sourcePositionProofHash}`,
@@ -938,16 +993,22 @@ async function main() {
     },
     checkReadiness: loadReadiness,
     checkCloseReadiness: async ({ outcomeTokenId }) => {
-      const [readiness, position, ordersResult] = await Promise.all([
+      const [readiness, position] = await Promise.all([
         loadReadiness(),
         fetchPositionSnapshot(tradingWallet, outcomeTokenId),
-        commandJson(
-          "polymarket-plugin",
-          ["orders", "--state", "OPEN", "--limit", "100"],
-          "Polymarket open-orders check",
-        ),
       ]);
-      const openOrders = normalizeOpenOrders(ordersResult);
+      const completeOpenOrders = await fetchAllOpenOrders({
+        signerAddress: readiness.paymentPayer,
+        depositWallet: tradingWallet,
+        outcomeTokenId: position.outcomeTokenId,
+      });
+      if (completeOpenOrders.complete !== true) {
+        throw Object.assign(new Error("Polymarket open-order pagination is incomplete"), {
+          code: "incomplete_open_orders",
+        });
+      }
+      const openOrders = normalizeOpenOrders(completeOpenOrders.orders);
+      const reservations = summarizeOpenSellReservations(openOrders, position.outcomeTokenId);
       latestCloseReadiness = {
         ...readiness,
         outcomeTokenId: position.outcomeTokenId,
@@ -955,9 +1016,11 @@ async function main() {
         positionBlockNumber: position.blockNumber,
         positionBlockHash: position.blockHash,
         approvedForExchange: position.approvedForExchange,
-        reservedSharesRaw: "0",
-        openSellOrderCount: openOrders.length,
-        openOrderCount: openOrders.length,
+        reservedSharesRaw: reservations.reservedSharesRaw,
+        openSellOrderCount: reservations.openSellOrderCount,
+        totalOpenOrderCount: openOrders.length,
+        openOrderPageCount: completeOpenOrders.pageCount,
+        openOrdersComplete: true,
       };
       return latestCloseReadiness;
     },
