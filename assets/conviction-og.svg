@@ -8,14 +8,14 @@
     <circle cx="43" cy="43" r="8" fill="#ff5c35" stroke="#16211e" stroke-width="3"/>
     <text x="76" y="41" font-family="Manrope,Arial,sans-serif" font-size="30" font-weight="800" fill="#16211e">Conviction</text>
   </g>
-  <text x="70" y="250" font-family="DM Mono,monospace" font-size="18" font-weight="500" letter-spacing="3" fill="#2148e8">CHOOSE A SIDE. BOUND THE TRADE. PROVE THE FILL.</text>
-  <text x="70" y="330" font-family="Manrope,Arial,sans-serif" font-size="72" font-weight="800" letter-spacing="-4" fill="#16211e">Turn conviction into</text>
-  <text x="70" y="410" font-family="Manrope,Arial,sans-serif" font-size="72" font-weight="800" letter-spacing="-4" fill="#2148e8">a bounded position.</text>
-  <text x="70" y="490" font-family="Manrope,Arial,sans-serif" font-size="24" fill="#65716b">YES or NO. Exact exposure. Wallet signing. Polygon proof.</text>
+  <text x="70" y="250" font-family="DM Mono,monospace" font-size="18" font-weight="500" letter-spacing="3" fill="#2148e8">PREVIEW FIRST. BOUND THE ORDER. PROVE THE FILL.</text>
+  <text x="70" y="330" font-family="Manrope,Arial,sans-serif" font-size="72" font-weight="800" letter-spacing="-4" fill="#16211e">Turn a market call into</text>
+  <text x="70" y="410" font-family="Manrope,Arial,sans-serif" font-size="72" font-weight="800" letter-spacing="-4" fill="#2148e8">a bounded order.</text>
+  <text x="70" y="490" font-family="Manrope,Arial,sans-serif" font-size="24" fill="#65716b">No-wallet preview. Explicit limits. Dry run. Polygon proof.</text>
   <g transform="translate(810 120)">
     <rect width="320" height="435" fill="#fffaf0" stroke="#16211e" stroke-width="2"/>
     <rect x="14" y="14" width="292" height="407" fill="none" stroke="#cbc3ae" stroke-dasharray="5 5"/>
-    <text x="30" y="50" font-family="DM Mono,monospace" font-size="13" fill="#65716b">LIVE EXECUTION / 001</text>
+    <text x="30" y="50" font-family="DM Mono,monospace" font-size="13" fill="#65716b">CONTROLLED HOUSE PROOF / 001</text>
     <text x="30" y="115" font-family="Manrope,Arial,sans-serif" font-size="24" font-weight="800" fill="#16211e">5.000000 YES</text>
     <rect x="30" y="145" width="260" height="92" fill="#2148e8"/>
     <circle cx="83" cy="191" r="32" fill="#fffaf0"/>
