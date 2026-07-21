@@ -1,4 +1,4 @@
 interface:
   display_name: "Conviction Executor"
-  short_description: "Buy bounded YES/NO positions and prove fills"
-  default_prompt: "Use $conviction-executor to buy a bounded YES or NO Polymarket position and verify the fill."
+  short_description: "Open or close bounded YES/NO positions with proof"
+  default_prompt: "Use $conviction-executor to open or close a bounded YES or NO Polymarket position and verify the Polygon result."

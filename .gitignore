@@ -9,5 +9,6 @@ coverage/
 dist/
 output/
 acceptance-report.json
+acceptance-report-b.json
 .vercel/
 .vercel

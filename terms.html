@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Terms — Conviction</title>
-    <meta name="description" content="The operational boundaries for Conviction bounded prediction-market position cards." />
+    <meta name="description" content="The operational boundaries for Conviction bounded prediction-market OPEN and CLOSE cards." />
     <meta name="robots" content="index,follow" />
     <link rel="canonical" href="https://conviction-bay.vercel.app/terms.html" />
     <link rel="icon" href="/assets/conviction-logo.svg" type="image/svg+xml" />
@@ -22,19 +22,23 @@
       <p class="policy-updated">Effective 21 July 2026</p>
       <section>
         <h2>Deliverable</h2>
-        <p>The free web flow previews objective market and exposure data. The paid 0.05 USD₮0 service delivers one ready-to-sign bounded position card. Neither response is a fill, wallet signature, broadcast, financial recommendation, or promise of execution.</p>
+        <p>The free web flow previews objective OPEN market and exposure data. The paid <code>POST /api/service</code> route costs 0.05 USD₮0 and delivers one ready-to-sign bounded position card for OPEN. The free <code>POST /api/manage-preview</code> route previews a source-bound CLOSE, and the paid <code>POST /api/manage</code> route costs 0.10 USD₮0 and delivers one signed exact-share CLOSE card. Neither response is a fill, wallet signature, broadcast, financial recommendation, or promise of execution.</p>
       </section>
       <section>
         <h2>User decision and eligibility</h2>
-        <p>You choose the market, YES or NO outcome, budget, maximum price, wallet, and whether to proceed. Third-party venue terms and regional eligibility apply. Do not use Conviction where prediction-market activity is unavailable or prohibited, and do not bypass an employer or organization’s security policy.</p>
+        <p>For OPEN, you choose the market, YES or NO outcome, total budget, maximum price, wallet, and whether to proceed. For CLOSE, you choose the exact whole shares, minimum price, and whether to proceed from the seller wallet. Third-party venue terms and regional eligibility apply. Do not use Conviction where prediction-market activity is unavailable or prohibited, and do not bypass an employer or organization’s security policy.</p>
       </section>
       <section>
         <h2>Execution and approvals</h2>
-        <p>Any execution occurs separately through the official Polymarket plugin and your Agentic Wallet. A new Polymarket deposit wallet may require five broad token approvals. Review them on a dedicated low-balance wallet. Polygon gas, order principal, and venue fees are separate from the Conviction service fee.</p>
+        <p>The website remains an OPEN preview and verification surface. The public agent/CLI can execute the exact OPEN or CLOSE card through the official Polymarket plugin and your Agentic Wallet in the same session. Service-payment consent and trade consent are separate; paying 0.05 or 0.10 USD₮0 never authorizes a trade. A new Polymarket deposit wallet may require five broad token approvals. Review them on a dedicated low-balance wallet. Polygon gas, order principal, and venue fees are separate from the Conviction service fee.</p>
+      </section>
+      <section>
+        <h2>CLOSE source boundary</h2>
+        <p>A CLOSE requires a prior OPEN settlement that Conviction independently reverifies, plus a fresh seller balance and standard V2 approval. A legacy v2/v3 OPEN is retrospective provenance, not a consumable lot or one-time authorization. Seller-owned balance is the authority to sell. Conviction does not currently provide take-profit, stop-loss, or resting-order automation.</p>
       </section>
       <section>
         <h2>No performance guarantee</h2>
-        <p>Market data, liquidity, venue availability, fills, resolution, and profit are not guaranteed. A FAK order may fill partially or not at all. Conviction fails closed when its supported market, quote, token, budget, price, wallet, or receipt invariants do not hold.</p>
+        <p>Market data, liquidity, venue availability, fills, resolution, and profit are not guaranteed. An OPEN FAK order may fill partially or not at all. An exact-share CLOSE FOK must fill the requested shares at or above the minimum price or produce no fill. Conviction fails closed when its supported market, quote, source, balance, approval, token, budget, price, proceeds, wallet, or receipt invariants do not hold.</p>
       </section>
       <section>
         <h2>Contact</h2>

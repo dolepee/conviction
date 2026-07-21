@@ -1,8 +1,8 @@
 # Conviction
 
-Conviction turns your prediction-market call into a bounded YES or NO position card: preview the live exposure without a wallet, set the budget and maximum price, carry an exact dry-run request into your own Agentic Wallet, and independently verify any resulting fill on Polygon.
+Conviction turns your prediction-market call into a bounded YES or NO position: OPEN with a fee-inclusive budget and hard maximum price, then CLOSE exact whole shares with a hard minimum price. The buyer's own Agentic Wallet signs and holds the position, and Conviction independently verifies each resulting fill on Polygon.
 
-It is deliberately narrow: standard Polymarket V2 binary markets, YES or NO buys, FAK, and a hard maximum price. Conviction does not recommend an outcome, hold keys, accept reusable signatures, or broadcast from the web app.
+It is deliberately narrow: standard Polymarket V2 binary markets, YES or NO, bounded FAK buys, and source-bound FOK sells. Conviction does not recommend an outcome, hold keys, accept reusable signatures, or broadcast from the web app. Take profit and other resting-order automation are not implemented yet.
 
 **Live app:** [conviction-bay.vercel.app](https://conviction-bay.vercel.app)
 
@@ -27,11 +27,22 @@ The reference intent expired before settlement, so the dossier does not claim th
 
 ## Product loop
 
+### OPEN
+
 1. The buyer pastes one Polymarket market. Conviction reads both YES and NO books without requesting a wallet.
 2. The buyer selects the outcome, fee-inclusive pUSD risk budget, and maximum price. A wallet-free preview shows the objective exposure.
 3. Only after reviewing those bounds does the buyer bind their configured deposit wallet and receive a five-minute signed position card plus a secure dry-run prompt.
 4. The official Polymarket plugin previews the exact request in the buyer's Agentic Wallet and requires a separate live confirmation before any write.
 5. Conviction derives principal, fee, total debit, and shares from Polygon events and binds them to the original intent, wallet, selected token, economic bounds, order ID, exchange, and chain.
+
+### CLOSE
+
+1. The buyer supplies the verified OPEN result for the position, chooses an exact whole-share quantity, and sets a minimum sale price.
+2. Conviction independently replays that OPEN settlement from Polygon, then checks a fresh seller-wallet balance and standard V2 outcome-token approval.
+3. The position manager signs a five-minute CLOSE card only when current bids can fill every requested share at or above the floor. The exact FOK sell either closes all requested shares within those bounds or places no fill.
+4. After a separate live confirmation, the public agent/CLI executes the exact card from the buyer's configured deposit wallet and returns an independently verified Polygon close proof in the same session.
+
+A legacy v2/v3 OPEN proof can establish retrospective provenance for CLOSE, but it is not a consumable lot or a one-time authorization. Fresh seller-owned balance is the authority to sell, and the runtime rechecks it before submission. The browser app currently exposes the OPEN preview and verifier; source-bound CLOSE is available through the public agent/CLI and machine APIs.
 
 The full wire contract is in [`docs/SERVICE_CONTRACT.md`](docs/SERVICE_CONTRACT.md). The OKX.AI listing copy is in [`docs/ASP_LISTING.md`](docs/ASP_LISTING.md).
 
@@ -50,14 +61,13 @@ The site is served at `http://localhost:3000`. The API surface is:
 - `POST /api/market` — wallet-free lookup of both live outcome books
 - `POST /api/preview` — wallet-free economic preview; never executable
 - `POST /api/intent` — fresh wallet-bound card used by the public web app
-- `/api/service` — payment-protected bounded YES/NO position card (`0.05 USD₮0` on X Layer; business requests use `POST`)
-- `POST /api/receipt`
+- `POST /api/service` — payment-protected OPEN card (`0.05 USD₮0` on X Layer)
+- `POST /api/receipt` — independently verified OPEN proof
+- `POST /api/manage-preview` — free, non-executable source-bound CLOSE preview
+- `POST /api/manage` — payment-protected source-bound CLOSE card (`0.10 USD₮0` on X Layer)
+- `POST /api/close-receipt` — independently verified CLOSE proof
 
-The free preview, final public card, and paid machine endpoint use the same fail-closed economic core. The
-marketplace fee pays for the standard machine-to-machine payment and delivery
-path; the human-facing market and bounds previews intentionally remain free. The paid service pins
-its payment requirement to X Layer mainnet, exactly
-`0.05 USD₮0`, and the project owner address. It requires `OKX_API_KEY`,
+The free OPEN preview, final public OPEN card, and paid OPEN endpoint use the same fail-closed economic core. The CLOSE preview and paid manager likewise share the same source, position, liquidity, and proceeds checks. The machine fees pay for the x402 payment and signed-card delivery paths; previews intentionally remain free. The paid routes pin their payment requirements to X Layer mainnet, exactly `0.05 USD₮0` for OPEN and `0.10 USD₮0` for CLOSE, and the project owner address. They require `OKX_API_KEY`,
 `OKX_SECRET_KEY`, and `OKX_PASSPHRASE` in the server environment. An unpaid
 request receives a standard payment challenge. Invalid compile requests are not
 settled, and a successful response is withheld if settlement fails.
@@ -82,6 +92,16 @@ npm run intent:live -- \
   "<optional 20-500 character note>"
 ```
 
+The public buyer orchestrator supports `open` and source-bound `close`. It serializes the final wallet/configuration window and keeps a private reconciliation journal outside Git. If a CLOSE process loses an execution response, never retry it under another market spelling or payer. Reconcile the recorded journey without paying or trading again:
+
+```sh
+node scripts/buyer-orchestrator.mjs reconcile-close \
+  --journal "$CONVICTION_JOURNAL_PATH" \
+  --issuer-registry config/trusted-issuer.production.json
+```
+
+The command releases a replay lock only after independently verifying the recorded settlement, or after proving that no execution began and the signed card expired. Ambiguous executions remain locked for manual reconciliation.
+
 The public [privacy](https://conviction-bay.vercel.app/privacy.html) and [terms](https://conviction-bay.vercel.app/terms.html) pages state exactly what is processed, what the paid service delivers, and which wallet and approval steps remain third-party operations.
 
 ## Verification gate
@@ -90,13 +110,15 @@ The public [privacy](https://conviction-bay.vercel.app/privacy.html) and [terms]
 npm run gate
 ```
 
-The gate checks JavaScript and Python syntax, deterministic YES/NO intent compilation, outcome-specific market resolution, server-computed exposure, stale/price/liquidity/rounding refusal paths, intent and receipt substitution, the exact payment challenge, launch-surface markers, and A2A buyer/reviewer/secret-refusal behavior.
+The gate checks JavaScript and Python syntax, deterministic YES/NO OPEN and CLOSE compilation, outcome-specific market resolution, server-computed exposure and proceeds, stale/price/liquidity/rounding refusal paths, source, intent, token, and receipt substitution, the exact payment challenges, launch-surface markers, and A2A buyer/reviewer/secret-refusal behavior.
 
 ## Operational boundary
 
 New Polymarket deposit-wallet setup currently grants max pUSD allowances and blanket ERC-1155 approvals to official Polymarket exchange contracts. Conviction discloses this before execution and recommends a dedicated low-balance wallet. The current official plugin has no revoke command.
 
 Polymarket V2 signs the token, principal, shares, and price but applies operator-set fees at match time. Conviction rechecks the current venue fee immediately before execution, reserves that fee in the displayed total, and verifies the actual settlement afterward. A reusable wallet may hold more than this order needs; that balance does not authorize another order, but the venue fee itself is not part of the V2 signature. Gas is separate.
+
+A CLOSE card is bound to a prior independently reverified OPEN proof, but that source proof is provenance rather than an on-chain lot identifier. It is not consumed by a close. Conviction therefore treats the fresh wallet balance and approval as the sale authority, rechecks both before submission, and verifies the exact outcome-token debit and net pUSD credit afterward.
 
 Never send Conviction a seed phrase, private key, bearer token, CLOB credential, reusable signature, or raw transaction authorization.
 

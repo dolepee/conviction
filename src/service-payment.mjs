@@ -15,8 +15,33 @@ export const SERVICE_ASSET = "0x779ded0c9e1022225f8e0630b35a9b54be713736";
 export const SERVICE_PAYEE = "0x4abbae03afff90f50d4f6b42b3e362f5228ad4c7";
 export const SERVICE_PRICE_ATOMIC = "50000";
 export const SERVICE_PRICE_DISPLAY = "0.05 USD₮0";
+export const MANAGE_SERVICE_PATH = "/api/manage";
+export const MANAGE_SERVICE_RESOURCE = "https://conviction-bay.vercel.app/api/manage";
+export const MANAGE_SERVICE_PRICE_ATOMIC = "100000";
+export const MANAGE_SERVICE_PRICE_DISPLAY = "0.10 USD₮0";
 
-const SERVICE_PAYWALL_HTML = `<!doctype html>
+export const POSITION_CARD_SERVICE = Object.freeze({
+  path: SERVICE_PATH,
+  resource: SERVICE_RESOURCE,
+  priceAtomic: SERVICE_PRICE_ATOMIC,
+  priceDisplay: SERVICE_PRICE_DISPLAY,
+  serviceName: "Bounded YES/NO Position Card",
+  description: "Create one ready-to-sign, fee-inclusive YES or NO position card",
+  deliveryNoun: "position card",
+});
+
+export const POSITION_MANAGER_SERVICE = Object.freeze({
+  path: MANAGE_SERVICE_PATH,
+  resource: MANAGE_SERVICE_RESOURCE,
+  priceAtomic: MANAGE_SERVICE_PRICE_ATOMIC,
+  priceDisplay: MANAGE_SERVICE_PRICE_DISPLAY,
+  serviceName: "Bounded Position Manager",
+  description: "Create one source-bound, ready-to-sign bounded CLOSE card",
+  deliveryNoun: "bounded CLOSE card",
+});
+
+function servicePaywallHtml(service) {
+  return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -29,13 +54,14 @@ const SERVICE_PAYWALL_HTML = `<!doctype html>
       <div class="section-heading">
         <p class="eyebrow">Conviction API</p>
         <h1>Payment required</h1>
-        <p>This machine endpoint costs exactly 0.05 USD₮0 on X Layer per successfully delivered bounded YES/NO position card.</p>
+        <p>This machine endpoint costs exactly ${service.priceDisplay} on X Layer per successfully delivered ${service.deliveryNoun}.</p>
         <p>Call it through an x402-compatible client or use the free interactive preview on the Conviction home page.</p>
         <a class="button button-primary" href="/">Open Conviction</a>
       </div>
     </main>
   </body>
 </html>`;
+}
 
 const REQUIRED_CREDENTIALS = Object.freeze([
   "OKX_API_KEY",
@@ -75,31 +101,31 @@ export function readFacilitatorCredentials(environment) {
   });
 }
 
-export function serviceRouteConfiguration() {
+export function serviceRouteConfiguration(service = POSITION_CARD_SERVICE) {
   return Object.freeze({
-    [`* ${SERVICE_PATH}`]: {
+    [`* ${service.path}`]: {
       accepts: {
         scheme: "exact",
         network: SERVICE_NETWORK,
         payTo: SERVICE_PAYEE,
         price: {
-          amount: SERVICE_PRICE_ATOMIC,
+          amount: service.priceAtomic,
           asset: SERVICE_ASSET,
           extra: { name: "USD₮0", version: "1" },
         },
         maxTimeoutSeconds: 300,
       },
-      resource: SERVICE_RESOURCE,
-      description: "Create one ready-to-sign, fee-inclusive YES or NO position card",
+      resource: service.resource,
+      description: service.description,
       mimeType: "application/json",
-      customPaywallHtml: SERVICE_PAYWALL_HTML,
+      customPaywallHtml: servicePaywallHtml(service),
       unpaidResponseBody: () => ({
         contentType: "application/json",
         body: {
           ok: false,
           error: {
             code: "payment_required",
-            message: `Payment of ${SERVICE_PRICE_DISPLAY} is required to create a position card`,
+            message: `Payment of ${service.priceDisplay} is required to create a ${service.deliveryNoun}`,
           },
         },
       }),
@@ -123,6 +149,7 @@ export function createPaymentGate(
     facilitatorClient = undefined,
     logger = console,
     notifyPaidCall = createTelegramNotifier(environment),
+    service = POSITION_CARD_SERVICE,
   } = {},
 ) {
   const credentials = readFacilitatorCredentials(environment);
@@ -136,14 +163,14 @@ export function createPaymentGate(
         const responseBody = transportContext?.responseBody;
         if (
           requestContext?.method !== "POST" ||
-          requestContext?.path !== SERVICE_PATH ||
+          requestContext?.path !== service.path ||
           result?.success !== true ||
           result?.status !== "success" ||
           typeof result?.transaction !== "string" ||
           !result.transaction ||
           result.network !== SERVICE_NETWORK ||
           requirements?.network !== SERVICE_NETWORK ||
-          requirements?.amount !== SERVICE_PRICE_ATOMIC ||
+          requirements?.amount !== service.priceAtomic ||
           requirements?.asset !== SERVICE_ASSET ||
           requirements?.payTo?.toLowerCase() !== SERVICE_PAYEE ||
           !responseBody
@@ -155,8 +182,8 @@ export function createPaymentGate(
         if (delivered?.ok !== true) return;
 
         await notifyPaidCall({
-          serviceName: "Bounded YES/NO Position Card",
-          amount: SERVICE_PRICE_DISPLAY,
+          serviceName: service.serviceName,
+          amount: service.priceDisplay,
           network: SERVICE_NETWORK,
           transaction: result.transaction,
           settledAt: new Date().toISOString(),
@@ -187,7 +214,7 @@ export function createPaymentGate(
     });
   const httpServer = new x402HTTPResourceServer(
     resourceServer,
-    serviceRouteConfiguration(),
+    serviceRouteConfiguration(service),
   );
   const middleware = paymentMiddlewareFromHTTPServer(
     httpServer,
