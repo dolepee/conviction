@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   attachTakeProfitFillProof,
   claimTakeProfitReservation,
+  fetchExactOrderWithPropagation,
   formatTakeProfitPaymentDisplay,
   parseTakeProfitArgs,
   requirePinnedTakeProfitExecutionReadiness,
@@ -22,6 +23,48 @@ const WALLET = "0x2222222222222222222222222222222222222222";
 const CONDITION = `0x${"a".repeat(64)}`;
 const TOKEN = "123456789";
 const HASH = (digit) => `0x${digit.repeat(64)}`;
+
+test("TAKE_PROFIT re-fetches an exact order whose venue second is ahead without re-submitting", async () => {
+  const fetchedAt = "2026-07-22T12:36:06.839Z";
+  const createdAt = String(Date.parse("2026-07-22T12:36:07.000Z") / 1_000);
+  const calls = [];
+  const sleeps = [];
+  const result = await fetchExactOrderWithPropagation({ orderId: HASH("1") }, {
+    fetchExactOrderImpl: async (identity) => {
+      calls.push(identity);
+      return {
+        version: "conviction-polymarket-order-snapshot-v1",
+        fetchedAt: calls.length === 1 ? fetchedAt : "2026-07-22T12:36:07.040Z",
+        order: { createdAt },
+      };
+    },
+    sleep: async (milliseconds) => { sleeps.push(milliseconds); },
+  });
+
+  assert.equal(calls.length, 2);
+  assert.deepEqual(sleeps, [200]);
+  assert.equal(result.fetchedAt, "2026-07-22T12:36:07.040Z");
+});
+
+test("TAKE_PROFIT bounded propagation never hides a persistently future order timestamp", async () => {
+  let calls = 0;
+  const sleeps = [];
+  const result = await fetchExactOrderWithPropagation({ orderId: HASH("2") }, {
+    fetchExactOrderImpl: async () => {
+      calls += 1;
+      return {
+        version: "conviction-polymarket-order-snapshot-v1",
+        fetchedAt: "2026-07-22T12:36:06.839Z",
+        order: { createdAt: String(Date.parse("2026-07-22T12:36:17.000Z") / 1_000) },
+      };
+    },
+    sleep: async (milliseconds) => { sleeps.push(milliseconds); },
+  });
+
+  assert.equal(calls, 5);
+  assert.deepEqual(sleeps, [200, 400, 600, 800]);
+  assert.equal(result.fetchedAt, "2026-07-22T12:36:06.839Z");
+});
 
 test("TAKE_PROFIT human payment display names the protocol and exact payment resource", () => {
   const asset = "0x3333333333333333333333333333333333333333";
