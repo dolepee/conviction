@@ -230,14 +230,15 @@ Never send Conviction a seed phrase, private key, bearer token, CLOB credential,
 
 ## Status
 
-- Controlled house functionality: fresh live OPEN, CLOSE, and TAKE_PROFIT placement/cancel paths passed on 2026-07-22; these runs predate v0.4.2's spawn-bound release-digest evidence and therefore do not certify that new distribution path
-- OPEN and CLOSE intent/Polygon receipt verification: live functional proofs complete; one final v0.4.2 live re-attestation remains before the release is described as production-verified
-- TAKE_PROFIT source: bounded placement, authenticated initial order binding, exact status/cancel, authenticated trade recovery, and aggregate Polygon fill verification implemented and functionally exercised live; v0.4.2 runtime-bound re-attestation remains consent-gated
-- Public web surface: OPEN preview/manual verifier deployed; managed-position copy is part of this v0.4 release
-- Paid OKX.AI service endpoint: deployed; exact `0.05 USD₮0` payment settled and bounded card delivered with 118 seconds remaining ([X Layer transaction](https://www.oklink.com/xlayer/tx/0xb86bec4537095d4ef771a975fbf73196565f1a6d947ceb953e0d930480ed0eaf))
+- Production runtime: v0.4.3 is deployed with the release-digest-verified Polymarket runtime; the local release gate passes 506 tests plus site, agent, and offline acceptance checks
+- OPEN: fresh buyer-seat `0.05 USD₮0` payment, one confirmed bounded order, exact 10 YES Polygon fill, and independent position proof passed in 42.0 seconds locally / 48.8 seconds independently ([payment](https://www.oklink.com/xlayer/tx/0xccbf4d92a1c80a7697d2f17b2d41129806826a7e28a4325303e3abcaaf17be6c), [fill](https://polygonscan.com/tx/0x716734f1bccb9c7c6c20cc7d0f064c857159b075fd12707ddbedd40c18cb3409))
+- CLOSE: fresh buyer-seat `0.10 USD₮0` payment, one confirmed exact 10 YES FOK sale, and independent close proof passed in 56.7 seconds locally / 61.7 seconds independently ([payment](https://www.oklink.com/xlayer/tx/0x03e05a3fdc18dbbd320e30abb062830b67fecf9d77a3e0c6142dca195c03d279), [fill](https://polygonscan.com/tx/0x7f0bb701c22bdb8aff43a66c259de01330e5b41c45908d36e677a4216dfbfba4))
+- TAKE_PROFIT: fresh buyer-seat `0.10 USD₮0` payment armed exactly one zero-match post-only 9 YES GTD order with an authenticated proof in 38.0 seconds locally / 42.3 seconds independently; exact cancellation then returned `CANCELED`, zero matched, no open orders, and no global execution lock ([payment](https://www.oklink.com/xlayer/tx/0x2f1257db47bba77f45766767a18ededca6b82310c725a08f62e7797e549ba80a))
+- Public web surface: OPEN preview/manual verifier and managed-position copy are deployed
 - OKX.AI ASP: Conviction `#7034` registered with one `0.05 USDT` service; `Listing under review` was last confirmed 2026-07-21, and external buyer proof remains pending
 
-The paid call is a controlled house proof between house wallets. It proves the
-machine-payment and delivery path, not external revenue or traction.
+These are controlled house acceptance proofs between house wallets. They prove
+the machine-payment, bounded execution, and independent verification paths, not
+external revenue, traction, or financial performance.
 
 Built for OKX.AI Genesis.
