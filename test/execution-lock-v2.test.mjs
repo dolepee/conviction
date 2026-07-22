@@ -273,16 +273,18 @@ test("v2 claims atomically bind exact source, generation, purpose, and recovery 
       assert.equal(durable.executionLockPurpose, purpose);
       assert.equal(durable.executionLockRecoveryNotBefore, RECOVERY_NOT_BEFORE);
       assert.equal(durable.journalRevision, source.journalRevision + 1);
-      assert.deepEqual(await verifyJournalLockOwnership(durable, {
+      const checked = await verifyJournalLockOwnership(durable, {
         stateDirectory: f.directory,
         journal: f.journal,
         fields: ["executionLockPath"],
         requirePresent: true,
-      }), [{
+      });
+      assert.deepEqual(checked, [{
         field: "executionLockPath",
         file: f.lockFile,
         missing: false,
         lockHash: sha256(lock),
+        lockText: await readFile(f.lockFile, "utf8"),
       }]);
     } finally {
       await rm(f.directory, { recursive: true, force: true });

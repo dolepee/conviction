@@ -872,7 +872,7 @@ test("buyer CLI serializes the final Polymarket execution window", async () => {
 });
 
 test("known-unstarted CLOSE restores only its paid resumable checkpoint and retains replay protection", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "conviction-close-prelaunch-recovery-"));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "conviction-close-prelaunch-recovery-")));
   const journal = join(directory, "journey.json");
   const replayKey = `0x${"a".repeat(64)}`;
   const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
@@ -883,7 +883,11 @@ test("known-unstarted CLOSE restores only its paid resumable checkpoint and reta
       stage: "execution_attempted",
       journalPath: journal,
       reconciliationRequired: true,
-      tradeConsent: { version: "conviction-close-trade-consent-v1" },
+      tradeConsent: {
+        version: "conviction-close-trade-consent-v1",
+        expiresAt: "2026-07-22T02:05:00.000Z",
+        executionArgvHash: sha256(["sell", "--order-type", "FOK"]),
+      },
       paymentTx: `0x${"1".repeat(64)}`,
       paymentProof: {},
       paidCard: {},
@@ -894,26 +898,33 @@ test("known-unstarted CLOSE restores only its paid resumable checkpoint and reta
       buyerWallet: "0x2222222222222222222222222222222222222222",
       replayKey,
       replayLockPath: replayLock,
-      executionLockPath: executionLock,
+      executionLockPath: null,
+      executionLockGeneration: null,
+      executionLockHash: null,
+      executionLockPurpose: null,
+      executionLockRecoveryNotBefore: null,
       executionArgv: ["sell", "--order-type", "FOK"],
-      executionArgvHash: `0x${"b".repeat(64)}`,
+      executionArgvHash: sha256(["sell", "--order-type", "FOK"]),
       executionAttemptedAt: "2026-07-22T02:00:10.000Z",
       liveResult: null,
       orderId: null,
       settlementTx: null,
     };
-    await Promise.all([
-      writeFile(journal, JSON.stringify(state)),
-      writeFile(replayLock, JSON.stringify({
+    await writeFile(replayLock, JSON.stringify({
         version: "conviction-close-replay-lock-v1",
         replayKey,
         journalPath: journal,
-      })),
-      writeFile(executionLock, JSON.stringify({
-        version: "conviction-polymarket-execution-lock-v1",
-        journalPath: journal,
-      })),
-    ]);
+      }));
+    await writeReconciliationJournal(state, { directory, file: journal });
+    await claimExecutionLock({
+      journal,
+      directory,
+      file: executionLock,
+      state,
+      purpose: "CLOSE_PLACE",
+      recoveryNotBefore: state.tradeConsent.expiresAt,
+      now: () => Date.parse("2026-07-22T02:00:09.000Z"),
+    });
     const result = await recoverKnownUnstartedCloseExecution(state, {
       journal,
       stateDirectory: directory,
@@ -940,7 +951,7 @@ test("known-unstarted CLOSE restores only its paid resumable checkpoint and reta
 });
 
 test("known-unstarted CLOSE never releases an execution lock owned by another journey", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "conviction-close-prelaunch-owner-"));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "conviction-close-prelaunch-owner-")));
   const journal = join(directory, "journey.json");
   const replayKey = `0x${"a".repeat(64)}`;
   const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
@@ -950,7 +961,11 @@ test("known-unstarted CLOSE never releases an execution lock owned by another jo
     stage: "execution_attempted",
     journalPath: journal,
     reconciliationRequired: true,
-    tradeConsent: { version: "conviction-close-trade-consent-v1" },
+    tradeConsent: {
+      version: "conviction-close-trade-consent-v1",
+      expiresAt: "2026-07-22T02:05:00.000Z",
+      executionArgvHash: sha256(["sell"]),
+    },
     paymentTx: `0x${"1".repeat(64)}`,
     paymentProof: {},
     paidCard: {},
@@ -961,26 +976,37 @@ test("known-unstarted CLOSE never releases an execution lock owned by another jo
     buyerWallet: "0x2222222222222222222222222222222222222222",
     replayKey,
     replayLockPath: replayLock,
-    executionLockPath: executionLock,
+    executionLockPath: null,
+    executionLockGeneration: null,
+    executionLockHash: null,
+    executionLockPurpose: null,
+    executionLockRecoveryNotBefore: null,
     executionArgv: ["sell"],
-    executionArgvHash: `0x${"b".repeat(64)}`,
+    executionArgvHash: sha256(["sell"]),
+    executionAttemptedAt: "2026-07-22T02:00:10.000Z",
     liveResult: null,
     orderId: null,
     settlementTx: null,
   };
   try {
-    await Promise.all([
-      writeFile(journal, JSON.stringify(state)),
-      writeFile(replayLock, JSON.stringify({
+    await writeFile(replayLock, JSON.stringify({
         version: "conviction-close-replay-lock-v1",
         replayKey,
         journalPath: journal,
-      })),
-      writeFile(executionLock, JSON.stringify({
-        version: "conviction-polymarket-execution-lock-v1",
-        journalPath: join(directory, "another.json"),
-      })),
-    ]);
+      }));
+    await writeReconciliationJournal(state, { directory, file: journal });
+    await claimExecutionLock({
+      journal,
+      directory,
+      file: executionLock,
+      state,
+      purpose: "CLOSE_PLACE",
+      recoveryNotBefore: state.tradeConsent.expiresAt,
+      now: () => Date.parse("2026-07-22T02:00:09.000Z"),
+    });
+    const foreign = JSON.parse(await readFile(executionLock, "utf8"));
+    foreign.journalPath = join(directory, "another.json");
+    await writeFile(executionLock, JSON.stringify(foreign));
     await assert.rejects(
       recoverKnownUnstartedCloseExecution(state, { journal, stateDirectory: directory }),
       (error) => error?.code === "lock_ownership_mismatch",

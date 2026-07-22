@@ -81,8 +81,7 @@ test("release-guard publication failure is nondestructive before publish and res
     try {
       const sourceJournal = await readFile(f.journal, "utf8");
       const sourceLock = await readFile(f.lockFile, "utf8");
-      await assert.rejects(
-        releaseReconciledLocks(f.state, {
+      const release = releaseReconciledLocks(f.state, {
           stateDirectory: f.directory,
           journal: f.journal,
           fields: ["executionLockPath"],
@@ -96,20 +95,28 @@ test("release-guard publication failure is nondestructive before publish and res
               atomicPublishedPath: phase === "after-publish" ? file : undefined,
             });
           },
-        }),
-        (error) => error?.code === `simulated_${phase.replace("-", "_")}`,
-      );
-      assert.equal(await readFile(f.journal, "utf8"), sourceJournal);
-      assert.equal(await readFile(f.lockFile, "utf8"), sourceLock);
-      assert.equal(await exists(f.releaseFile), phase === "after-publish");
-
-      const released = await releaseReconciledLocks(f.state, {
-        stateDirectory: f.directory,
-        journal: f.journal,
-        fields: ["executionLockPath"],
-        transitionId: "test-release-guard-publication-v1",
-        transition(next) { next.stage = "released"; },
       });
+      if (phase === "before-publish") {
+        await assert.rejects(
+          release,
+          (error) => error?.code === "state_release_guard_ambiguous" && error?.releaseGuardRetained === true,
+        );
+        assert.equal(await readFile(f.journal, "utf8"), sourceJournal);
+        assert.equal(await readFile(f.lockFile, "utf8"), sourceLock);
+        assert.equal(await exists(f.releaseFile), false);
+      } else {
+        assert.deepEqual(await release, [f.lockFile]);
+      }
+
+      const released = phase === "before-publish"
+        ? await releaseReconciledLocks(f.state, {
+            stateDirectory: f.directory,
+            journal: f.journal,
+            fields: ["executionLockPath"],
+            transitionId: "test-release-guard-publication-v1",
+            transition(next) { next.stage = "released"; },
+          })
+        : [f.lockFile];
       assert.deepEqual(released, [f.lockFile]);
       assert.equal(await exists(f.lockFile), false);
       assert.equal(await exists(f.releaseFile), false);
@@ -167,7 +174,7 @@ test("a post-rename journal result remains guarded until the exact durable targe
 test("mutex helper death before exact unlink leaves the generation intact and releases the kernel mutex", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "conviction-mutex-helper-death-")));
   await chmod(directory, 0o700);
-  const lockFile = join(directory, "generation.lock.json");
+  const lockFile = join(directory, "polymarket-execution.lock.json");
   const lockText = "{\"generation\":\"one\"}\n";
   try {
     await writeFile(lockFile, lockText, { mode: 0o600 });
@@ -193,7 +200,7 @@ test("mutex helper death before exact unlink leaves the generation intact and re
 test("a delayed helper keeps contenders out and refuses to unlink a fresh generation", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "conviction-mutex-delayed-fence-")));
   await chmod(directory, 0o700);
-  const lockFile = join(directory, "generation.lock.json");
+  const lockFile = join(directory, "polymarket-execution.lock.json");
   const oldText = "{\"generation\":\"old\"}\n";
   const freshText = "{\"generation\":\"fresh\"}\n";
   const ready = join(directory, "mutex-helper.ready");
