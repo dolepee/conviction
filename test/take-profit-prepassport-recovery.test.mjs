@@ -1023,6 +1023,7 @@ test("reconcile resumes only an exact source, target, field set, and lock genera
           "lock_generation_mismatch",
           "lock_ownership_mismatch",
         ].includes(error?.code),
+        `mutation ${mutation} must fail closed`,
       );
       await access(guardPath);
     }
