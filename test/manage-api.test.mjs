@@ -490,6 +490,7 @@ test("bare manager probes receive the distinct 0.10 challenge", async () => {
     const response = await fetch(`${origin}/api/manage`);
     const challenge = JSON.parse(Buffer.from(response.headers.get("payment-required"), "base64").toString("utf8"));
     assert.equal(response.status, 402);
+    assert.equal(response.headers.get("link"), '<https://conviction-bay.vercel.app/api/executor>; rel="service-desc"; type="application/json"');
     assert.equal(challenge.resource.url, MANAGE_SERVICE_RESOURCE);
     assert.equal(challenge.accepts[0].amount, MANAGE_SERVICE_PRICE_ATOMIC);
   });

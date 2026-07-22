@@ -1,4 +1,5 @@
 import { sha256 } from "./canonical.mjs";
+import { EXECUTOR_RELEASE, EXECUTOR_RELEASE_HASH, executorNextStep } from "./executor-discovery.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID } from "./constants.mjs";
 import { formatDecimal, parseDecimal } from "./decimal.mjs";
 import { invariant } from "./errors.mjs";
@@ -339,12 +340,15 @@ export function compileIntent(request, market, options = {}) {
     rationale,
     snapshot: bounded.snapshot,
     exposure: bounded.exposure,
+    executor: EXECUTOR_RELEASE,
   };
   const intentHash = sha256(intent);
   return {
     ok: true,
     intentHash,
     intent,
+    executor: EXECUTOR_RELEASE,
+    nextStep: executorNextStep("OPEN"),
     executionCard: {
       tool: "polymarket-plugin",
       action: "buy",
@@ -367,6 +371,7 @@ export function compileIntent(request, market, options = {}) {
       nonCustodial: true,
       requiresSufficientBalance: true,
       authorizationScope: "single-bounded-order",
+      executorReleaseHash: EXECUTOR_RELEASE_HASH,
       maximumAuthorizedDebit: bounded.order.maximumTotalDebit,
       expiresAt: bounded.expiresAt,
     },

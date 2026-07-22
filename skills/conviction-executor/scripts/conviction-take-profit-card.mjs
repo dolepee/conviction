@@ -1,6 +1,7 @@
 import { sha256 } from "../../../src/canonical.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID } from "../../../src/constants.mjs";
 import { parseDecimal } from "../../../src/decimal.mjs";
+import { executorDiscoveryMatches } from "../../../src/executor-discovery.mjs";
 import { parsePolymarketShareAtoms } from "../../../src/polymarket-quantities.mjs";
 import {
   trustedIssuerRegistry,
@@ -124,6 +125,11 @@ export function validateTakeProfitCard(input, {
   const snapshot = record(intent.snapshot, "intent.snapshot");
   const proceeds = record(intent.proceeds, "intent.proceeds");
   const executionCard = record(card.executionCard, "executionCard");
+  fail(
+    executorDiscoveryMatches(card, "TAKE_PROFIT"),
+    "executor_discovery_mismatch",
+    "TAKE_PROFIT card executor discovery is missing or substituted",
+  );
 
   fail(intent.version === "conviction-take-profit-intent-v1", "invalid_take_profit_card", "A Conviction take-profit intent v1 is required");
   fail(intent.action === "TAKE_PROFIT", "invalid_take_profit_card", "Intent action must be TAKE_PROFIT");

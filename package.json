@@ -1,6 +1,6 @@
 {
   "name": "conviction",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "type": "module",
   "description": "Non-custodial bounded prediction-market execution for OKX.AI",
@@ -13,6 +13,7 @@
     "payment:preflight": "node scripts/check-payment-credentials.mjs",
     "service:verify": "node scripts/verify-paid-service.mjs",
     "runtime:install": "node scripts/install-polymarket-runtime.mjs",
+    "executor:cold-gate": "node scripts/cold-executor-gate.mjs",
     "polymarket": "node scripts/run-polymarket-runtime.mjs",
     "intent:live": "node scripts/compile-live-intent.mjs",
     "receipt:verify": "node scripts/verify-live-receipt.mjs",

@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { sha256 } from "../../../src/canonical.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID } from "../../../src/constants.mjs";
 import { formatDecimal, parseDecimal } from "../../../src/decimal.mjs";
+import { executorDiscoveryMatches } from "../../../src/executor-discovery.mjs";
 import {
   trustedIssuerRegistry,
   verifyIntentIssuance,
@@ -142,6 +143,11 @@ export function validateCard(input, {
   const snapshot = record(intent.snapshot, "intent.snapshot");
   const exposure = record(intent.exposure, "intent.exposure");
   const executionCard = record(card.executionCard, "executionCard");
+  fail(
+    executorDiscoveryMatches(card, "OPEN"),
+    "executor_discovery_mismatch",
+    "Position card executor discovery is missing or substituted",
+  );
 
   const signedV4 = intent.version === "conviction-intent-v4";
   fail(

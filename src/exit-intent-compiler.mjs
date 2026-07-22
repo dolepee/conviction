@@ -1,4 +1,5 @@
 import { sha256 } from "./canonical.mjs";
+import { EXECUTOR_RELEASE, EXECUTOR_RELEASE_HASH, executorNextStep } from "./executor-discovery.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID } from "./constants.mjs";
 import { formatDecimal, parseDecimal } from "./decimal.mjs";
 import { invariant } from "./errors.mjs";
@@ -359,12 +360,15 @@ export function compileCloseIntent(request, market, position, options = {}) {
     source: bounded.source,
     snapshot: bounded.snapshot,
     proceeds: bounded.proceeds,
+    executor: EXECUTOR_RELEASE,
   };
   const intentHash = sha256(intent);
   return {
     ok: true,
     intentHash,
     intent,
+    executor: EXECUTOR_RELEASE,
+    nextStep: executorNextStep("CLOSE"),
     executionCard: {
       tool: "polymarket-plugin",
       action: "sell",
@@ -387,6 +391,7 @@ export function compileCloseIntent(request, market, position, options = {}) {
       nonCustodial: true,
       requiresSufficientPosition: true,
       authorizationScope: "single-bounded-close",
+      executorReleaseHash: EXECUTOR_RELEASE_HASH,
       exactAuthorizedShares: bounded.shares,
       minimumSignedGrossProceeds: bounded.minimumGrossProceeds,
       postSettlementNetVerificationFloor: bounded.minimumNetProceeds,
