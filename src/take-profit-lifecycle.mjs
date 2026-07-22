@@ -560,12 +560,21 @@ export function buildTakeProfitCancelRequest({
     "Pinned take-profit order is not freshly cancelable",
     { status },
   );
+  invariant(
+    confirmation.milliseconds < exact.expirationMs,
+    "take_profit_not_cancelable",
+    "Take-profit venue expiry elapsed before cancel authorization",
+  );
+  const launchExpiresAt = new Date(Math.min(
+    confirmation.milliseconds + CANCEL_CONFIRMATION_MAX_AGE_MS,
+    exact.expirationMs,
+  )).toISOString();
 
   const argv = Object.freeze(["cancel", "--order-id", binding.orderId]);
   invariant(!argv.includes("--market") && !argv.includes("--all"), "unsafe_cancel_scope", "Cancel request is not limited to one order");
   return Object.freeze({
     ok: true,
-    version: "conviction-take-profit-cancel-request-v1",
+    version: "conviction-take-profit-cancel-request-v2",
     action: "CANCEL_TAKE_PROFIT",
     authorizationScope: "single-pinned-order",
     tool: "polymarket-plugin",
@@ -574,7 +583,9 @@ export function buildTakeProfitCancelRequest({
     intentHash: binding.intentHash,
     takeProfitPassportHash: binding.passportHash,
     preCancelSnapshotHash: exact.snapshotHash,
+    preCancelSnapshot: structuredClone(snapshot),
     confirmedAt: confirmation.text,
+    launchExpiresAt,
     confirmation: TAKE_PROFIT_CANCEL_CONFIRMATION,
     preCancelStatus: status,
     matchedSharesRaw: exact.matchedRaw.toString(),

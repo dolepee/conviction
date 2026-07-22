@@ -2,7 +2,7 @@
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, realpath, rename, stat, unlink, writeFile, chmod } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, rename, stat, lstat, unlink, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -31,6 +31,7 @@ import {
   assertNoStateReleaseInProgress,
   claimExecutionLock,
   fetchEip3009AuthorizationState,
+  markExecutionAttempted,
   normalizeOpenOrders,
   normalizePluginReadiness,
   normalizeSourcePosition,
@@ -38,12 +39,14 @@ import {
   paymentAuthorizationMetadata,
   persistSuccessfulPaidServiceResponse,
   persistVerifiedPaidServicePayment,
+  reconcileUnattachedExecutionLock,
   releaseReconciledLocks,
   requireDistinctPaymentPayer,
   resolveFailedLockAttachment,
   settleExecutionLock,
   summarizeOpenSellReservations,
   validatePaymentChallenge,
+  verifyJournalLockOwnership,
   withStateReleaseMutex,
   writeReconciliationJournal,
 } from "./buyer-orchestrator.mjs";
@@ -66,6 +69,7 @@ const execFileAsync = promisify(execFile);
 const PAYMENT_SIGNATURE_HEADER = "PAYMENT-SIGNATURE";
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 const HASH_RE = /^0x[0-9a-f]{64}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UINT_RE = /^(?:0|[1-9][0-9]*)$/;
 const STATE_DIRECTORY = join(homedir(), ".local", "state", "conviction", "reconciliation");
 
@@ -193,7 +197,7 @@ export async function claimTakeProfitReservation({
   const file = join(directory, `take-profit-${String(key).slice(2)}.lock.json`);
   const releaseFile = join(directory, "polymarket-execution.release.lock.json");
   return withStateReleaseMutex(directory, async (mutexLease) => {
-    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true });
+    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true, mutexLease });
     fail(!state || resolve(String(state.journalPath || "")) === resolve(journal), "reservation_ownership_mismatch", "TAKE_PROFIT reservation state belongs to another journal");
     if (state) {
       const durable = JSON.parse(await readFile(journal, "utf8"));
@@ -289,7 +293,7 @@ async function updateReservation(file, update, { directory = dirname(file), jour
     const bindingFields = ["orderId", "intentHash", "takeProfitPassportHash", "restingOrderProofHash", "status"];
     const alreadyExact = bindingFields.every((field) => current?.[field] === update?.[field]);
     if (alreadyExact) return current;
-    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true });
+    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true, mutexLease });
     fail(
       current?.orderId == null && current?.status === "PAYMENT_PENDING" &&
         current?.intentHash == null && current?.takeProfitPassportHash == null &&
@@ -386,6 +390,9 @@ export function markTakeProfitPreSpawnFailure(state, error, {
   const observedAt = Number(typeof now === "function" ? now() : now);
   fail(Number.isFinite(observedAt), "invalid_reconciliation_clock", "TAKE_PROFIT failure clock is invalid");
   state.executionAttempted = false;
+  state.executionArgv = null;
+  state.executionArgvHash = null;
+  state.executionAttemptedAt = null;
   state.reconciliationRequired = true;
   state.stage = "execution_blocked_before_launch";
   state.preSpawnError = {
@@ -467,7 +474,9 @@ async function requireOwnerOnlyRecoveryState(journalPath, stateDirectory, {
   statImpl = stat,
 } = {}) {
   const rootPath = await realpath(resolve(stateDirectory));
-  const [rootStat, journalStat] = await Promise.all([statImpl(rootPath), statImpl(journalPath)]);
+  const [rootStat, journalLinkStat] = await Promise.all([statImpl(rootPath), lstat(journalPath)]);
+  fail(!journalLinkStat.isSymbolicLink(), "unsafe_state_symlink", "TAKE_PROFIT journal must not be a symbolic link");
+  const journalStat = statImpl === stat ? journalLinkStat : await statImpl(journalPath);
   const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
   fail(rootStat.isDirectory() && (rootStat.mode & 0o077) === 0, "unsafe_state_permissions", "Conviction state directory must be owner-only before pre-passport recovery");
   fail(journalStat.isFile() && (journalStat.mode & 0o077) === 0, "unsafe_state_permissions", "TAKE_PROFIT journal must be owner-only before pre-passport recovery");
@@ -593,9 +602,15 @@ async function validateTakeProfitReservationOwnership(context, recovery, {
   allowProgressed = false,
 } = {}) {
   const expected = join(stateDirectory, `take-profit-${recovery.replayKey.slice(2)}.lock.json`);
+  const requested = resolve(String(recovery.journal.reservationLockPath || ""));
+  let requestedInfo;
+  try { requestedInfo = await lstat(requested); } catch {
+    fail(false, "reservation_ownership_mismatch", "TAKE_PROFIT reservation cannot be resolved");
+  }
+  fail(!requestedInfo.isSymbolicLink(), "unsafe_state_symlink", "TAKE_PROFIT reservation must not be a symbolic link");
   let actual;
   try {
-    actual = await realpath(resolve(String(recovery.journal.reservationLockPath || "")));
+    actual = await realpath(requested);
   } catch {
     fail(false, "reservation_ownership_mismatch", "TAKE_PROFIT reservation cannot be resolved");
   }
@@ -608,7 +623,11 @@ async function validateTakeProfitReservationOwnership(context, recovery, {
   }
   const lock = JSON.parse(await readFile(actual, "utf8"));
   let lockJournal;
-  try { lockJournal = await realpath(resolve(String(lock?.journalPath || ""))); } catch { lockJournal = null; }
+  const lockJournalPath = resolve(String(lock?.journalPath || ""));
+  let lockJournalInfo;
+  try { lockJournalInfo = await lstat(lockJournalPath); } catch {}
+  fail(!lockJournalInfo?.isSymbolicLink(), "unsafe_state_symlink", "TAKE_PROFIT reservation journal must not be a symbolic link");
+  try { lockJournal = await realpath(lockJournalPath); } catch { lockJournal = null; }
   const baseOwned = lock?.version === "conviction-take-profit-reservation-v1" &&
     lock?.replayKey === recovery.replayKey && lockJournal === context.journalPath;
   const paymentPending = lock?.orderId == null && lock?.status === "PAYMENT_PENDING" &&
@@ -636,23 +655,41 @@ function validatePaidUnstartedTakeProfitCheckpoint(journal, options) {
     "execution_lock_acquired",
     "execution_blocked_before_launch",
   ]);
+  const attachedExecutionLock = journal?.executionLockPath != null;
+  const attachedStage = journal?.stage === "execution_lock_acquired" ||
+    journal?.stage === "execution_blocked_before_launch";
+  const noV2Binding = journal?.executionLockGeneration == null && journal?.executionLockHash == null &&
+    journal?.executionLockPurpose == null && journal?.executionLockRecoveryNotBefore == null;
+  const stageCoherent = journal?.stage === "trade_confirmed"
+    ? !attachedExecutionLock
+    : journal?.stage === "execution_lock_acquired"
+      ? attachedExecutionLock
+      : true;
   fail(
     unstartedStages.has(journal?.stage) && journal.executionAttempted === false &&
-      journal.reconciliationRequired === true && journal.executionLockPath == null &&
+      journal.executionAttemptedAt == null && journal.reconciliationRequired === true &&
+      (!attachedExecutionLock || attachedStage) && stageCoherent &&
+      (attachedExecutionLock || noV2Binding) &&
+      journal.executionArgv == null && journal.executionArgvHash == null &&
       journal.liveResult == null && journal.orderId == null && journal.takeProfitPassport == null &&
       journal.takeProfitPassportHash == null && journal.restingOrderProofHash == null,
     "invalid_unstarted_checkpoint",
     "Journal is not a proven-unstarted paid TAKE_PROFIT checkpoint",
   );
-  return validatePaidTakeProfitCheckpoint(journal, options);
+  return Object.freeze({
+    ...validatePaidTakeProfitCheckpoint(journal, options),
+    attachedExecutionLock,
+  });
 }
 
 function validateVerifiedUnconfirmedTakeProfitCheckpoint(journal, options) {
   fail(
     journal?.stage === "payment_verified" && journal.reconciliationRequired === true &&
       journal.tradeConsent == null && journal.executionLockPath == null &&
+      journal.executionLockGeneration == null && journal.executionLockHash == null &&
+      journal.executionLockPurpose == null && journal.executionLockRecoveryNotBefore == null &&
       journal.executionAttempted === false && journal.executionArgv == null &&
-      journal.executionArgvHash == null && journal.liveResult == null &&
+      journal.executionAttemptedAt == null && journal.executionArgvHash == null && journal.liveResult == null &&
       journal.orderId == null && journal.takeProfitPassport == null &&
       journal.takeProfitPassportHash == null && journal.restingOrderProofHash == null,
     "invalid_unconfirmed_payment_checkpoint",
@@ -665,6 +702,7 @@ async function reconcileTakeProfitNonOrderState(context, {
   now = Date.now,
   stateDirectory,
   authorizationStateImpl = fetchEip3009AuthorizationState,
+  reconcileUnattachedExecutionLockImpl = reconcileUnattachedExecutionLock,
   writeState = writeTakeProfitState,
   releaseLocks = releaseReconciledLocks,
   unlinkImpl = unlink,
@@ -703,9 +741,93 @@ async function reconcileTakeProfitNonOrderState(context, {
     stateDirectory: canonicalStateDirectory,
     statImpl,
   });
+  let unattachedExecutionLock = Object.freeze({ released: false, path: null, generationHash: null });
+  if (
+    isPaidUnstarted && context.journal.stage === "trade_confirmed" &&
+    context.journal.executionLockPath == null
+  ) {
+    unattachedExecutionLock = await reconcileUnattachedExecutionLockImpl({
+      file: join(canonicalStateDirectory, "polymarket-execution.lock.json"),
+      journal: context.journalPath,
+      directory: canonicalStateDirectory,
+      expectedJournalHash: sha256(recovery.journal),
+      expectedPurposes: ["TP_PLACE"],
+      statImpl,
+      unlinkImpl,
+    });
+  }
   let reconciliationAuthorizationState = null;
   let reconciliationReason;
   let reconciledStage;
+
+  if (isPaidUnstarted && recovery.attachedExecutionLock) {
+    const expiresAtMs = Date.parse(recovery.validated.expiresAt);
+    const legacyV1 = recovery.journal.executionLockGeneration == null &&
+      recovery.journal.executionLockHash == null && recovery.journal.executionLockPurpose == null &&
+      recovery.journal.executionLockRecoveryNotBefore == null;
+    fail(
+      legacyV1 || (
+        recovery.journal.executionLockPurpose === "TP_PLACE" &&
+        recovery.journal.executionLockRecoveryNotBefore === recovery.validated.expiresAt
+      ),
+      "lock_ownership_mismatch",
+      "TAKE_PROFIT execution lock is not bound to the signed placement window",
+    );
+    await verifyJournalLockOwnership(recovery.journal, {
+      stateDirectory: canonicalStateDirectory,
+      journal: context.journalPath,
+      fields: ["executionLockPath"],
+      requirePresent: true,
+    });
+    const expired = timestamp >= expiresAtMs;
+    const executionPath = recovery.journal.executionLockPath;
+    if (!expired) {
+      return Object.freeze({
+        ok: true,
+        status: "waiting_for_card_expiry",
+        expiresAt: recovery.validated.expiresAt,
+        reconciliationRequired: true,
+        executionLockReleased: false,
+        reservationReleased: false,
+        orderSpawned: false,
+        journalPath: context.journalPath,
+      });
+    }
+    const currentText = await readFile(context.journalPath, "utf8");
+    fail(currentText === context.journalText, "reconciliation_journal_changed", "TAKE_PROFIT journal changed during execution-lock recovery");
+    const released = await releaseLocks(recovery.journal, {
+      stateDirectory: canonicalStateDirectory,
+      journal: context.journalPath,
+      fields: ["executionLockPath", "reservationLockPath"],
+      transitionId: "take-profit-attached-unstarted-expiry-v2",
+      writeState,
+      unlinkImpl,
+      now: timestamp,
+      statImpl,
+      transition: (next, { releasedAt }) => {
+        next.reconciliationReason = "expired_paid_card_without_order_spawn";
+        next.stage = "expired_paid_unstarted_reconciled";
+        next.reconciliationRequired = false;
+        next.reconciledAt = releasedAt;
+      },
+    });
+    const releasedSet = new Set(released);
+    fail(
+      releasedSet.has(executionPath) &&
+        releasedSet.has(reservationPath) && releasedSet.size === 2,
+      "execution_lock_release_failed",
+      "TAKE_PROFIT unstarted execution locks were not released exactly",
+    );
+    return Object.freeze({
+      ok: true,
+      status: "expired_paid_unstarted_reconciled",
+      reconciliationRequired: false,
+      executionLockReleased: true,
+      reservationReleased: true,
+      orderSpawned: false,
+      journalPath: context.journalPath,
+    });
+  }
 
   if (isAuthorizationOnly) {
     if (recovery.authorization == null) {
@@ -763,12 +885,13 @@ async function reconcileTakeProfitNonOrderState(context, {
     reconciledStage = "expired_unused_payment_authorization_reconciled";
   } else {
     const expiresAtMs = Date.parse(recovery.validated.expiresAt);
-    if (timestamp <= expiresAtMs) {
+    if (timestamp < expiresAtMs) {
       return Object.freeze({
         ok: true,
         status: "waiting_for_card_expiry",
         expiresAt: recovery.validated.expiresAt,
         reconciliationRequired: true,
+        executionLockReleased: unattachedExecutionLock.released,
         reservationReleased: false,
         journalPath: context.journalPath,
       });
@@ -800,7 +923,9 @@ async function reconcileTakeProfitNonOrderState(context, {
     ok: true,
     status: reconciledStage,
     reconciliationRequired: false,
+    executionLockReleased: unattachedExecutionLock.released,
     reservationReleased: true,
+    orderSpawned: false,
     journalPath: context.journalPath,
   });
 }
@@ -1110,6 +1235,12 @@ export function recoverPrePassportTakeProfitJournal(journalInput, snapshot, {
 
 export async function safeTakeProfitJournalPath(value, stateDirectory = STATE_DIRECTORY) {
   const requested = resolve(String(value || ""));
+  let linkInfo;
+  try { linkInfo = await lstat(requested); } catch {
+    fail(false, "invalid_state_path", "TAKE_PROFIT journal path does not resolve inside the private Conviction state directory");
+  }
+  fail(!linkInfo.isSymbolicLink(), "unsafe_state_symlink", "TAKE_PROFIT journal must not be a symbolic link");
+  fail(linkInfo.isFile(), "invalid_state_path", "TAKE_PROFIT journal must be a regular file");
   let root;
   let file;
   try {
@@ -1145,13 +1276,332 @@ async function loadLifecycleContext(options, { stateDirectory = STATE_DIRECTORY 
   return { ...context, binding };
 }
 
+function validateTakeProfitCancelExecutionCheckpoint(context) {
+  const journal = context?.journal;
+  const binding = context?.binding || validateTakeProfitJournal(journal, {
+    trustedIssuers: context?.trustedIssuers,
+  });
+  const cancel = record(
+    journal?.cancelExecution,
+    "invalid_cancel_execution_checkpoint",
+    "TAKE_PROFIT cancel execution checkpoint is missing",
+  );
+  fail(
+    cancel.version === "conviction-take-profit-cancel-execution-v2" &&
+      new Set([
+        "lock_acquired",
+        "attempted",
+        "expired_unattempted",
+        "pre_spawn_failed",
+        "terminal",
+      ]).has(cancel.phase),
+    "invalid_cancel_execution_checkpoint",
+    "TAKE_PROFIT cancel execution phase is invalid",
+  );
+  const confirmedAt = canonicalIso(cancel.confirmedAt, "invalid_cancel_execution_checkpoint", "Cancel confirmation time");
+  const launchExpiresAt = canonicalIso(cancel.launchExpiresAt, "invalid_cancel_execution_checkpoint", "Cancel launch expiry");
+  const request = buildTakeProfitCancelRequest({
+    journal,
+    snapshot: cancel.preCancelSnapshot,
+    typedConfirmation: TAKE_PROFIT_CANCEL_CONFIRMATION,
+    confirmedAt: confirmedAt.text,
+  }, {
+    trustedIssuers: context?.trustedIssuers,
+    now: confirmedAt.milliseconds,
+  });
+  const exactArgv = Array.isArray(cancel.argv) && cancel.argv.length === request.argv.length &&
+    cancel.argv.every((value, index) => value === request.argv[index]);
+  const consent = record(
+    journal?.cancelConsent,
+    "invalid_cancel_execution_checkpoint",
+    "TAKE_PROFIT cancel consent is missing",
+  );
+  fail(
+    cancel.orderId === binding.orderId && cancel.orderId === request.orderId &&
+      cancel.intentHash === binding.intentHash && cancel.intentHash === request.intentHash &&
+      cancel.takeProfitPassportHash === binding.passportHash &&
+      cancel.takeProfitPassportHash === request.takeProfitPassportHash &&
+      cancel.preCancelSnapshotHash === request.preCancelSnapshotHash &&
+      cancel.preCancelSnapshotHash === sha256(cancel.preCancelSnapshot) && exactArgv &&
+      cancel.argvHash === sha256(request.argv) && cancel.launchExpiresAt === request.launchExpiresAt &&
+      consent.version === "conviction-take-profit-cancel-consent-v2" &&
+      consent.orderId === cancel.orderId && consent.confirmedAt === cancel.confirmedAt &&
+      consent.launchExpiresAt === cancel.launchExpiresAt &&
+      consent.preCancelSnapshotHash === cancel.preCancelSnapshotHash && consent.argvHash === cancel.argvHash &&
+      UUID_RE.test(String(cancel.executionLockGeneration || "")) &&
+      HASH_RE.test(String(cancel.executionLockHash || "")) &&
+      launchExpiresAt.milliseconds > confirmedAt.milliseconds &&
+      (new Set(["lock_acquired", "attempted"]).has(cancel.phase)
+        ? journal.executionLockPurpose === "TP_CANCEL" &&
+          journal.executionLockRecoveryNotBefore === cancel.launchExpiresAt &&
+          journal.executionLockHash === cancel.executionLockHash &&
+          journal.executionLockGeneration === cancel.executionLockGeneration &&
+          journal.executionLockPath != null && journal.reconciliationRequired === true
+        : journal.executionLockPath == null && journal.executionLockGeneration == null &&
+          journal.executionLockHash == null && journal.executionLockPurpose == null &&
+          journal.executionLockRecoveryNotBefore == null),
+    "invalid_cancel_execution_checkpoint",
+    "TAKE_PROFIT cancel execution differs from its exact order, snapshot, or lock",
+  );
+  const attemptedAt = cancel.attemptedAt == null
+    ? null
+    : canonicalIso(cancel.attemptedAt, "invalid_cancel_execution_checkpoint", "Cancel attempt time");
+  if (cancel.phase === "lock_acquired") {
+    fail(
+      attemptedAt == null && journal.cancelAttemptedAt == null && journal.cancelExecutionArgv == null &&
+        journal.cancelResult == null && journal.cancelOutcome == null,
+      "invalid_cancel_execution_checkpoint",
+      "Unattempted TAKE_PROFIT cancel contains execution evidence",
+    );
+  } else if (cancel.phase === "attempted") {
+    fail(
+      attemptedAt != null && attemptedAt.milliseconds < launchExpiresAt.milliseconds &&
+        journal.cancelAttemptedAt === attemptedAt.text &&
+        Array.isArray(journal.cancelExecutionArgv) && sha256(journal.cancelExecutionArgv) === cancel.argvHash,
+      "invalid_cancel_execution_checkpoint",
+      "Attempted TAKE_PROFIT cancel lacks its exact durable pre-spawn marker",
+    );
+  } else if (cancel.phase === "expired_unattempted") {
+    const expiredAt = canonicalIso(cancel.expiredAt, "invalid_cancel_execution_checkpoint", "Cancel expiry recovery time");
+    fail(
+      attemptedAt == null && expiredAt.milliseconds >= launchExpiresAt.milliseconds &&
+        journal.cancelAttemptedAt == null && journal.cancelExecutionArgv == null &&
+        journal.cancelResult == null && journal.cancelOutcome == null && journal.reconciliationRequired === false,
+      "invalid_cancel_execution_checkpoint",
+      "Expired TAKE_PROFIT cancel is not an exact unattempted terminal checkpoint",
+    );
+  } else if (cancel.phase === "pre_spawn_failed") {
+    canonicalIso(cancel.failedAt, "invalid_cancel_execution_checkpoint", "Cancel pre-spawn failure time");
+    const markerConsistent = attemptedAt == null
+      ? journal.cancelAttemptedAt == null && journal.cancelExecutionArgv == null
+      : journal.cancelAttemptedAt === attemptedAt.text && Array.isArray(journal.cancelExecutionArgv) &&
+        sha256(journal.cancelExecutionArgv) === cancel.argvHash;
+    fail(
+      markerConsistent && journal.cancelResult == null && journal.cancelOutcome == null &&
+        journal.reconciliationRequired === false && journal.cancelError?.executionAmbiguous === false,
+      "invalid_cancel_execution_checkpoint",
+      "Pre-spawn TAKE_PROFIT cancel recovery contains possible live evidence",
+    );
+  } else if (cancel.phase === "terminal") {
+    canonicalIso(cancel.terminalAt, "invalid_cancel_execution_checkpoint", "Cancel terminal time");
+    fail(
+      attemptedAt != null && journal.cancelAttemptedAt === attemptedAt.text &&
+        Array.isArray(journal.cancelExecutionArgv) && sha256(journal.cancelExecutionArgv) === cancel.argvHash &&
+        journal.reconciliationRequired === false,
+      "invalid_cancel_execution_checkpoint",
+      "Terminal TAKE_PROFIT cancel lacks its durable attempted marker",
+    );
+  }
+  return Object.freeze({ cancel, binding, request, confirmedAt, launchExpiresAt, attemptedAt });
+}
+
+async function markTakeProfitCancelAttempted(context, {
+  now = Date.now,
+  stateDirectory,
+  writeState = writeTakeProfitState,
+  statImpl = stat,
+} = {}) {
+  return withStateReleaseMutex(stateDirectory, async (mutexLease) => {
+    await assertNoStateReleaseInProgress({ directory: stateDirectory, mutexHeld: true, mutexLease });
+    await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
+    const durableText = await readFile(context.journalPath, "utf8");
+    fail(durableText === context.journalText, "reconciliation_journal_changed", "TAKE_PROFIT cancel journal changed before attempt");
+    const checkpoint = validateTakeProfitCancelExecutionCheckpoint(context);
+    fail(checkpoint.cancel.phase === "lock_acquired", "cancel_execution_ambiguous", "TAKE_PROFIT cancel is not pre-attempt");
+    await validateTakeProfitReservationOwnership(context, {
+      journal: context.journal,
+      replayKey: context.journal.replayKey,
+    }, {
+      stateDirectory,
+      statImpl,
+      allowProgressed: true,
+    });
+    await verifyJournalLockOwnership(context.journal, {
+      stateDirectory,
+      journal: context.journalPath,
+      fields: ["executionLockPath"],
+      requirePresent: true,
+    });
+    const attemptedAtMs = Number(typeof now === "function" ? now() : now);
+    fail(
+      Number.isFinite(attemptedAtMs) && attemptedAtMs < checkpoint.launchExpiresAt.milliseconds,
+      "cancel_execution_window_elapsed",
+      "TAKE_PROFIT cancel launch window elapsed before its durable attempt marker",
+    );
+    const next = structuredClone(context.journal);
+    next.cancelExecution.phase = "attempted";
+    next.cancelExecution.attemptedAt = new Date(attemptedAtMs).toISOString();
+    next.cancelAttemptedAt = next.cancelExecution.attemptedAt;
+    next.cancelExecutionArgv = [...checkpoint.request.argv];
+    next.reconciliationRequired = true;
+    mutexLease.assertAlive();
+    try {
+      await writeState(next, {
+        directory: stateDirectory,
+        file: context.journalPath,
+        mutexHeld: true,
+        mutexLease,
+      });
+    } catch (error) {
+      if (error?.journalWriteReachedTarget === true) {
+        for (const key of Object.keys(context.journal)) delete context.journal[key];
+        Object.assign(context.journal, next);
+        context.journalText = await readFile(context.journalPath, "utf8");
+      }
+      throw error;
+    }
+    for (const key of Object.keys(context.journal)) delete context.journal[key];
+    Object.assign(context.journal, next);
+    context.journalText = await readFile(context.journalPath, "utf8");
+    return Object.freeze({ attemptedAt: next.cancelAttemptedAt, argv: Object.freeze([...checkpoint.request.argv]) });
+  });
+}
+
+async function recoverKnownUnstartedTakeProfitCancel(context, {
+  now = Date.now,
+  stateDirectory,
+  errorCode = "take_profit_cancel_pre_spawn_failed",
+  writeState = writeTakeProfitState,
+  releaseLocks = releaseReconciledLocks,
+} = {}) {
+  const checkpoint = validateTakeProfitCancelExecutionCheckpoint(context);
+  fail(
+    checkpoint.cancel.phase === "lock_acquired" || checkpoint.cancel.phase === "attempted",
+    "unsafe_prelaunch_recovery",
+    "TAKE_PROFIT cancel is not a known-unstarted in-process checkpoint",
+  );
+  await verifyJournalLockOwnership(context.journal, {
+    stateDirectory,
+    journal: context.journalPath,
+    fields: ["executionLockPath"],
+    requirePresent: true,
+  });
+  const released = await releaseLocks(context.journal, {
+    stateDirectory,
+    journal: context.journalPath,
+    fields: ["executionLockPath"],
+    expectedLockHashes: { executionLockPath: checkpoint.cancel.executionLockHash },
+    transitionId: "take-profit-cancel-known-unstarted-v2",
+    writeState,
+    now,
+    transition: (next, { releasedAt }) => {
+      next.cancelExecution.phase = "pre_spawn_failed";
+      next.cancelExecution.failedAt = releasedAt;
+      next.reconciliationRequired = false;
+      next.cancelError = {
+        code: String(errorCode || "take_profit_cancel_pre_spawn_failed"),
+        at: releasedAt,
+        executionAmbiguous: false,
+      };
+    },
+  });
+  fail(released.length === 1, "execution_lock_release_failed", "TAKE_PROFIT cancel lock was not released exactly once");
+  context.journalText = await readFile(context.journalPath, "utf8");
+  return Object.freeze({ releasedLocks: Object.freeze(released), reservationRetained: true });
+}
+
+async function reconcileTakeProfitCancelExecution(context, {
+  now = Date.now,
+  stateDirectory,
+  writeState = writeTakeProfitState,
+  releaseLocks = releaseReconciledLocks,
+  unlinkImpl = unlink,
+  statImpl = stat,
+} = {}) {
+  if (context.journal?.cancelExecution?.version !== "conviction-take-profit-cancel-execution-v2") return null;
+  const checkpoint = validateTakeProfitCancelExecutionCheckpoint(context);
+  await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
+  const reservationPath = await validateTakeProfitReservationOwnership(context, {
+    journal: context.journal,
+    replayKey: context.journal.replayKey,
+  }, {
+    stateDirectory,
+    statImpl,
+    allowProgressed: true,
+  });
+  if (checkpoint.cancel.phase === "lock_acquired" || checkpoint.cancel.phase === "attempted") {
+    await verifyJournalLockOwnership(context.journal, {
+      stateDirectory,
+      journal: context.journalPath,
+      fields: ["executionLockPath"],
+      requirePresent: true,
+    });
+  }
+  if (checkpoint.cancel.phase === "attempted") return null;
+  if (checkpoint.cancel.phase !== "lock_acquired") {
+    return Object.freeze({
+      ok: true,
+      status: checkpoint.cancel.phase,
+      reconciliationRequired: false,
+      executionLockReleased: true,
+      reservationReleased: false,
+      journalPath: context.journalPath,
+    });
+  }
+  const timestamp = Number(typeof now === "function" ? now() : now);
+  fail(Number.isFinite(timestamp), "invalid_reconciliation_clock", "TAKE_PROFIT cancel reconciliation clock is invalid");
+  if (timestamp < checkpoint.launchExpiresAt.milliseconds) {
+    return Object.freeze({
+      ok: true,
+      status: "waiting_for_cancel_launch_expiry",
+      expiresAt: checkpoint.launchExpiresAt.text,
+      reconciliationRequired: true,
+      executionLockReleased: false,
+      reservationReleased: false,
+      journalPath: context.journalPath,
+    });
+  }
+  fail(
+    await readFile(context.journalPath, "utf8") === context.journalText,
+    "reconciliation_journal_changed",
+    "TAKE_PROFIT cancel journal changed during expiry reconciliation",
+  );
+  const executionPath = context.journal.executionLockPath;
+  const released = await releaseLocks(context.journal, {
+    stateDirectory,
+    journal: context.journalPath,
+    fields: ["executionLockPath"],
+    expectedLockHashes: { executionLockPath: checkpoint.cancel.executionLockHash },
+    transitionId: "take-profit-cancel-expired-unattempted-v2",
+    writeState,
+    unlinkImpl,
+    now: timestamp,
+    statImpl,
+    transition: (next, { releasedAt }) => {
+      next.cancelExecution.phase = "expired_unattempted";
+      next.cancelExecution.expiredAt = releasedAt;
+      next.reconciliationRequired = false;
+      next.cancelError = {
+        code: "cancel_execution_window_elapsed",
+        at: releasedAt,
+        executionAmbiguous: false,
+      };
+    },
+  });
+  fail(
+    released.length === 1 && released[0] === executionPath && context.journal.reservationLockPath === reservationPath,
+    "execution_lock_release_failed",
+    "Expired unattempted TAKE_PROFIT cancel did not release exactly its global lock",
+  );
+  return Object.freeze({
+    ok: true,
+    status: "cancel_expired_unattempted_reconciled",
+    reconciliationRequired: false,
+    executionLockReleased: true,
+    reservationReleased: false,
+    journalPath: context.journalPath,
+  });
+}
+
 async function loadReconcileContext(options, {
   now = Date.now,
   stateDirectory = STATE_DIRECTORY,
   fetchExactOrderImpl = fetchExactOrderWithPropagation,
   buildOrderProof = buildTakeProfitOrderProof,
   writeState = writeTakeProfitState,
+  releaseLocks = releaseReconciledLocks,
   authorizationStateImpl = fetchEip3009AuthorizationState,
+  reconcileUnattachedExecutionLockImpl = reconcileUnattachedExecutionLock,
   unlinkImpl = unlink,
   statImpl = stat,
 } = {}) {
@@ -1161,7 +1611,9 @@ async function loadReconcileContext(options, {
     now,
     stateDirectory,
     authorizationStateImpl,
+    reconcileUnattachedExecutionLockImpl,
     writeState,
+    releaseLocks,
     unlinkImpl,
     statImpl,
   });
@@ -1176,8 +1628,9 @@ async function loadReconcileContext(options, {
     context.journal.takeProfitPassportHash != null || context.journal.restingOrderProofHash != null;
   if (hasPassportMaterial || context.journal.stage === "armed" || context.journal.stage === "submitted") {
     const binding = validateTakeProfitJournal(context.journal, { trustedIssuers: context.trustedIssuers });
+    const lifecycleContext = { ...context, binding };
     await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
-    await validateTakeProfitReservationOwnership(context, {
+    await validateTakeProfitReservationOwnership(lifecycleContext, {
       journal: context.journal,
       replayKey: context.journal.replayKey,
     }, {
@@ -1185,14 +1638,39 @@ async function loadReconcileContext(options, {
       statImpl,
       allowProgressed: true,
     });
+    if (context.journal.executionLockPath == null) {
+      await reconcileUnattachedExecutionLockImpl({
+        file: join(canonicalStateDirectory, "polymarket-execution.lock.json"),
+        journal: context.journalPath,
+        directory: canonicalStateDirectory,
+        expectedJournalHash: sha256(context.journal),
+        expectedPurposes: ["TP_CANCEL"],
+        statImpl,
+        unlinkImpl,
+      });
+    }
+    const cancelEarlyResult = await reconcileTakeProfitCancelExecution(lifecycleContext, {
+      now,
+      stateDirectory: canonicalStateDirectory,
+      writeState,
+      releaseLocks,
+      unlinkImpl,
+      statImpl,
+    });
+    if (cancelEarlyResult) {
+      return {
+        ...lifecycleContext,
+        stateDirectory: canonicalStateDirectory,
+        earlyResult: cancelEarlyResult,
+      };
+    }
     await progressTakeProfitReservation(context.journal, {
       stateDirectory: canonicalStateDirectory,
       now,
     });
     return {
-      ...context,
+      ...lifecycleContext,
       stateDirectory: canonicalStateDirectory,
-      binding,
       recoveredSnapshot: null,
       prePassportRecovered: false,
     };
@@ -1404,43 +1882,36 @@ async function inspectOwnerVerifiedRecoveredExecutionLock(context, {
   await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
   const declared = context.journal.executionLockPath;
   if (!declared) return Object.freeze({ path: null, hash: null, missing: true });
-
-  const root = await realpath(resolve(stateDirectory));
-  const expected = join(root, "polymarket-execution.lock.json");
-  let canonicalDeclared;
+  let observed;
   try {
-    canonicalDeclared = join(await realpath(dirname(resolve(String(declared)))), basename(String(declared)));
-  } catch {
-    fail(false, "lock_ownership_mismatch", "Recovered TAKE_PROFIT execution-lock directory cannot be verified");
-  }
-  fail(canonicalDeclared === expected, "lock_ownership_mismatch", "Recovered TAKE_PROFIT points to another execution lock");
-
-  let lockStat;
-  try {
-    lockStat = await statImpl(expected);
+    [observed] = await verifyJournalLockOwnership(context.journal, {
+      stateDirectory,
+      journal: context.journalPath,
+      fields: ["executionLockPath"],
+      requirePresent: false,
+    });
   } catch (error) {
-    if (error?.code === "ENOENT") return Object.freeze({ path: expected, hash: null, missing: true });
+    if (error?.code === "lock_ownership_mismatch") {
+      try {
+        const candidate = JSON.parse(await readFile(declared, "utf8"));
+        if (candidate?.journalPath === context.journalPath) {
+          throw Object.assign(new Error("Recovered TAKE_PROFIT execution-lock generation changed"), {
+            code: "lock_generation_mismatch",
+            cause: error,
+          });
+        }
+      } catch (candidateError) {
+        if (candidateError?.code === "lock_generation_mismatch") throw candidateError;
+      }
+    }
     throw error;
   }
-  const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
-  fail(lockStat.isFile() && (lockStat.mode & 0o077) === 0, "unsafe_state_permissions", "Recovered TAKE_PROFIT execution lock must be owner-only");
-  if (expectedUid !== null) {
-    fail(lockStat.uid === expectedUid, "unsafe_state_owner", "Recovered TAKE_PROFIT execution lock must belong to the current OS user");
-  }
-  let lock;
-  try {
-    lock = JSON.parse(await readFile(expected, "utf8"));
-  } catch (error) {
-    if (error?.code === "ENOENT") return Object.freeze({ path: expected, hash: null, missing: true });
-    fail(false, "lock_ownership_mismatch", "Recovered TAKE_PROFIT execution lock cannot be authenticated");
-  }
-  fail(
-    lock?.version === "conviction-polymarket-execution-lock-v1" &&
-      lock?.journalPath === context.journalPath,
-    "lock_ownership_mismatch",
-    "Recovered TAKE_PROFIT execution lock belongs to another journey",
-  );
-  return Object.freeze({ path: expected, hash: sha256(lock), missing: false });
+  fail(observed, "lock_ownership_mismatch", "Recovered TAKE_PROFIT execution lock cannot be authenticated");
+  return Object.freeze({
+    path: observed.file,
+    hash: observed.missing ? null : observed.lockHash,
+    missing: observed.missing === true,
+  });
 }
 
 async function settleRecoveredArmedPlacement({
@@ -1539,6 +2010,21 @@ export async function settleTakeProfitReconciliation({
   writeState = writeTakeProfitState,
   statImpl = stat,
 } = {}) {
+  let cancelCheckpoint = null;
+  if (context.journal?.cancelExecution?.version === "conviction-take-profit-cancel-execution-v2") {
+    cancelCheckpoint = validateTakeProfitCancelExecutionCheckpoint(context);
+    fail(
+      cancelCheckpoint.cancel.phase === "attempted",
+      "invalid_cancel_execution_checkpoint",
+      "Only an attempted TAKE_PROFIT cancel may await terminal venue evidence",
+    );
+    await verifyJournalLockOwnership(context.journal, {
+      stateDirectory,
+      journal: context.journalPath,
+      fields: ["executionLockPath"],
+      requirePresent: true,
+    });
+  }
   const recoveredArmed = await settleRecoveredArmedPlacement({
     context,
     status,
@@ -1562,6 +2048,9 @@ export async function settleTakeProfitReconciliation({
     stateDirectory,
     journal: context.journalPath,
     fields: ["executionLockPath"],
+    expectedLockHashes: cancelCheckpoint
+      ? { executionLockPath: cancelCheckpoint.cancel.executionLockHash }
+      : undefined,
     transitionId: "take-profit-lifecycle-reconciliation-v1",
     writeState,
     now,
@@ -1573,6 +2062,10 @@ export async function settleTakeProfitReconciliation({
       }
       next.reconciliationRequired = false;
       next.reconciledAt = releasedAt;
+      if (cancelCheckpoint) {
+        next.cancelExecution.phase = "terminal";
+        next.cancelExecution.terminalAt = releasedAt;
+      }
     },
   });
   return Object.freeze({
@@ -1593,6 +2086,7 @@ export async function runTakeProfitReconcileCli(options, {
   writeState = writeTakeProfitState,
   releaseLocks = releaseReconciledLocks,
   authorizationStateImpl = fetchEip3009AuthorizationState,
+  reconcileUnattachedExecutionLockImpl = reconcileUnattachedExecutionLock,
   unlinkImpl = unlink,
   statImpl = stat,
 } = {}) {
@@ -1602,7 +2096,9 @@ export async function runTakeProfitReconcileCli(options, {
     fetchExactOrderImpl,
     buildOrderProof,
     writeState,
+    releaseLocks,
     authorizationStateImpl,
+    reconcileUnattachedExecutionLockImpl,
     unlinkImpl,
     statImpl,
   });
@@ -1651,18 +2147,30 @@ export async function runTakeProfitCancelCli(options, {
   stateDirectory = STATE_DIRECTORY,
   fetchTradeContributions = fetchExactAssociatedTradeContributions,
   verifyAggregateFill = fetchAndVerifyTakeProfitAggregateFill,
+  fetchExactOrderImpl = fetchExactOrderWithPropagation,
+  claimExecutionLockImpl = claimExecutionLock,
+  markCancelAttemptedImpl = markTakeProfitCancelAttempted,
+  commandJsonImpl = commandJson,
+  settleExecutionLockImpl = settleExecutionLock,
+  readConfirmationImpl = undefined,
 } = {}) {
   const context = await loadLifecycleContext(options, { stateDirectory });
-  const beforeSnapshot = await exactLifecycleSnapshot(context.binding);
+  const beforeSnapshot = await exactLifecycleSnapshot(context.binding, { fetchExactOrderImpl });
   const beforeStatus = buildTakeProfitStatus(context.journal, beforeSnapshot, {
     trustedIssuers: context.trustedIssuers,
     now: now(),
   });
   (options.json ? stderr : stdout).write(`${JSON.stringify({ type: "take_profit_cancel_confirmation", status: beforeStatus })}\n`);
-  const readline = createInterface({ input: stdin, output: options.json ? stderr : stdout });
+  const readline = readConfirmationImpl
+    ? null
+    : createInterface({ input: stdin, output: options.json ? stderr : stdout });
   let executionAttempted = false;
+  let ownedCancelLock = null;
   try {
-    const answer = await readline.question(`Type exactly \`${TAKE_PROFIT_CANCEL_CONFIRMATION}\` to cancel only ${context.binding.orderId}: `);
+    const prompt = `Type exactly \`${TAKE_PROFIT_CANCEL_CONFIRMATION}\` to cancel only ${context.binding.orderId}: `;
+    const answer = readConfirmationImpl
+      ? await readConfirmationImpl(prompt)
+      : await readline.question(prompt);
     const confirmedAt = new Date(now()).toISOString();
     const cancelRequest = buildTakeProfitCancelRequest({
       journal: context.journal,
@@ -1673,35 +2181,80 @@ export async function runTakeProfitCancelCli(options, {
       trustedIssuers: context.trustedIssuers,
       now: now(),
     });
-    await claimExecutionLock({
+    await claimExecutionLockImpl({
       journal: context.journalPath,
       directory: stateDirectory,
       file: join(stateDirectory, "polymarket-execution.lock.json"),
       state: context.journal,
+      purpose: "TP_CANCEL",
+      recoveryNotBefore: cancelRequest.launchExpiresAt,
+      now,
       writeState: writeTakeProfitState,
-      transition: (next) => {
+      transition: (next, { lock, lockHash }) => {
+        delete next.cancelResult;
+        delete next.cancelOutcome;
+        delete next.cancelError;
+        delete next.cancelAttemptedAt;
+        delete next.cancelExecutionArgv;
         next.cancelConsent = {
-          version: "conviction-take-profit-cancel-consent-v1",
+          version: "conviction-take-profit-cancel-consent-v2",
           orderId: cancelRequest.orderId,
           confirmedAt,
+          launchExpiresAt: cancelRequest.launchExpiresAt,
           preCancelSnapshotHash: cancelRequest.preCancelSnapshotHash,
           argvHash: sha256(cancelRequest.argv),
         };
+        next.cancelExecution = {
+          version: "conviction-take-profit-cancel-execution-v2",
+          phase: "lock_acquired",
+          orderId: cancelRequest.orderId,
+          intentHash: cancelRequest.intentHash,
+          takeProfitPassportHash: cancelRequest.takeProfitPassportHash,
+          preCancelSnapshot: structuredClone(cancelRequest.preCancelSnapshot),
+          preCancelSnapshotHash: cancelRequest.preCancelSnapshotHash,
+          argv: [...cancelRequest.argv],
+          argvHash: sha256(cancelRequest.argv),
+          confirmedAt,
+          launchExpiresAt: cancelRequest.launchExpiresAt,
+          lockAcquiredAt: lock.claimedAt,
+          executionLockGeneration: lock.generation,
+          executionLockHash: lockHash,
+          attemptedAt: null,
+        };
+        next.reconciliationRequired = true;
       },
     });
-    context.journal.cancelAttemptedAt = new Date(now()).toISOString();
-    context.journal.cancelExecutionArgv = [...cancelRequest.argv];
-    context.journal.reconciliationRequired = true;
-    executionAttempted = true;
-    await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
-    const cancelResult = await commandJson("polymarket-plugin", cancelRequest.argv, "Exact TAKE_PROFIT cancellation");
+    const claimedCancel = context.journal.cancelExecution;
+    fail(
+      claimedCancel?.version === "conviction-take-profit-cancel-execution-v2" &&
+        claimedCancel.phase === "lock_acquired" &&
+        claimedCancel.executionLockGeneration === context.journal.executionLockGeneration &&
+        claimedCancel.executionLockHash === context.journal.executionLockHash,
+      "lock_ownership_mismatch",
+      "TAKE_PROFIT cancel did not durably attach the locally claimed execution lock",
+    );
+    ownedCancelLock = Object.freeze({
+      generation: claimedCancel.executionLockGeneration,
+      hash: claimedCancel.executionLockHash,
+    });
+    context.journalText = await readFile(context.journalPath, "utf8");
+    const attempt = await markCancelAttemptedImpl(context, {
+      now,
+      stateDirectory,
+      writeState: writeTakeProfitState,
+    });
+    const cancelResult = await commandJsonImpl("polymarket-plugin", attempt.argv, "Exact TAKE_PROFIT cancellation", {
+      deadlineEpochMs: Date.parse(cancelRequest.launchExpiresAt),
+      clock: now,
+      onStart: () => { executionAttempted = true; },
+    });
     context.journal.cancelResult = cancelResult;
     await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
 
     let outcome;
     let afterSnapshot;
     try {
-      afterSnapshot = await exactLifecycleSnapshot(context.binding);
+      afterSnapshot = await exactLifecycleSnapshot(context.binding, { fetchExactOrderImpl });
       outcome = buildTakeProfitCancelOutcome({
         journal: context.journal,
         beforeSnapshot,
@@ -1745,40 +2298,74 @@ export async function runTakeProfitCancelCli(options, {
       outcome.settlementProofRequired === false ||
       (verifiedOutcome.finalized === true && verifiedOutcome.fillProof?.lifecycle?.orderTerminal === true)
     );
-    context.journal.reconciliationRequired = !safelyResolved;
+    // Keep the journal explicitly recoverable until the guarded lock release
+    // atomically commits the terminal phase. A crash before that transition
+    // must never leave an attached lock behind a non-reconcilable journal.
+    context.journal.reconciliationRequired = true;
     await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
-    await settleExecutionLock(context.journal, {
+    await settleExecutionLockImpl(context.journal, {
       liveAttempted: true,
       proofVerified: safelyResolved,
       stateDirectory,
       journal: context.journalPath,
       writeState: writeTakeProfitState,
       now,
-      transitionId: "take-profit-cancel-terminal-release-v1",
+      transitionId: "take-profit-cancel-terminal-release-v2",
+      expectedLockHashes: {
+        executionLockPath: context.journal.cancelExecution.executionLockHash,
+      },
+      transition: (next, { releasedAt }) => {
+        next.cancelExecution.phase = "terminal";
+        next.cancelExecution.terminalAt = releasedAt;
+        next.reconciliationRequired = false;
+      },
     });
     return { ...verifiedOutcome, journalPath: context.journalPath };
   } catch (error) {
-    context.journal.reconciliationRequired = executionAttempted;
-    context.journal.cancelError = {
-      code: error?.code || "take_profit_cancel_failed",
-      at: new Date(now()).toISOString(),
-      executionAmbiguous: executionAttempted,
-    };
-    try { await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath }); } catch {}
-    if (context.journal.executionLockPath) {
-      await settleExecutionLock(context.journal, {
-        liveAttempted: executionAttempted,
-        proofVerified: false,
-        stateDirectory,
-        journal: context.journalPath,
-        writeState: writeTakeProfitState,
-        now,
-        transitionId: "take-profit-cancel-prelaunch-release-v1",
-      });
+    // An attachment ambiguity deliberately preserves the exact source
+    // journal. This process has no proven release authority in that case.
+    if (error?.preserveSourceJournal === true) throw error;
+    let durable = context.journal;
+    try {
+      durable = JSON.parse(await readFile(context.journalPath, "utf8"));
+      for (const key of Object.keys(context.journal)) delete context.journal[key];
+      Object.assign(context.journal, durable);
+      context.journalText = await readFile(context.journalPath, "utf8");
+    } catch {}
+    const activeCancel = durable?.cancelExecution?.version === "conviction-take-profit-cancel-execution-v2" &&
+      new Set(["lock_acquired", "attempted"]).has(durable.cancelExecution.phase) && durable.executionLockPath;
+    const locallyOwned = Boolean(
+      ownedCancelLock && activeCancel &&
+      durable.executionLockGeneration === ownedCancelLock.generation &&
+      durable.executionLockHash === ownedCancelLock.hash &&
+      durable.cancelExecution.executionLockGeneration === ownedCancelLock.generation &&
+      durable.cancelExecution.executionLockHash === ownedCancelLock.hash,
+    );
+    if (locallyOwned && !executionAttempted) {
+      try {
+        await recoverKnownUnstartedTakeProfitCancel(context, {
+          now,
+          stateDirectory,
+          errorCode: error?.code,
+        });
+      } catch (recoveryError) {
+        error.details = {
+          ...(error?.details && typeof error.details === "object" ? error.details : {}),
+          prelaunchRecoveryError: recoveryError?.code || "prelaunch_recovery_failed",
+        };
+      }
+    } else if (locallyOwned) {
+      context.journal.reconciliationRequired = true;
+      context.journal.cancelError = {
+        code: error?.code || "take_profit_cancel_failed",
+        at: new Date(now()).toISOString(),
+        executionAmbiguous: true,
+      };
+      try { await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath }); } catch {}
     }
     throw error;
   } finally {
-    readline.close();
+    readline?.close();
   }
 }
 
@@ -1904,6 +2491,10 @@ export async function runTakeProfitCli(options, {
     replayKey: null,
     reservationLockPath: null,
     executionLockPath: null,
+    executionLockGeneration: null,
+    executionLockHash: null,
+    executionLockPurpose: null,
+    executionLockRecoveryNotBefore: null,
     executionAttempted: false,
     liveResult: null,
     orderId: null,
@@ -2148,18 +2739,23 @@ export async function runTakeProfitCli(options, {
           directory: stateDirectory,
           file: join(stateDirectory, "polymarket-execution.lock.json"),
           state,
+          purpose: "TP_PLACE",
+          recoveryNotBefore: state.tradeConsent.placementExpiresAt,
+          now,
           writeState: writeTakeProfitState,
           transition: (next) => {
             next.stage = "execution_lock_acquired";
           },
         });
       } catch (error) {
+        if (error?.preserveSourceJournal === true) throw error;
         markTakeProfitPreSpawnFailure(state, error, { liveSpawnStarted: false, now });
         await persist();
         throw error;
       }
       const tokenIndex = argv.indexOf("--token-id");
       const tokenId = tokenIndex >= 0 ? String(argv[tokenIndex + 1] || "") : "";
+      let preserveExecutionSource = false;
       try {
         await ensureTradingMode();
         const lockedReadiness = await loadTakeProfitReadiness({ outcomeTokenId: tokenId });
@@ -2181,9 +2777,16 @@ export async function runTakeProfitCli(options, {
         lockedCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
         requireTakeProfitLaunchWindow(lockedCard, { now });
         fail(sha256(lockedCard.executionCard.argv) === state.tradeConsent.executionArgvHash, "trade_consent_mismatch", "Locked TAKE_PROFIT differs from the confirmed order");
-        state.executionAttempted = true;
-        state.reconciliationRequired = true;
-        await persist("execution_attempted");
+        await markExecutionAttempted(state, {
+          journal,
+          stateDirectory,
+          purpose: "TP_PLACE",
+          recoveryNotBefore: state.tradeConsent.placementExpiresAt,
+          argv: lockedCard.executionCard.argv,
+          now,
+          writeState: writeTakeProfitState,
+          transition: (next) => { next.executionAttempted = true; },
+        });
         const launchCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
         const launchWindow = requireTakeProfitLaunchWindow(launchCard, { now });
         fail(sha256(launchCard.executionCard.argv) === state.tradeConsent.executionArgvHash, "trade_consent_mismatch", "Live TAKE_PROFIT differs from the confirmed order");
@@ -2197,21 +2800,24 @@ export async function runTakeProfitCli(options, {
         await persist("live_result_received");
         return result;
       } catch (error) {
-        if (markTakeProfitPreSpawnFailure(state, error, { liveSpawnStarted: executionAttempted, now })) {
+        preserveExecutionSource = error?.preserveSourceJournal === true;
+        if (!preserveExecutionSource && markTakeProfitPreSpawnFailure(state, error, { liveSpawnStarted: executionAttempted, now })) {
           await persist();
         }
         throw error;
       } finally {
-        await settleExecutionLock(state, {
-          liveAttempted: executionAttempted,
-          proofVerified: false,
-          stateDirectory,
-          journal,
-          writeState: writeTakeProfitState,
-          now,
-          transitionId: "take-profit-prelaunch-execution-release-v1",
-        });
-        await persist();
+        if (!preserveExecutionSource) {
+          await settleExecutionLock(state, {
+            liveAttempted: executionAttempted,
+            proofVerified: false,
+            stateDirectory,
+            journal,
+            writeState: writeTakeProfitState,
+            now,
+            transitionId: "take-profit-prelaunch-execution-release-v1",
+          });
+          await persist();
+        }
       }
     },
     validateTakeProfitLiveResult: (card, result, validationOptions) => validateTakeProfitLiveResult(card, result, validationOptions),
@@ -2262,7 +2868,7 @@ export async function runTakeProfitCli(options, {
     }
     return { ...result, journalPath: journal, reservationLockPath: state.reservationLockPath };
   } catch (error) {
-    if (error?.releaseGuardRetained !== true) {
+    if (error?.releaseGuardRetained !== true && error?.preserveSourceJournal !== true) {
       state.reconciliationRequired = Boolean(
         executionAttempted || state.paymentAuthorization || state.paymentTx || state.reservationLockPath,
       );

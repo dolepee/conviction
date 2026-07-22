@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { chmod, mkdir, open, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, open, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, stderr } from "node:process";
@@ -100,6 +100,10 @@ const checkpoint = {
   replayLockReleasedAt: null,
   replayLockReleaseError: null,
   executionLockPath: null,
+  executionLockGeneration: null,
+  executionLockHash: null,
+  executionLockPurpose: null,
+  executionLockRecoveryNotBefore: null,
   executionLockReleasedAt: null,
   executionLockReleaseError: null,
   reconciliationRequired: false,
@@ -121,6 +125,83 @@ function replaceRecord(target, source) {
   Object.assign(target, source);
 }
 
+async function syncStateDirectory(directory, { openImpl = open } = {}) {
+  const handle = await openImpl(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeDurableAtomicFile(file, text, {
+  mode = 0o600,
+  noReplace = false,
+  openImpl = open,
+  renameImpl = rename,
+  linkImpl = link,
+  unlinkImpl = unlink,
+  syncDirectoryImpl = syncStateDirectory,
+} = {}) {
+  const directory = dirname(file);
+  const temporary = join(directory, `.${basename(file)}.${randomUUID()}.tmp`);
+  let handle;
+  let published = false;
+  let temporaryPresent = false;
+  let primaryError = null;
+  try {
+    handle = await openImpl(temporary, "wx", mode);
+    temporaryPresent = true;
+    await handle.writeFile(text);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    if (noReplace) {
+      await linkImpl(temporary, file);
+    } else {
+      await renameImpl(temporary, file);
+    }
+    published = true;
+    await syncDirectoryImpl(directory);
+    if (noReplace) {
+      await unlinkImpl(temporary);
+      temporaryPresent = false;
+      await syncDirectoryImpl(directory);
+    }
+  } catch (error) {
+    primaryError = error;
+    if (published && error && typeof error === "object") {
+      error.atomicPublishCompleted = true;
+      error.atomicPublishedPath = file;
+    }
+    throw error;
+  } finally {
+    try { await handle?.close(); } catch (closeError) {
+      if (primaryError && typeof primaryError === "object") {
+        primaryError.temporaryCloseError = closeError?.code || "temporary_close_failed";
+      } else {
+        throw closeError;
+      }
+    }
+    if (temporaryPresent) {
+      try {
+        await unlinkImpl(temporary);
+        await syncDirectoryImpl(directory);
+      } catch (cleanupError) {
+        if (cleanupError?.code === "ENOENT") {
+          // The unique temporary was already removed; there is nothing left
+          // whose cleanup could weaken the canonical publication boundary.
+        } else if (primaryError && typeof primaryError === "object") {
+          primaryError.temporaryCleanupError = cleanupError?.code || "temporary_cleanup_failed";
+        } else {
+          throw cleanupError;
+        }
+      }
+    }
+  }
+  return file;
+}
+
 export async function resolveFailedLockAttachment({
   state,
   before,
@@ -131,34 +212,63 @@ export async function resolveFailedLockAttachment({
   mutexLease,
   error,
 } = {}) {
+  const ambiguous = (message, cause = error, details = {}) => Object.assign(new Error(message), {
+    code: "lock_attachment_ambiguous",
+    cause,
+    preserveSourceJournal: true,
+    executionLockPath: file,
+    ...details,
+  });
+  if (typeof mutexLease?.unlinkExact !== "function") {
+    throw ambiguous("Failed lock attachment has no kernel-held exact-unlink capability", error, {
+      cleanupError: "state_release_mutex_lost",
+    });
+  }
   mutexLease?.assertAlive();
   let durable;
   try {
     durable = JSON.parse(await readFile(journal, "utf8"));
     await ownerOnlyStateFile(journal, "Reconciliation journal");
-  } catch {
-    throw Object.assign(new Error("Lock attachment may have reached durable state; reconciliation is required"), {
-      code: "lock_attachment_ambiguous",
-      cause: error,
-    });
+  } catch (readError) {
+    throw ambiguous("Lock attachment may have reached durable state; reconciliation is required", readError);
   }
-  const currentLockText = await readFile(file, "utf8");
-  if (currentLockText !== lockText) {
-    throw Object.assign(new Error("Claimed lock generation changed during ambiguous attachment"), {
-      code: "lock_generation_mismatch",
-      cause: error,
-    });
-  }
+  const durableIsSource = sha256(durable) === sha256(before);
   if (durable?.[field] === file) {
     replaceRecord(state, durable);
-    throw Object.assign(new Error("Lock was durably attached even though its writer reported failure"), {
-      code: "lock_attachment_ambiguous",
-      cause: error,
+    throw ambiguous("Lock was durably attached even though its writer reported failure");
+  }
+  if (!durableIsSource) {
+    throw ambiguous("Lock attachment journal differs from both its source and attached target", error, {
+      cleanupError: "reconciliation_journal_changed",
+    });
+  }
+  let currentLockText;
+  try {
+    [currentLockText] = await Promise.all([
+      readFile(file, "utf8"),
+      ownerOnlyStateFile(file, "Execution lock"),
+    ]);
+  } catch (readError) {
+    if (readError?.code === "ENOENT" && durable?.[field] !== file) {
+      replaceRecord(state, before);
+      return;
+    }
+    throw ambiguous("Claimed lock cannot be authenticated after attachment failure", readError);
+  }
+  if (currentLockText !== lockText) {
+    throw ambiguous("Claimed lock generation changed during ambiguous attachment", error, {
+      cleanupError: "lock_generation_mismatch",
     });
   }
   replaceRecord(state, before);
-  mutexLease?.assertAlive();
-  await unlink(file);
+  try {
+    await mutexLease?.unlinkExact(file, lockText);
+    mutexLease?.assertAlive();
+  } catch (cleanupError) {
+    throw ambiguous("Failed lock attachment could not be rolled back exactly", cleanupError, {
+      cleanupError: cleanupError?.code || "execution_lock_cleanup_failed",
+    });
+  }
 }
 
 export async function writeReconciliationJournal(value, {
@@ -169,6 +279,7 @@ export async function writeReconciliationJournal(value, {
   expectedRevision,
   targetRevision,
   releaseCapability,
+  durableWriteImpl = writeDurableAtomicFile,
 } = {}) {
   if (!mutexHeld) {
     return withStateReleaseMutex(directory, (lease) => writeReconciliationJournal(value, {
@@ -179,6 +290,7 @@ export async function writeReconciliationJournal(value, {
       expectedRevision,
       targetRevision,
       releaseCapability,
+      durableWriteImpl,
     }));
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -211,10 +323,12 @@ export async function writeReconciliationJournal(value, {
   });
   let durableRevision = 0;
   let durableExists = true;
+  let durableSourceHash = null;
   try {
     const durable = JSON.parse(await readFile(file, "utf8"));
     await ownerOnlyStateFile(file, "Reconciliation journal");
     durableRevision = journalRevision(durable);
+    durableSourceHash = sha256(durable);
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
     durableExists = false;
@@ -227,11 +341,46 @@ export async function writeReconciliationJournal(value, {
   }
   const next = structuredClone(value);
   next.journalRevision = target;
-  const temporary = `${file}.tmp`;
+  const nextText = `${JSON.stringify(next, null, 2)}\n`;
   mutexLease?.assertAlive();
-  await writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-  mutexLease?.assertAlive();
-  await rename(temporary, file);
+  try {
+    await durableWriteImpl(file, nextText, { mode: 0o600 });
+  } catch (error) {
+    let durableText = null;
+    let durableReadError = null;
+    try {
+      [durableText] = await Promise.all([
+        readFile(file, "utf8"),
+        ownerOnlyStateFile(file, "Reconciliation journal"),
+      ]);
+    } catch (readError) {
+      durableReadError = readError;
+    }
+    if (durableText === nextText) {
+      replaceRecord(value, next);
+      error.journalWriteReachedTarget = true;
+      error.journalTargetRevision = target;
+      try {
+        await syncStateDirectory(directory);
+      } catch (syncError) {
+        error.journalDirectorySyncError = syncError?.code || "journal_directory_sync_failed";
+      }
+      throw error;
+    }
+    const durableStillSource = durableText != null && (() => {
+      try {
+        const parsed = JSON.parse(durableText);
+        return journalRevision(parsed) === expected && sha256(parsed) === durableSourceHash;
+      } catch { return false; }
+    })();
+    if (durableStillSource || (!durableExists && durableReadError?.code === "ENOENT")) throw error;
+    throw Object.assign(new Error("Reconciliation journal differs from both the exact source and target after a failed write"), {
+      code: "reconciliation_journal_write_ambiguous",
+      cause: error,
+      readError: durableReadError?.code || null,
+      preserveSourceJournal: true,
+    });
+  }
   mutexLease?.assertAlive();
   replaceRecord(value, next);
   return file;
@@ -345,6 +494,14 @@ export function parseJsonOutput(text, label) {
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
 const HASH_RE = /^0x[0-9a-f]{64}$/i;
 const DECIMAL_UINT_RE = /^(?:0|[1-9][0-9]*)$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const EXECUTION_LOCK_PURPOSES = new Set([
+  "OPEN_PLACE",
+  "CLOSE_PLACE",
+  "CLOSE_RESUME",
+  "TP_PLACE",
+  "TP_CANCEL",
+]);
 const AUTHORIZATION_STATE_SELECTOR = "e94a0102";
 
 function asObject(value) {
@@ -578,7 +735,13 @@ export function openReplayKey({ request, buyerWallet }) {
 }
 
 async function ownerOnlyStateFile(file, label, { statImpl = stat } = {}) {
-  const fileStat = await statImpl(file);
+  const linkStat = await lstat(file);
+  if (linkStat.isSymbolicLink()) {
+    throw Object.assign(new Error(`${label} must not be a symbolic link`), {
+      code: "unsafe_state_symlink",
+    });
+  }
+  const fileStat = statImpl === stat ? linkStat : await statImpl(file);
   const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
   if (!fileStat.isFile() || (fileStat.mode & 0o077) !== 0) {
     throw Object.assign(new Error(`${label} must be an owner-only regular file`), {
@@ -651,14 +814,14 @@ async function claimStateReleaseMutex({
   helper = releaseMutexHelper,
 } = {}) {
   let helperStat;
-  try { helperStat = await stat(helper); } catch (error) {
+  try { helperStat = await lstat(helper); } catch (error) {
     throw Object.assign(new Error("State-release mutex helper is unavailable"), {
       code: "state_release_mutex_failed",
       cause: error,
     });
   }
   const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
-  if (!helperStat.isFile() || (expectedUid !== null && helperStat.uid !== expectedUid)) {
+  if (helperStat.isSymbolicLink() || !helperStat.isFile() || (expectedUid !== null && helperStat.uid !== expectedUid)) {
     throw Object.assign(new Error("State-release mutex helper is not an owner-controlled regular file"), {
       code: "state_release_mutex_failed",
     });
@@ -667,46 +830,81 @@ async function claimStateReleaseMutex({
   await chmod(directory, 0o700);
   const physicalDirectory = await realpath(directory);
   const mutexFile = join(tmpdir(), `conviction-state-release-${sha256(physicalDirectory).slice(2)}.mutex`);
-  const child = spawn("python3", [helper, mutexFile], {
+  const child = spawn("python3", [helper, mutexFile, physicalDirectory], {
     stdio: ["pipe", "pipe", "pipe"],
   });
-  let stdoutText = "";
+  let stdoutBuffer = "";
   let stderrText = "";
+  let acquisitionSettled = false;
+  let acquisitionResolve;
+  let acquisitionReject;
+  const pendingCommands = new Map();
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => { stderrText += chunk; });
-  const acquired = await new Promise((resolvePromise, rejectPromise) => {
-    let settled = false;
-    const finish = (callback, value) => {
-      if (settled) return;
-      settled = true;
-      callback(value);
-    };
-    child.once("error", (error) => finish(rejectPromise, error));
-    child.once("exit", (code) => {
-      if (!settled) {
-        const busy = stdoutText.trim() === "BUSY" || code === 75;
-        finish(rejectPromise, Object.assign(
-          new Error(busy
-            ? "Another state-lock reconciliation is already in progress"
-            : `State-release mutex helper exited before locking${stderrText ? `: ${stderrText.trim()}` : ""}`),
-          { code: busy ? "execution_release_in_progress" : "state_release_mutex_failed" },
-        ));
-      }
-    });
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdoutText += chunk;
-      const line = stdoutText.split("\n", 1)[0];
-      if (line === "LOCKED") finish(resolvePromise, true);
-      if (line === "BUSY") {
-        finish(rejectPromise, Object.assign(
-          new Error("Another state-lock reconciliation is already in progress"),
-          { code: "execution_release_in_progress" },
-        ));
-      }
-    });
+  const acquired = new Promise((resolvePromise, rejectPromise) => {
+    acquisitionResolve = resolvePromise;
+    acquisitionReject = rejectPromise;
   });
-  if (!acquired) throw Object.assign(new Error("State-release mutex was not acquired"), { code: "state_release_mutex_failed" });
+  const rejectPending = (error) => {
+    for (const { rejectPromise } of pendingCommands.values()) rejectPromise(error);
+    pendingCommands.clear();
+  };
+  const settleAcquisition = (callback, value) => {
+    if (acquisitionSettled) return;
+    acquisitionSettled = true;
+    callback(value);
+  };
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdoutBuffer += chunk;
+    while (stdoutBuffer.includes("\n")) {
+      const newline = stdoutBuffer.indexOf("\n");
+      const line = stdoutBuffer.slice(0, newline);
+      stdoutBuffer = stdoutBuffer.slice(newline + 1);
+      if (!acquisitionSettled) {
+        if (line === "LOCKED") settleAcquisition(acquisitionResolve, true);
+        else if (line === "BUSY") {
+          settleAcquisition(acquisitionReject, Object.assign(
+            new Error("Another state-lock reconciliation is already in progress"),
+            { code: "execution_release_in_progress" },
+          ));
+        }
+        continue;
+      }
+      let response;
+      try { response = JSON.parse(line); } catch { continue; }
+      const pending = pendingCommands.get(response?.id);
+      if (!pending) continue;
+      pendingCommands.delete(response.id);
+      if (response.ok === true) pending.resolvePromise(response);
+      else pending.rejectPromise(Object.assign(
+        new Error(`State-release mutex exact unlink failed: ${String(response?.code || "unknown")}`),
+        { code: String(response?.code || "exact_unlink_failed"), details: response },
+      ));
+    }
+  });
+  child.once("error", (error) => {
+    settleAcquisition(acquisitionReject, error);
+    rejectPending(Object.assign(new Error("State-release mutex helper failed during an exact operation"), {
+      code: "state_release_mutex_lost",
+      cause: error,
+    }));
+  });
+  child.once("exit", (code) => {
+    if (!acquisitionSettled) {
+      const busy = code === 75;
+      settleAcquisition(acquisitionReject, Object.assign(
+        new Error(busy
+          ? "Another state-lock reconciliation is already in progress"
+          : `State-release mutex helper exited before locking${stderrText ? `: ${stderrText.trim()}` : ""}`),
+        { code: busy ? "execution_release_in_progress" : "state_release_mutex_failed" },
+      ));
+    }
+    rejectPending(Object.assign(new Error("State-release mutex helper exited during an exact operation"), {
+      code: "state_release_mutex_lost",
+    }));
+  });
+  await acquired;
   try {
     await ownerOnlyStateFile(mutexFile, "State-release mutex");
   } catch (validationError) {
@@ -727,8 +925,38 @@ async function claimStateReleaseMutex({
       });
     }
   };
+  const command = (body) => {
+    assertAlive();
+    const id = randomUUID();
+    return new Promise((resolvePromise, rejectPromise) => {
+      pendingCommands.set(id, { resolvePromise, rejectPromise });
+      child.stdin.write(`${JSON.stringify({ ...body, id })}\n`, (error) => {
+        if (!error) return;
+        pendingCommands.delete(id);
+        rejectPromise(Object.assign(new Error("State-release mutex command could not be delivered"), {
+          code: "state_release_mutex_lost",
+          cause: error,
+        }));
+      });
+    });
+  };
   return Object.freeze({
     assertAlive,
+    unlinkExact: async (file, expectedText) => {
+      if (typeof expectedText !== "string") {
+        throw Object.assign(new Error("Exact unlink requires the authenticated raw file bytes"), {
+          code: "invalid_unlink_request",
+        });
+      }
+      const canonical = safeStatePath(file, "lock", physicalDirectory);
+      const response = await command({
+        op: "unlink_exact",
+        path: join(physicalDirectory, basename(canonical)),
+        sha256: sha256(expectedText).slice(2),
+      });
+      assertAlive();
+      return response.removed === true;
+    },
     release: async () => {
       if (released) return;
       assertAlive();
@@ -773,13 +1001,15 @@ export async function assertNoStateReleaseInProgress({
   releaseFile = join(directory, releaseLockBasename),
   statImpl = stat,
   mutexHeld = false,
+  mutexLease,
 } = {}) {
   if (!mutexHeld) {
-    return withStateReleaseMutex(directory, () => assertNoStateReleaseInProgress({
+    return withStateReleaseMutex(directory, (lease) => assertNoStateReleaseInProgress({
       directory,
       releaseFile,
       statImpl,
       mutexHeld: true,
+      mutexLease: lease,
     }));
   }
   let text;
@@ -804,7 +1034,12 @@ export async function assertNoStateReleaseInProgress({
           code: "state_release_guard_mismatch",
         });
       }
-      await unlink(releaseFile);
+      if (!mutexLease?.unlinkExact) {
+        throw Object.assign(new Error("Completed release guard requires its kernel-held exact unlink"), {
+          code: "state_release_mutex_lost",
+        });
+      }
+      await mutexLease.unlinkExact(releaseFile, text);
       return false;
     }
   }
@@ -826,7 +1061,7 @@ async function authorizeJournalWriteAgainstReleaseGuard({
 } = {}) {
   mutexLease?.assertAlive();
   if (releaseCapability === undefined) {
-    await assertNoStateReleaseInProgress({ directory, mutexHeld: true, statImpl });
+    await assertNoStateReleaseInProgress({ directory, mutexHeld: true, statImpl, mutexLease });
     mutexLease?.assertAlive();
     return;
   }
@@ -903,6 +1138,8 @@ async function claimStateReleaseGuard({
   now = Date.now,
   statImpl = stat,
   assertMutexAlive = () => {},
+  unlinkExact,
+  durablePublishImpl = writeDurableAtomicFile,
 } = {}) {
   const releaseFile = join(stateDirectory, releaseLockBasename);
   const canonicalFields = [...new Set(fields)].sort();
@@ -920,18 +1157,37 @@ async function claimStateReleaseGuard({
   };
   let guardText;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    let handle;
     try {
       assertMutexAlive();
-      handle = await open(releaseFile, "wx", 0o600);
       guardText = `${JSON.stringify(guard, null, 2)}\n`;
-      await handle.writeFile(guardText);
-      await handle.close();
-      handle = null;
+      await durablePublishImpl(releaseFile, guardText, { mode: 0o600, noReplace: true });
       break;
     } catch (error) {
-      await handle?.close();
-      if (error?.code !== "EEXIST") throw error;
+      if (error?.code !== "EEXIST") {
+        let exactPublished = false;
+        let provenAbsent = false;
+        try {
+          const [existingText] = await Promise.all([
+            readFile(releaseFile, "utf8"),
+            ownerOnlyStateFile(releaseFile, "State-release guard", { statImpl }),
+          ]);
+          exactPublished = existingText === guardText;
+          if (exactPublished) await syncStateDirectory(stateDirectory);
+        } catch (probeError) {
+          exactPublished = false;
+          provenAbsent = probeError?.code === "ENOENT";
+        }
+        if (exactPublished) {
+          error.releaseGuardRetained = true;
+          throw error;
+        }
+        if (provenAbsent) throw error;
+        throw Object.assign(new Error("State-release guard publication is ambiguous"), {
+          code: "state_release_guard_ambiguous",
+          cause: error,
+          releaseGuardRetained: true,
+        });
+      }
       let existingText;
       try {
         [existingText] = await Promise.all([
@@ -957,12 +1213,6 @@ async function claimStateReleaseGuard({
           code: "state_release_guard_mismatch",
         });
       }
-      if (attempt > 0) {
-        throw Object.assign(new Error("Another state-lock reconciliation is already in progress"), {
-          code: "execution_release_in_progress",
-          details: { executionReleaseLockPath: releaseFile },
-        });
-      }
       let currentHash;
       try { currentHash = await parsedJournalHash(journal); } catch {
         throw Object.assign(new Error("Guarded reconciliation journal cannot be authenticated"), {
@@ -980,8 +1230,10 @@ async function claimStateReleaseGuard({
           code: "state_release_guard_mismatch",
         });
       }
+      await syncStateDirectory(stateDirectory);
       assertMutexAlive();
-      await unlink(releaseFile);
+      guardText = existingText;
+      break;
     }
   }
   const writeCapability = Object.freeze({
@@ -1011,7 +1263,13 @@ async function claimStateReleaseGuard({
         });
       }
       assertMutexAlive();
-      await unlink(releaseFile);
+      if (typeof unlinkExact !== "function") {
+        throw Object.assign(new Error("State-release guard requires its kernel-held exact unlink"), {
+          code: "state_release_mutex_lost",
+        });
+      }
+      await unlinkExact(releaseFile, guardText);
+      assertMutexAlive();
     },
   });
 }
@@ -1030,7 +1288,7 @@ async function claimReplayLock({
   const file = join(directory, `${kind}-${String(key).slice(2)}.lock.json`);
   const releaseFile = join(directory, releaseLockBasename);
   return withStateReleaseMutex(directory, async (mutexLease) => {
-    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true });
+    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true, mutexLease });
     if (state && resolve(String(state.journalPath || "")) !== resolve(journal)) {
       throw Object.assign(new Error(`${kind.toUpperCase()} replay state belongs to another journal`), {
         code: "lock_ownership_mismatch",
@@ -1135,57 +1393,167 @@ export async function claimExecutionLock({
   file = executionLockFile,
   releaseFile = join(directory, "polymarket-execution.release.lock.json"),
   state,
+  purpose,
+  recoveryNotBefore,
   writeState = writeReconciliationJournal,
   transition,
   beforePersist,
+  now = Date.now,
+  durablePublishImpl = writeDurableAtomicFile,
 } = {}) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
   return withStateReleaseMutex(directory, async (mutexLease) => {
-    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true });
-    if (state && resolve(String(state.journalPath || "")) !== resolve(journal)) {
+    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true, mutexLease });
+    const canonicalFile = safeStatePath(file, "execution lock", directory);
+    const canonicalJournal = safeStatePath(journal, "journal", directory);
+    if (!state || typeof state !== "object" || Array.isArray(state)) {
+      throw Object.assign(new Error("A v2 execution lock requires its durable attachment state"), {
+        code: "missing_execution_lock_state",
+      });
+    }
+    if (!EXECUTION_LOCK_PURPOSES.has(purpose)) {
+      throw Object.assign(new Error("Execution-lock purpose is invalid"), { code: "invalid_execution_lock_purpose" });
+    }
+    const recoveryAt = Date.parse(String(recoveryNotBefore || ""));
+    if (!Number.isFinite(recoveryAt) || new Date(recoveryAt).toISOString() !== recoveryNotBefore) {
+      throw Object.assign(new Error("Execution-lock recovery boundary is invalid"), {
+        code: "invalid_execution_lock_boundary",
+      });
+    }
+    if (state && resolve(String(state.journalPath || "")) !== canonicalJournal) {
       throw Object.assign(new Error("Execution-lock state belongs to another journal"), {
         code: "lock_ownership_mismatch",
       });
     }
-    if (state && await parsedJournalHash(journal) !== sha256(state)) {
+    const [durableText] = await Promise.all([
+      readFile(canonicalJournal, "utf8"),
+      ownerOnlyStateFile(canonicalJournal, "Reconciliation journal"),
+    ]);
+    const durable = JSON.parse(durableText);
+    const sourceJournalHash = sha256(durable);
+    const sourceJournalRevision = journalRevision(durable);
+    if (state && sourceJournalHash !== sha256(state)) {
       throw Object.assign(new Error("Execution state is stale before lock claim"), {
         code: "stale_journal_write",
       });
     }
+    if (
+      durable?.executionLockPath != null || durable?.executionLockGeneration != null ||
+      durable?.executionLockHash != null || durable?.executionLockPurpose != null ||
+      durable?.executionLockRecoveryNotBefore != null
+    ) {
+      throw Object.assign(new Error("Execution journal already has a global lock binding"), {
+        code: "execution_reconciliation_required",
+      });
+    }
+    const claimedAtMs = Number(typeof now === "function" ? now() : now);
+    if (!Number.isFinite(claimedAtMs) || claimedAtMs >= recoveryAt) {
+      throw Object.assign(new Error("Execution-lock recovery boundary has already elapsed"), {
+        code: "execution_lock_boundary_elapsed",
+      });
+    }
     const lock = {
-      version: "conviction-polymarket-execution-lock-v1",
+      version: "conviction-polymarket-execution-lock-v2",
       generation: randomUUID(),
       pid: process.pid,
-      journalPath: journal,
-      claimedAt: new Date().toISOString(),
+      journalPath: canonicalJournal,
+      sourceJournalHash,
+      sourceJournalRevision,
+      purpose,
+      attachmentRequired: true,
+      claimedAt: new Date(claimedAtMs).toISOString(),
+      recoveryNotBefore,
     };
     const lockText = `${JSON.stringify(lock, null, 2)}\n`;
-    let handle;
     try {
       mutexLease.assertAlive();
-      handle = await open(file, "wx", 0o600);
-      await handle.writeFile(lockText);
+      await durablePublishImpl(canonicalFile, lockText, { mode: 0o600, noReplace: true });
     } catch (error) {
       if (error?.code === "EEXIST") {
+        let exactCrashOrphan = false;
+        try {
+          const [existingText] = await Promise.all([
+            readFile(canonicalFile, "utf8"),
+            ownerOnlyStateFile(canonicalFile, "Execution lock"),
+          ]);
+          const existing = JSON.parse(existingText);
+          exactCrashOrphan = existing?.version === "conviction-polymarket-execution-lock-v2" &&
+            existing?.attachmentRequired === true && existing?.journalPath === canonicalJournal &&
+            existing?.sourceJournalHash === sourceJournalHash &&
+            existing?.sourceJournalRevision === sourceJournalRevision;
+        } catch {}
         throw Object.assign(
           new Error("Another Conviction execution is unresolved; reconcile its journal before trading"),
-          { code: "execution_reconciliation_required", details: { executionLockPath: file } },
+          {
+            code: "execution_reconciliation_required",
+            details: { executionLockPath: canonicalFile },
+            ...(exactCrashOrphan ? { preserveSourceJournal: true } : {}),
+          },
         );
       }
+      let publishedProbe = null;
+      try {
+        const publishedText = await readFile(canonicalFile, "utf8");
+        await ownerOnlyStateFile(canonicalFile, "Execution lock");
+        publishedProbe = publishedText === lockText ? "exact" : "different";
+      } catch (probeError) {
+        if (probeError?.code !== "ENOENT") publishedProbe = "ambiguous";
+      }
+      if (error?.atomicPublishCompleted === true || publishedProbe !== null) {
+        let cleanupError;
+        try {
+          const publishedText = await readFile(canonicalFile, "utf8");
+          await ownerOnlyStateFile(canonicalFile, "Execution lock");
+          if (publishedText !== lockText) {
+            throw Object.assign(new Error("Published execution-lock generation changed"), {
+              code: "lock_generation_mismatch",
+            });
+          }
+          await mutexLease.unlinkExact(canonicalFile, publishedText);
+          mutexLease.assertAlive();
+        } catch (cleanupFailure) {
+          cleanupError = cleanupFailure;
+        }
+        if (!cleanupError) {
+          throw Object.assign(new Error("Execution-lock publication did not reach its durability boundary"), {
+            code: "execution_lock_publish_failed",
+            cause: error,
+          });
+        }
+        throw Object.assign(new Error("Published execution lock could not be safely rolled back"), {
+          code: "lock_attachment_ambiguous",
+          cause: error,
+          cleanupError: cleanupError?.code || "execution_lock_cleanup_failed",
+          preserveSourceJournal: true,
+          executionLockPath: canonicalFile,
+          executionLockHash: sha256(lock),
+        });
+      }
       throw error;
-    } finally {
-      await handle?.close();
     }
     if (state) {
       const before = structuredClone(state);
+      const lockHash = sha256(lock);
       try {
-        await beforePersist?.(Object.freeze({ file, lock: Object.freeze({ ...lock }) }));
-        state.executionLockPath = file;
-        await transition?.(state, { lockPath: file, lock: Object.freeze({ ...lock }) });
+        await beforePersist?.(Object.freeze({
+          file: canonicalFile,
+          lock: Object.freeze({ ...lock }),
+          lockHash,
+        }));
+        state.executionLockPath = canonicalFile;
+        state.executionLockGeneration = lock.generation;
+        state.executionLockHash = lockHash;
+        state.executionLockPurpose = purpose;
+        state.executionLockRecoveryNotBefore = recoveryNotBefore;
+        await transition?.(state, {
+          lockPath: canonicalFile,
+          lock: Object.freeze({ ...lock }),
+          lockHash,
+        });
         await writeState(state, {
           directory,
-          file: journal,
+          file: canonicalJournal,
           mutexHeld: true,
           mutexLease,
         });
@@ -1194,57 +1562,186 @@ export async function claimExecutionLock({
           state,
           before,
           field: "executionLockPath",
-          file,
+          file: canonicalFile,
           lockText,
-          journal,
+          journal: canonicalJournal,
           mutexLease,
           error,
         });
         throw error;
       }
     }
-    return file;
+    return canonicalFile;
   });
 }
 
-async function releaseUnattachedExecutionLock({
+function requireUnattachedExecutionCheckpoint(durable, lock, {
+  canonicalFile,
+  canonicalJournal,
+  expectedJournalHash,
+  expectedPurposes,
+} = {}) {
+  const allowedPurposes = new Set(Array.isArray(expectedPurposes) ? expectedPurposes : []);
+  const noAttachedBinding = durable?.executionLockPath == null &&
+    durable?.executionLockGeneration == null && durable?.executionLockHash == null &&
+    durable?.executionLockPurpose == null && durable?.executionLockRecoveryNotBefore == null;
+  const paidConfirmed = durable?.stage === "trade_confirmed" &&
+    durable?.reconciliationRequired === true && durable?.tradeConsent && durable?.paidCard &&
+    durable?.paymentProof && HASH_RE.test(String(durable?.paymentTx || "")) &&
+    HASH_RE.test(String(durable?.replayKey || "")) &&
+    durable?.executionArgv == null && durable?.executionArgvHash == null &&
+    durable?.executionAttemptedAt == null && durable?.liveResult == null &&
+    durable?.orderId == null && durable?.settlementTx == null;
+  const purposeSpecific = lock?.purpose === "OPEN_PLACE"
+    ? durable?.mode === "open" && typeof durable?.replayLockPath === "string" &&
+      durable?.tradeConsent?.version === "conviction-open-trade-consent-v1" &&
+      lock?.recoveryNotBefore === durable.tradeConsent.expiresAt && durable?.executionAttempted !== true
+    : lock?.purpose === "CLOSE_PLACE" || lock?.purpose === "CLOSE_RESUME"
+      ? durable?.mode === "close" && typeof durable?.replayLockPath === "string" &&
+        durable?.tradeConsent?.version === "conviction-close-trade-consent-v1" &&
+        lock?.recoveryNotBefore === durable.tradeConsent.expiresAt && durable?.executionAttempted !== true
+      : lock?.purpose === "TP_PLACE"
+        ? durable?.version === "conviction-take-profit-journey-v1" && durable?.action === "TAKE_PROFIT" &&
+          typeof durable?.reservationLockPath === "string" && durable?.executionAttempted === false &&
+          durable?.takeProfitPassport == null && durable?.takeProfitPassportHash == null &&
+          durable?.restingOrderProofHash == null &&
+          lock?.recoveryNotBefore === durable?.tradeConsent?.placementExpiresAt
+      : lock?.purpose === "TP_CANCEL"
+          ? durable?.version === "conviction-take-profit-journey-v1" && durable?.action === "TAKE_PROFIT" &&
+            new Set(["armed", "submitted"]).has(durable?.stage) &&
+            typeof durable?.reservationLockPath === "string" && HASH_RE.test(String(durable?.orderId || "")) &&
+            HASH_RE.test(String(durable?.takeProfitPassportHash || "")) &&
+            HASH_RE.test(String(durable?.restingOrderProofHash || "")) &&
+            (durable?.cancelExecution == null
+              ? durable?.cancelConsent == null && durable?.cancelAttemptedAt == null &&
+                durable?.cancelResult == null && durable?.cancelOutcome == null
+              : durable.cancelExecution?.version === "conviction-take-profit-cancel-execution-v2" &&
+                new Set(["expired_unattempted", "pre_spawn_failed"]).has(durable.cancelExecution.phase) &&
+                durable?.cancelConsent?.version === "conviction-take-profit-cancel-consent-v2" &&
+                durable?.reconciliationRequired === false)
+          : false;
+  const sourceMatches = HASH_RE.test(String(expectedJournalHash || "")) &&
+    sha256(durable) === expectedJournalHash && lock?.sourceJournalHash === expectedJournalHash &&
+    lock?.sourceJournalRevision === journalRevision(durable);
+  if (
+    basename(canonicalFile) !== "polymarket-execution.lock.json" || durable?.journalPath !== canonicalJournal ||
+    !noAttachedBinding || !allowedPurposes.has(lock?.purpose) || !sourceMatches || !purposeSpecific ||
+    (lock?.purpose !== "TP_CANCEL" && !paidConfirmed)
+  ) {
+    throw Object.assign(new Error("Journal is not the exact purpose-bound preclaim execution checkpoint"), {
+      code: "unsafe_unattached_lock_recovery",
+    });
+  }
+}
+
+/**
+ * Recover the sole crash window between creating the global execution lock
+ * and durably attaching it to a paid, confirmed journey. This performs no
+ * network, payment, or order operation. It can remove only the exact
+ * owner-only generation whose journal pointer and unchanged durable source
+ * both identify the supplied never-started journey.
+ */
+export async function reconcileUnattachedExecutionLock({
   file,
   journal,
   directory = journalDirectory,
+  expectedJournalHash,
+  expectedPurposes,
+  unlinkImpl = unlink,
+  statImpl = stat,
+  beforeUnlink,
 } = {}) {
   return withStateReleaseMutex(directory, async (mutexLease) => {
-    await assertNoStateReleaseInProgress({ directory, mutexHeld: true });
+    await assertNoStateReleaseInProgress({ directory, mutexHeld: true, mutexLease });
     const canonicalFile = safeStatePath(file, "execution lock", directory);
     const canonicalJournal = safeStatePath(journal, "journal", directory);
-    const [lockText, durableText] = await Promise.all([
-      readFile(canonicalFile, "utf8"),
+    let lockText;
+    const [durableText] = await Promise.all([
       readFile(canonicalJournal, "utf8"),
-      ownerOnlyStateFile(canonicalFile, "Execution lock"),
-      ownerOnlyStateFile(canonicalJournal, "Reconciliation journal"),
+      ownerOnlyStateFile(canonicalJournal, "Reconciliation journal", { statImpl }),
     ]);
+    try {
+      [lockText] = await Promise.all([
+        readFile(canonicalFile, "utf8"),
+        ownerOnlyStateFile(canonicalFile, "Execution lock", { statImpl }),
+      ]);
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        return Object.freeze({ released: false, path: canonicalFile, generationHash: null });
+      }
+      throw error;
+    }
     const lock = JSON.parse(lockText);
     const durable = JSON.parse(durableText);
     if (
-      lock?.version !== "conviction-polymarket-execution-lock-v1" ||
-      lock?.journalPath !== canonicalJournal
+      lock?.version !== "conviction-polymarket-execution-lock-v2" || lock?.attachmentRequired !== true ||
+      !UUID_RE.test(String(lock?.generation || "")) ||
+      !Number.isSafeInteger(lock?.pid) || lock.pid <= 0 ||
+      !HASH_RE.test(String(lock?.sourceJournalHash || "")) ||
+      !Number.isSafeInteger(lock?.sourceJournalRevision) || lock.sourceJournalRevision < 0 ||
+      !EXECUTION_LOCK_PURPOSES.has(lock?.purpose) ||
+      !Number.isFinite(Date.parse(String(lock?.claimedAt || ""))) ||
+      new Date(Date.parse(lock.claimedAt)).toISOString() !== lock.claimedAt ||
+      !Number.isFinite(Date.parse(String(lock?.recoveryNotBefore || ""))) ||
+      new Date(Date.parse(lock.recoveryNotBefore)).toISOString() !== lock.recoveryNotBefore ||
+      Date.parse(lock.claimedAt) >= Date.parse(lock.recoveryNotBefore)
     ) {
       throw Object.assign(new Error("Unattached execution lock belongs to another journey"), {
         code: "lock_ownership_mismatch",
       });
     }
-    if (durable?.executionLockPath === canonicalFile) {
-      throw Object.assign(new Error("Execution lock is already attached to the durable journey"), {
-        code: "execution_reconciliation_required",
+    let lockJournalPath;
+    try { lockJournalPath = safeStatePath(lock.journalPath, "journal", directory); } catch {}
+    if (!lockJournalPath) {
+      throw Object.assign(new Error("Unattached execution lock has an unsafe owner journal"), {
+        code: "lock_ownership_mismatch",
       });
     }
+    if (lockJournalPath !== canonicalJournal) {
+      return Object.freeze({
+        released: false,
+        path: canonicalFile,
+        generationHash: sha256(lock),
+        ownedByOtherJourney: true,
+        ownerJournalPath: lockJournalPath,
+      });
+    }
+    requireUnattachedExecutionCheckpoint(durable, lock, {
+      canonicalFile,
+      canonicalJournal,
+      expectedJournalHash,
+      expectedPurposes,
+    });
+    const generationHash = sha256(lock);
+    await beforeUnlink?.(Object.freeze({
+      path: canonicalFile,
+      journalPath: canonicalJournal,
+      generationHash,
+      journalHash: expectedJournalHash,
+    }));
     mutexLease.assertAlive();
-    if (await readFile(canonicalFile, "utf8") !== lockText) {
+    await Promise.all([
+      ownerOnlyStateFile(canonicalFile, "Execution lock", { statImpl }),
+      ownerOnlyStateFile(canonicalJournal, "Reconciliation journal", { statImpl }),
+    ]);
+    const [currentLockText, currentDurableText] = await Promise.all([
+      readFile(canonicalFile, "utf8"),
+      readFile(canonicalJournal, "utf8"),
+    ]);
+    if (currentLockText !== lockText) {
       throw Object.assign(new Error("Unattached execution-lock generation changed before cleanup"), {
         code: "lock_generation_mismatch",
       });
     }
-    await unlink(canonicalFile);
-    return true;
+    if (currentDurableText !== durableText || sha256(JSON.parse(currentDurableText)) !== expectedJournalHash) {
+      throw Object.assign(new Error("Unattached execution-lock journal changed before cleanup"), {
+        code: "reconciliation_journal_changed",
+      });
+    }
+    mutexLease.assertAlive();
+    await mutexLease.unlinkExact(canonicalFile, currentLockText);
+    mutexLease.assertAlive();
+    return Object.freeze({ released: true, path: canonicalFile, generationHash });
   });
 }
 
@@ -1260,10 +1757,17 @@ export async function settleExecutionLock(
     writeState = writeReconciliationJournal,
     transition,
     transitionId = "execution-lock-settlement-v1",
+    expectedLockHashes,
   } = {},
 ) {
   if (!state?.executionLockPath) return { released: false, retained: false };
   if (liveAttempted && !proofVerified) {
+    return { released: false, retained: true, path: state.executionLockPath };
+  }
+  if (!liveAttempted && (
+    state?.executionAttempted === true || state?.executionAttemptedAt != null ||
+    state?.executionArgv != null || state?.executionArgvHash != null
+  )) {
     return { released: false, retained: true, path: state.executionLockPath };
   }
   if (!journal) {
@@ -1281,12 +1785,84 @@ export async function settleExecutionLock(
     now,
     transition,
     transitionId,
+    expectedLockHashes,
   });
   return {
     released: released.includes(releasedPath),
     retained: Boolean(state.executionLockPath),
     path: releasedPath,
   };
+}
+
+export async function markExecutionAttempted(
+  state,
+  {
+    journal = state?.journalPath,
+    stateDirectory = journal ? dirname(journal) : journalDirectory,
+    purpose,
+    recoveryNotBefore,
+    argv,
+    stage = "execution_attempted",
+    now = Date.now,
+    writeState = writeReconciliationJournal,
+    transition,
+  } = {},
+) {
+  return withStateReleaseMutex(stateDirectory, async (mutexLease) => {
+    await assertNoStateReleaseInProgress({ directory: stateDirectory, mutexHeld: true, mutexLease });
+    const canonicalJournal = safeStatePath(journal, "journal", stateDirectory);
+    await ownerOnlyStateFile(canonicalJournal, "Reconciliation journal");
+    const durable = JSON.parse(await readFile(canonicalJournal, "utf8"));
+    if (sha256(durable) !== sha256(state)) {
+      throw Object.assign(new Error("Execution checkpoint changed before its attempt marker"), {
+        code: "stale_journal_write",
+      });
+    }
+    if (
+      !EXECUTION_LOCK_PURPOSES.has(purpose) || state?.executionLockPurpose !== purpose ||
+      state?.executionLockRecoveryNotBefore !== recoveryNotBefore ||
+      !Array.isArray(argv) || argv.length === 0 || argv.some((value) => typeof value !== "string") ||
+      !state?.executionLockPath || !HASH_RE.test(String(state?.executionLockHash || ""))
+    ) {
+      throw Object.assign(new Error("Execution attempt does not match its attached v2 lock"), {
+        code: "lock_ownership_mismatch",
+      });
+    }
+    await verifyJournalLockOwnership(state, {
+      stateDirectory,
+      journal: canonicalJournal,
+      fields: ["executionLockPath"],
+      requirePresent: true,
+    });
+    const observedAt = Number(typeof now === "function" ? now() : now);
+    const deadline = Date.parse(String(recoveryNotBefore || ""));
+    if (!Number.isFinite(observedAt) || !Number.isFinite(deadline) || observedAt >= deadline) {
+      throw Object.assign(new Error("Signed execution window elapsed before the durable attempt marker"), {
+        code: "execution_lock_boundary_elapsed",
+      });
+    }
+    const next = structuredClone(state);
+    next.stage = stage;
+    next.executionArgv = [...argv];
+    next.executionArgvHash = sha256(argv);
+    next.executionAttemptedAt = new Date(observedAt).toISOString();
+    next.reconciliationRequired = true;
+    await transition?.(next, { attemptedAt: next.executionAttemptedAt, argvHash: next.executionArgvHash });
+    mutexLease.assertAlive();
+    try {
+      await writeState(next, {
+        directory: stateDirectory,
+        file: canonicalJournal,
+        mutexHeld: true,
+        mutexLease,
+      });
+    } catch (error) {
+      if (error?.journalWriteReachedTarget === true) replaceRecord(state, next);
+      throw error;
+    }
+    replaceRecord(state, next);
+    return Object.freeze({ attemptedAt: state.executionAttemptedAt, argvHash: state.executionArgvHash });
+  });
 }
 
 export function requirePinnedCloseExecutionReadiness(readiness, { wallet, tokenId, sharesRaw }) {
@@ -1774,7 +2350,12 @@ function safeStatePath(value, kind, stateDirectory = journalDirectory) {
       ? /^(?:open|close)-[0-9a-f]{64}\.lock\.json$/.test(name)
       : kind === "reservation lock"
         ? /^take-profit-[0-9a-f]{64}\.lock\.json$/.test(name)
-        : name === "polymarket-execution.lock.json";
+        : kind === "lock"
+          ? name === "polymarket-execution.lock.json" ||
+            name === releaseLockBasename ||
+            /^(?:open|close)-[0-9a-f]{64}\.lock\.json$/.test(name) ||
+            /^take-profit-[0-9a-f]{64}\.lock\.json$/.test(name)
+          : name === "polymarket-execution.lock.json";
   if (!valid) {
     throw Object.assign(new Error(`${kind} path is not a recognized Conviction state file`), {
       code: "unsafe_state_path",
@@ -1811,8 +2392,10 @@ export async function verifyJournalLockOwnership(
     }
     const file = safeStatePath(state[field], kind, stateDirectory);
     let lock;
+    let lockText;
     try {
-      lock = JSON.parse(await readFile(file, "utf8"));
+      lockText = await readFile(file, "utf8");
+      lock = JSON.parse(lockText);
       await ownerOnlyStateFile(file, kind);
     } catch (error) {
       if (error?.code === "ENOENT") {
@@ -1824,11 +2407,13 @@ export async function verifyJournalLockOwnership(
         checked.push({ field, file, missing: true });
         continue;
       }
+      if (String(error?.code || "").startsWith("unsafe_state_")) throw error;
       throw Object.assign(new Error(`${kind} cannot be verified before release`), {
         code: "lock_ownership_mismatch",
       });
     }
     const replayKind = basename(file).startsWith("open-") ? "open" : "close";
+    const lockHash = sha256(lock);
     const owned = field === "replayLockPath"
       ? HASH_RE.test(String(state.replayKey || "")) &&
         basename(file) === `${replayKind}-${String(state.replayKey).slice(2)}.lock.json` &&
@@ -1839,15 +2424,32 @@ export async function verifyJournalLockOwnership(
           basename(file) === `take-profit-${String(state.replayKey).slice(2)}.lock.json` &&
           lock?.version === "conviction-take-profit-reservation-v1" &&
           lock?.replayKey === state.replayKey && lock?.journalPath === journal
-        : basename(file) === "polymarket-execution.lock.json" &&
-          lock?.version === "conviction-polymarket-execution-lock-v1" &&
-          lock?.journalPath === journal;
+        : basename(file) === "polymarket-execution.lock.json" && lock?.journalPath === journal && (
+          lock?.version === "conviction-polymarket-execution-lock-v2"
+            ? lock?.attachmentRequired === true && UUID_RE.test(String(lock?.generation || "")) &&
+              EXECUTION_LOCK_PURPOSES.has(lock?.purpose) && HASH_RE.test(String(lock?.sourceJournalHash || "")) &&
+              Number.isSafeInteger(lock?.sourceJournalRevision) && lock.sourceJournalRevision >= 0 &&
+              Number.isFinite(Date.parse(String(lock?.claimedAt || ""))) &&
+              new Date(Date.parse(lock.claimedAt)).toISOString() === lock.claimedAt &&
+              Number.isFinite(Date.parse(String(lock?.recoveryNotBefore || ""))) &&
+              new Date(Date.parse(lock.recoveryNotBefore)).toISOString() === lock.recoveryNotBefore &&
+              Date.parse(lock.claimedAt) < Date.parse(lock.recoveryNotBefore) &&
+              journalRevision(state) > lock.sourceJournalRevision &&
+              state.executionLockGeneration === lock.generation &&
+              state.executionLockHash === lockHash && state.executionLockPurpose === lock.purpose &&
+              state.executionLockRecoveryNotBefore === lock.recoveryNotBefore
+            : lock?.version === "conviction-polymarket-execution-lock-v1" &&
+              state.executionLockGeneration == null && state.executionLockHash == null &&
+              state.executionLockPurpose == null && state.executionLockRecoveryNotBefore == null
+        );
     if (!owned) {
       throw Object.assign(new Error(`${kind} belongs to another journey`), {
         code: "lock_ownership_mismatch",
       });
     }
-    checked.push({ field, file, missing: false, lockHash: sha256(lock) });
+    const item = { field, file, missing: false, lockHash };
+    Object.defineProperty(item, "lockText", { value: lockText, enumerable: false });
+    checked.push(item);
   }
 
   return checked;
@@ -1880,10 +2482,16 @@ async function releaseReconciledLocksLocked(
     beforeUnlink,
     afterUnlink,
     beforeGuardRelease,
+    durableGuardPublishImpl = writeDurableAtomicFile,
     statImpl = stat,
     mutexLease,
   } = {},
 ) {
+  if (typeof mutexLease?.unlinkExact !== "function") {
+    throw Object.assign(new Error("Lock release requires its kernel-held exact-unlink capability"), {
+      code: "state_release_mutex_lost",
+    });
+  }
   mutexLease?.assertAlive();
   const canonicalJournal = safeStatePath(journal, "journal", stateDirectory);
   await ownerOnlyStateFile(canonicalJournal, "Reconciliation journal", { statImpl });
@@ -1965,6 +2573,14 @@ async function releaseReconciledLocksLocked(
           code: "state_release_guard_mismatch",
         });
       }
+      if (field === "executionLockPath" && (
+        next.executionLockGeneration != null || next.executionLockHash != null ||
+        next.executionLockPurpose != null || next.executionLockRecoveryNotBefore != null
+      )) {
+        throw Object.assign(new Error("Crash target retains part of a released execution-lock binding"), {
+          code: "state_release_guard_mismatch",
+        });
+      }
     }
     guardedLockHashes = structuredClone(resumable.guard.lockHashes);
     for (const item of preparedLocks) {
@@ -1988,6 +2604,10 @@ async function releaseReconciledLocksLocked(
       if (field === "executionLockPath") {
         next.executionLockReleasedAt = releasedAt;
         next.executionLockReleaseError = null;
+        next.executionLockGeneration = null;
+        next.executionLockHash = null;
+        next.executionLockPurpose = null;
+        next.executionLockRecoveryNotBefore = null;
       } else if (field === "replayLockPath") {
         next.replayLockReleasedAt = releasedAt;
         next.replayLockReleaseError = null;
@@ -2021,6 +2641,8 @@ async function releaseReconciledLocksLocked(
     now: releaseNow,
     statImpl,
     assertMutexAlive: () => mutexLease?.assertAlive(),
+    unlinkExact: (file, expectedText) => mutexLease?.unlinkExact(file, expectedText),
+    durablePublishImpl: durableGuardPublishImpl,
   });
   let destructive = false;
   try {
@@ -2051,7 +2673,7 @@ async function releaseReconciledLocksLocked(
     }
     await beforeUnlink?.(Object.freeze(checked.map((item) => Object.freeze({ ...item }))));
     const released = [];
-    for (const { field, file, missing, lockHash } of checked) {
+    for (const { field, file, missing, lockHash, lockText } of checked) {
       released.push(file);
       if (missing) {
         destructive = true;
@@ -2076,8 +2698,8 @@ async function releaseReconciledLocksLocked(
         });
       }
       destructive = true;
+      await mutexLease?.unlinkExact(file, lockText);
       mutexLease?.assertAlive();
-      await unlinkImpl(file);
     }
     await afterUnlink?.(Object.freeze([...released]));
     mutexLease?.assertAlive();
@@ -2119,6 +2741,75 @@ async function releaseReconciledLocksLocked(
   }
 }
 
+async function recoverKnownUnstartedOpenExecution(
+  state,
+  {
+    journal,
+    stateDirectory = journalDirectory,
+    errorCode = "execution_blocked_before_launch",
+    now = Date.now(),
+    releaseLocks = releaseReconciledLocks,
+    writeState = writeReconciliationJournal,
+  } = {},
+) {
+  const consent = asObject(state?.tradeConsent);
+  const argvConsistent = state?.executionArgv == null && state?.executionArgvHash == null || (
+    Array.isArray(state?.executionArgv) && state.executionArgv.length > 0 &&
+    HASH_RE.test(String(state?.executionArgvHash || "")) && sha256(state.executionArgv) === state.executionArgvHash &&
+    consent?.executionArgvHash === state.executionArgvHash
+  );
+  if (
+    state?.mode !== "open" || state?.reconciliationRequired !== true ||
+    !new Set(["execution_lock_acquired", "execution_attempted", "execution_blocked_before_launch"]).has(state?.stage) ||
+    !consent || !HASH_RE.test(String(state?.replayKey || "")) || !state?.replayLockPath ||
+    !state?.executionLockPath || state?.executionLockPurpose !== "OPEN_PLACE" ||
+    state?.executionLockRecoveryNotBefore !== consent.expiresAt || !argvConsistent ||
+    state?.liveResult != null || state?.orderId != null || state?.settlementTx != null
+  ) {
+    throw Object.assign(new Error("OPEN is not a known-unstarted in-process checkpoint"), {
+      code: "unsafe_prelaunch_recovery",
+    });
+  }
+  await verifyJournalLockOwnership(state, {
+    stateDirectory,
+    journal,
+    fields: ["replayLockPath", "executionLockPath"],
+    requirePresent: true,
+  });
+  const releasedLocks = await releaseLocks(state, {
+    stateDirectory,
+    journal,
+    fields: ["executionLockPath"],
+    writeState,
+    now,
+    transitionId: "open-known-unstarted-recovery-v1",
+    transition: (next, { releasedAt }) => {
+      next.stage = "execution_blocked_before_launch";
+      next.executionArgv = null;
+      next.executionArgvHash = null;
+      next.executionAttemptedAt = null;
+      next.reconciliationRequired = true;
+      next.executionBlockedBeforeLaunch = {
+        code: String(errorCode || "execution_blocked_before_launch"),
+        at: releasedAt,
+        liveProcessStarted: false,
+        replayLockRetained: true,
+      };
+    },
+  });
+  if (releasedLocks.length !== 1 || state.executionLockPath) {
+    throw Object.assign(new Error("OPEN execution lock was not released exactly once"), {
+      code: "execution_lock_release_failed",
+    });
+  }
+  return Object.freeze({
+    ok: true,
+    status: state.stage,
+    replayLockRetained: true,
+    releasedLocks: Object.freeze(releasedLocks),
+  });
+}
+
 /**
  * Restore a paid CLOSE to its sole resumable checkpoint when every failure is
  * known to have happened before the live child process started. The replay
@@ -2136,11 +2827,22 @@ export async function recoverKnownUnstartedCloseExecution(
     writeState = writeReconciliationJournal,
   } = {},
 ) {
+  const consent = asObject(state?.tradeConsent);
+  const argvConsistent = state?.executionArgv == null && state?.executionArgvHash == null || (
+    Array.isArray(state?.executionArgv) && state.executionArgv.length > 0 &&
+    HASH_RE.test(String(state?.executionArgvHash || "")) && sha256(state.executionArgv) === state.executionArgvHash &&
+    consent?.executionArgvHash === state.executionArgvHash
+  );
   if (
     state?.mode !== "close" || state?.reconciliationRequired !== true ||
-    !state?.tradeConsent || !HASH_RE.test(String(state.replayKey || "")) ||
+    !new Set(["execution_lock_acquired", "execution_attempted", "execution_blocked_before_launch"]).has(state?.stage) ||
+    !consent || !HASH_RE.test(String(state.replayKey || "")) ||
     !state.replayLockPath || !state.executionLockPath ||
-    state.liveResult || state.orderId || state.settlementTx
+    state.executionLockPurpose !== "CLOSE_PLACE" ||
+    state.executionLockRecoveryNotBefore !== consent.expiresAt ||
+    !UUID_RE.test(String(state.executionLockGeneration || "")) ||
+    !HASH_RE.test(String(state.executionLockHash || "")) || !argvConsistent ||
+    state.liveResult != null || state.orderId != null || state.settlementTx != null
   ) {
     throw Object.assign(new Error("CLOSE is not a known-unstarted resumable checkpoint"), {
       code: "unsafe_prelaunch_recovery",
@@ -2155,6 +2857,10 @@ export async function recoverKnownUnstartedCloseExecution(
     executionArgvHash: null,
     executionAttemptedAt: null,
     executionLockPath: null,
+    executionLockGeneration: null,
+    executionLockHash: null,
+    executionLockPurpose: null,
+    executionLockRecoveryNotBefore: null,
   }, journal);
   await verifyJournalLockOwnership(state, {
     stateDirectory,
@@ -2267,6 +2973,7 @@ export async function reconcileOpenJournal({
   fetchExactOrderImpl = fetchExactOrder,
   verifyTerminalOrderImpl = verifyTerminalZeroFillOrder,
   authorizationStateImpl = fetchEip3009AuthorizationState,
+  reconcileUnattachedExecutionLockImpl = reconcileUnattachedExecutionLock,
   stateDirectory = journalDirectory,
 } = {}) {
   const journal = safeStatePath(file, "journal", stateDirectory);
@@ -2342,7 +3049,12 @@ export async function reconcileOpenJournal({
 
   if (!state.executionArgvHash && state.paidCard) {
     if (
-      !new Set(["payment_verified", "trade_confirmed", "execution_lock_acquired"]).has(state.stage) ||
+      !new Set([
+        "payment_verified",
+        "trade_confirmed",
+        "execution_lock_acquired",
+        "execution_blocked_before_launch",
+      ]).has(state.stage) ||
       !exactStoredServicePayment(state, POSITION_CARD_SERVICE)
     ) {
       return {
@@ -2377,6 +3089,31 @@ export async function reconcileOpenJournal({
       fields: ["replayLockPath"],
       requirePresent: true,
     });
+    if (state.executionLockPath) {
+      requireExactAttachedExecutionA0(state, {
+        mode: "open",
+        expectedPurpose: "OPEN_PLACE",
+        recoveryNotBefore: validated.expiresAt,
+      });
+      await verifyJournalLockOwnership(state, {
+        stateDirectory,
+        journal,
+        fields: ["executionLockPath"],
+        requirePresent: true,
+      });
+    } else {
+      requireExactNoLockExecutionA0(state, { journal, mode: "open", validated });
+    }
+    let unattachedExecutionLock = Object.freeze({ released: false, path: null, generationHash: null });
+    if (state.stage === "trade_confirmed" && state.executionLockPath == null) {
+      unattachedExecutionLock = await reconcileUnattachedExecutionLockImpl({
+        file: join(stateDirectory, basename(executionLockFile)),
+        journal,
+        directory: stateDirectory,
+        expectedJournalHash: sha256(state),
+        expectedPurposes: ["OPEN_PLACE"],
+      });
+    }
     if (Date.parse(validated.expiresAt) > now) {
       return {
         ok: true,
@@ -2384,6 +3121,7 @@ export async function reconcileOpenJournal({
         expiresAt: validated.expiresAt,
         reconciliationRequired: true,
         journalPath: journal,
+        unattachedExecutionLockReleased: unattachedExecutionLock.released,
       };
     }
     const releasedLocks = await releaseReconciledLocks(state, {
@@ -2404,7 +3142,10 @@ export async function reconcileOpenJournal({
       status: state.stage,
       reconciliationRequired: false,
       journalPath: journal,
-      releasedLocks,
+      releasedLocks: unattachedExecutionLock.released
+        ? [unattachedExecutionLock.path, ...releasedLocks]
+        : releasedLocks,
+      unattachedExecutionLockReleased: unattachedExecutionLock.released,
     };
   }
 
@@ -2558,6 +3299,7 @@ export async function reconcileCloseJournal({
   fetchExactOrderImpl = fetchExactOrder,
   verifyTerminalOrderImpl = verifyTerminalZeroFillOrder,
   authorizationStateImpl = fetchEip3009AuthorizationState,
+  reconcileUnattachedExecutionLockImpl = reconcileUnattachedExecutionLock,
   stateDirectory = journalDirectory,
 } = {}) {
   const journal = safeStatePath(file, "journal", stateDirectory);
@@ -2570,6 +3312,7 @@ export async function reconcileCloseJournal({
   let proof;
   let terminal;
   let reconciledAuthorizationState;
+  let unattachedExecutionLock = Object.freeze({ released: false, path: null, generationHash: null });
   if (HASH_RE.test(String(state.settlementTx || "")) && HASH_RE.test(String(state.orderId || "")) && state.paidCard) {
     proof = await verifyClose(state.settlementTx, {
       intent: state.paidCard.intent,
@@ -2659,7 +3402,13 @@ export async function reconcileCloseJournal({
     reason = "authenticated_terminal_zero_fill";
   } else if (!state.executionArgvHash && state.paidCard) {
     if (
-      !new Set(["payment_verified", "trade_confirmed", "execution_lock_acquired"]).has(state.stage) ||
+      !new Set([
+        "payment_verified",
+        "trade_confirmed",
+        "execution_lock_acquired",
+        "resume_execution_lock_acquired",
+        "execution_blocked_before_launch",
+      ]).has(state.stage) ||
       !exactStoredServicePayment(state, POSITION_MANAGER_SERVICE)
     ) {
       return {
@@ -2676,6 +3425,70 @@ export async function reconcileCloseJournal({
       allowExpired: true,
       now,
     });
+    if (state.stage === "payment_verified" && state.executionLockPath) {
+      throw Object.assign(new Error("Unconfirmed CLOSE payment cannot own an execution lock"), {
+        code: "invalid_unstarted_checkpoint",
+      });
+    }
+    if (state.stage === "payment_verified") {
+      requireExactNoLockExecutionA0(state, { journal, mode: "close", validated: card });
+    }
+    if (state.stage !== "payment_verified") {
+      const request = resumeRequest(state);
+      bindCloseCardToRequest(card, {
+        market: {
+          conditionId: card.intent?.market?.conditionId,
+          outcomeTokenId: card.tokenId,
+        },
+        source: {
+          ...card.intent?.source,
+          wallet: state.buyerWallet,
+          marketConditionId: card.intent?.market?.conditionId,
+          outcome: card.outcome,
+          outcomeTokenId: card.tokenId,
+        },
+      }, request, state.buyerWallet);
+      const expectedReplayKey = closeReplayKey({ request, sellerWallet: state.buyerWallet });
+      if (state.replayKey !== expectedReplayKey) {
+        throw Object.assign(new Error("Paid CLOSE replay identity differs from its confirmed request"), {
+          code: "invalid_replay_key",
+        });
+      }
+      await verifyJournalLockOwnership(state, {
+        stateDirectory,
+        journal,
+        fields: ["replayLockPath"],
+        requirePresent: true,
+      });
+      if (state.executionLockPath) {
+        const expectedPurpose = state.stage === "resume_execution_lock_acquired"
+          ? "CLOSE_RESUME"
+          : "CLOSE_PLACE";
+        requireExactAttachedExecutionA0(state, {
+          mode: "close",
+          expectedPurpose,
+          recoveryNotBefore: card.expiresAt,
+        });
+        await verifyJournalLockOwnership(state, {
+          stateDirectory,
+          journal,
+          fields: ["executionLockPath"],
+          requirePresent: true,
+        });
+      } else {
+        requireExactNoLockExecutionA0(state, { journal, mode: "close", validated: card });
+      }
+    }
+    if (state.stage === "trade_confirmed" && state.executionLockPath == null) {
+      validatePersistedUnattachedTradeConsent(state, { journal, mode: "close", validated: card });
+      unattachedExecutionLock = await reconcileUnattachedExecutionLockImpl({
+        file: join(stateDirectory, basename(executionLockFile)),
+        journal,
+        directory: stateDirectory,
+        expectedJournalHash: sha256(state),
+        expectedPurposes: ["CLOSE_PLACE", "CLOSE_RESUME"],
+      });
+    }
     if (Date.parse(card.expiresAt) > now) {
       return {
         ok: true,
@@ -2683,6 +3496,7 @@ export async function reconcileCloseJournal({
         expiresAt: card.expiresAt,
         reconciliationRequired: true,
         journalPath: journal,
+        unattachedExecutionLockReleased: unattachedExecutionLock.released,
       };
     }
     reason = "expired_without_execution";
@@ -2772,7 +3586,10 @@ export async function reconcileCloseJournal({
     status: state.stage,
     reconciliationRequired: false,
     journalPath: journal,
-    releasedLocks,
+    releasedLocks: unattachedExecutionLock.released
+      ? [unattachedExecutionLock.path, ...releasedLocks]
+      : releasedLocks,
+    unattachedExecutionLockReleased: unattachedExecutionLock.released,
     ...(proof ? {
       transactionHash: proof.closeProof.transactionHash,
       closeProofHash: proof.closeProofHash,
@@ -2914,7 +3731,10 @@ function requireExactResumeCheckpoint(state, journal) {
     "Only an exact paid-and-confirmed pre-execution CLOSE checkpoint can resume",
   );
   resumeInvariant(
-    !state.executionArgv && !state.executionArgvHash && !state.executionLockPath &&
+    !state.executionArgv && !state.executionArgvHash && state.executionAttemptedAt == null &&
+      !state.executionLockPath && state.executionLockGeneration == null &&
+      state.executionLockHash == null && state.executionLockPurpose == null &&
+      state.executionLockRecoveryNotBefore == null &&
       !state.liveResult && !state.orderId && !state.settlementTx &&
       !state.closeProofHash && !state.closePassportHash,
     "ambiguous_execution",
@@ -2941,6 +3761,122 @@ function requireExactResumeCheckpoint(state, journal) {
     "invalid_resume_checkpoint",
     "Paid CLOSE seller is invalid or non-canonical",
   );
+}
+
+function validatePersistedUnattachedTradeConsent(state, {
+  journal,
+  mode,
+  validated,
+  allowedStages = ["trade_confirmed"],
+} = {}) {
+  const consent = asObject(state?.tradeConsent);
+  const paymentProof = asObject(state?.paymentProof);
+  const confirmationAt = Date.parse(String(state?.tradeConfirmedAt || ""));
+  const expiresAt = Date.parse(String(validated?.expiresAt || ""));
+  const paidAt = Number(BigInt(paymentProof?.blockTimestamp ?? -1) * 1_000n);
+  const expectedConsentVersion = mode === "close"
+    ? "conviction-close-trade-consent-v1"
+    : "conviction-open-trade-consent-v1";
+  const executionArgvHash = sha256(validated?.executionCard?.argv);
+  if (
+    state?.mode !== mode || !new Set(allowedStages).has(state?.stage) ||
+    resolve(String(state?.journalPath || "")) !== journal || state?.reconciliationRequired !== true ||
+    state?.executionLockPath != null || state?.executionLockGeneration != null ||
+    state?.executionLockHash != null || state?.executionLockPurpose != null ||
+    state?.executionLockRecoveryNotBefore != null ||
+    state?.executionArgv != null || state?.executionArgvHash != null ||
+    state?.executionAttemptedAt != null || state?.executionAttempted === true ||
+    state?.liveResult != null || state?.orderId != null || state?.settlementTx != null ||
+    state?.positionProofHash != null || state?.positionPassportHash != null ||
+    state?.terminalZeroFillProof != null || state?.terminalZeroFillProofHash != null ||
+    state?.closeProofHash != null || state?.closePassportHash != null ||
+    !asObject(state?.paidCard) || !HASH_RE.test(String(state?.intentHash || "")) ||
+    state.intentHash !== validated?.intentHash || !Array.isArray(validated?.executionCard?.argv) ||
+    validated.executionCard.argv.length === 0 || !ADDRESS_RE.test(String(state?.paymentPayer || "")) ||
+    state.paymentPayer !== String(state.paymentPayer).toLowerCase() ||
+    !ADDRESS_RE.test(String(state?.buyerWallet || "")) || state.buyerWallet !== validated?.wallet ||
+    consent?.version !== expectedConsentVersion || consent?.intentHash !== validated.intentHash ||
+    consent?.executionArgvHash !== executionArgvHash || consent?.paymentTx !== state.paymentTx ||
+    consent?.replayKey !== state.replayKey || consent?.confirmedAt !== state.tradeConfirmedAt ||
+    consent?.expiresAt !== validated.expiresAt ||
+    !Number.isSafeInteger(paidAt) || !Number.isFinite(confirmationAt) || !Number.isFinite(expiresAt) ||
+    confirmationAt < paidAt || confirmationAt >= expiresAt
+  ) {
+    throw Object.assign(new Error(`${String(mode || "trade").toUpperCase()} unattached-lock checkpoint is incomplete or inconsistent`), {
+      code: "unsafe_unattached_lock_recovery",
+    });
+  }
+  return Object.freeze({ confirmationAt, expiresAt, paidAt, executionArgvHash });
+}
+
+function requireExactNoLockExecutionA0(state, { journal, mode, validated } = {}) {
+  const noBinding = state?.executionLockPath == null && state?.executionLockGeneration == null &&
+    state?.executionLockHash == null && state?.executionLockPurpose == null &&
+    state?.executionLockRecoveryNotBefore == null;
+  const noAttemptOrProof = state?.executionArgv == null && state?.executionArgvHash == null &&
+    state?.executionAttemptedAt == null && state?.executionAttempted !== true &&
+    state?.liveResult == null && state?.orderId == null && state?.settlementTx == null &&
+    state?.positionProofHash == null && state?.positionPassportHash == null &&
+    state?.terminalZeroFillProof == null && state?.terminalZeroFillProofHash == null &&
+    state?.closeProofHash == null && state?.closePassportHash == null;
+  if (!noBinding || !noAttemptOrProof || state?.mode !== mode || state?.reconciliationRequired !== true) {
+    throw Object.assign(new Error(`${String(mode || "execution").toUpperCase()} no-lock checkpoint is not exact A0`), {
+      code: "invalid_unstarted_checkpoint",
+    });
+  }
+  if (state.stage === "payment_verified") {
+    if (state?.tradeConsent != null || state?.tradeConfirmedAt != null) {
+      throw Object.assign(new Error(`${mode.toUpperCase()} unconfirmed checkpoint contains trade consent`), {
+        code: "invalid_unstarted_checkpoint",
+      });
+    }
+    return;
+  }
+  const allowedStages = mode === "open"
+    ? ["trade_confirmed", "execution_blocked_before_launch"]
+    : ["trade_confirmed"];
+  validatePersistedUnattachedTradeConsent(state, { journal, mode, validated, allowedStages });
+  if (state.stage === "execution_blocked_before_launch" && (
+    state?.executionBlockedBeforeLaunch?.liveProcessStarted !== false ||
+    state?.executionBlockedBeforeLaunch?.replayLockRetained !== true ||
+    !Number.isFinite(Date.parse(String(state?.executionBlockedBeforeLaunch?.at || "")))
+  )) {
+    throw Object.assign(new Error("OPEN prelaunch rollback marker is incomplete"), {
+      code: "invalid_unstarted_checkpoint",
+    });
+  }
+}
+
+function requireExactAttachedExecutionA0(state, {
+  mode,
+  expectedPurpose,
+  recoveryNotBefore,
+} = {}) {
+  const exactStage = expectedPurpose === "CLOSE_RESUME"
+    ? state?.stage === "resume_execution_lock_acquired"
+    : state?.stage === "execution_lock_acquired";
+  const noAttemptOrProof = state?.executionArgv == null && state?.executionArgvHash == null &&
+    state?.executionAttemptedAt == null && state?.executionAttempted !== true &&
+    state?.liveResult == null && state?.orderId == null && state?.settlementTx == null &&
+    state?.positionProofHash == null && state?.positionPassportHash == null &&
+    state?.terminalZeroFillProof == null && state?.terminalZeroFillProofHash == null &&
+    state?.closeProofHash == null && state?.closePassportHash == null;
+  const legacyBinding = state?.executionLockGeneration == null && state?.executionLockHash == null &&
+    state?.executionLockPurpose == null && state?.executionLockRecoveryNotBefore == null;
+  const v2Binding = (
+    state.executionLockPurpose === expectedPurpose &&
+    state.executionLockRecoveryNotBefore === recoveryNotBefore &&
+    UUID_RE.test(String(state.executionLockGeneration || "")) &&
+    HASH_RE.test(String(state.executionLockHash || ""))
+  );
+  if (
+    state?.mode !== mode || !exactStage || state?.reconciliationRequired !== true ||
+    !state?.executionLockPath || !noAttemptOrProof || (!legacyBinding && !v2Binding)
+  ) {
+    throw Object.assign(new Error(`${String(mode || "execution").toUpperCase()} attached lock is not exact A0`), {
+      code: "invalid_unstarted_checkpoint",
+    });
+  }
 }
 
 /**
@@ -3024,6 +3960,9 @@ export async function resumePaidCloseJournal({
       directory: stateDirectory,
       file: executionFile,
       state,
+      purpose: "CLOSE_RESUME",
+      recoveryNotBefore: state.tradeConsent.expiresAt,
+      now,
       writeState: writeReconciliationJournal,
       transition: (next) => {
         next.stage = "resume_execution_lock_acquired";
@@ -3088,12 +4027,16 @@ export async function resumePaidCloseJournal({
     // The durable marker is written before the first possibly-live call. A
     // final pre-spawn refusal clears it; once onStart fires, every failure is
     // ambiguous and is never auto-retried.
-    state.stage = "execution_attempted";
-    state.executionArgv = [...validated.executionCard.argv];
-    state.executionArgvHash = consent.argvHash;
-    state.executionAttemptedAt = new Date(now()).toISOString();
-    state.reconciliationRequired = true;
-    await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
+    await markExecutionAttempted(state, {
+      journal,
+      stateDirectory,
+      purpose: "CLOSE_RESUME",
+      recoveryNotBefore: state.tradeConsent.expiresAt,
+      argv: validated.executionCard.argv,
+      now,
+      writeState: writeReconciliationJournal,
+    });
+    resumeInvariant(state.executionArgvHash === consent.argvHash, "trade_consent_mismatch", "Durable CLOSE attempt differs from consent");
     validated = await adapters.validateCloseCard(state.paidCard, {
       trustedIssuers,
       now: now(),
@@ -3184,12 +4127,16 @@ export async function resumePaidCloseJournal({
       },
     };
   } catch (error) {
+    if (error?.preserveSourceJournal === true) throw error;
     if (lockClaimed && !lockStateVerified && !liveAttempted) {
       try {
-        await releaseUnattachedExecutionLock({
-          file: state.executionLockPath,
+        const durableUnattached = JSON.parse(await readFile(journal, "utf8"));
+        await reconcileUnattachedExecutionLock({
+          file: state.executionLockPath || executionFile,
           journal,
           directory: stateDirectory,
+          expectedJournalHash: sha256(durableUnattached),
+          expectedPurposes: ["CLOSE_RESUME"],
         });
         lockClaimed = false;
         state.executionLockPath = null;
@@ -3858,10 +4805,13 @@ async function main() {
       await claimExecutionLock({
         journal: journalPath,
         state: checkpoint,
+        purpose: closeMode ? "CLOSE_PLACE" : "OPEN_PLACE",
+        recoveryNotBefore: checkpoint.tradeConsent.expiresAt,
         transition: (next) => {
           next.stage = "execution_lock_acquired";
         },
       });
+      let preserveExecutionSource = false;
       try {
         // Exact CLOB recovery requires the accepted order to strictly postdate
         // the buyer's confirmation second. Waiting here keeps the temporal
@@ -3959,11 +4909,15 @@ async function main() {
           }
         }
 
-        checkpoint.stage = "execution_attempted";
-        checkpoint.reconciliationRequired = true;
-        checkpoint.executionArgv = [...argv];
-        checkpoint.executionArgvHash = sha256(argv);
-        await writeReconciliationJournal(checkpoint);
+        await markExecutionAttempted(checkpoint, {
+          journal: journalPath,
+          stateDirectory: journalDirectory,
+          purpose: closeMode ? "CLOSE_PLACE" : "OPEN_PLACE",
+          recoveryNotBefore: checkpoint.tradeConsent.expiresAt,
+          argv,
+          now: Date.now,
+          writeState: writeReconciliationJournal,
+        });
         let result;
         try {
           const launchCard = closeMode
@@ -4000,19 +4954,27 @@ async function main() {
         await writeReconciliationJournal(checkpoint);
         return result;
       } catch (error) {
-        if (closeMode && !executionAttempted) {
+        preserveExecutionSource = error?.preserveSourceJournal === true;
+        if (!preserveExecutionSource && !executionAttempted) {
           try {
-            await recoverKnownUnstartedCloseExecution(checkpoint, {
-              journal: journalPath,
-              errorCode: error?.code,
-            });
+            if (closeMode) {
+              await recoverKnownUnstartedCloseExecution(checkpoint, {
+                journal: journalPath,
+                errorCode: error?.code,
+              });
+            } else {
+              await recoverKnownUnstartedOpenExecution(checkpoint, {
+                journal: journalPath,
+                errorCode: error?.code,
+              });
+            }
           } catch (recoveryError) {
             error.details = {
               ...(error?.details && typeof error.details === "object" ? error.details : {}),
               prelaunchRecoveryError: recoveryError?.code || "prelaunch_recovery_failed",
             };
           }
-        } else if (executionAttempted && error?.details && typeof error.details === "object") {
+        } else if (!preserveExecutionSource && executionAttempted && error?.details && typeof error.details === "object") {
           const candidate = error.details;
           const data = candidate?.data || candidate;
           if (HASH_RE.test(String(data?.order_id || ""))) {
@@ -4028,12 +4990,14 @@ async function main() {
         }
         throw error;
       } finally {
-        await settleExecutionLock(checkpoint, {
-          liveAttempted: executionAttempted,
-          proofVerified: false,
-          transitionId: "buyer-prelaunch-execution-release-v1",
-        });
-        await writeReconciliationJournal(checkpoint);
+        if (!preserveExecutionSource) {
+          await settleExecutionLock(checkpoint, {
+            liveAttempted: executionAttempted,
+            proofVerified: false,
+            transitionId: "buyer-prelaunch-execution-release-v1",
+          });
+          await writeReconciliationJournal(checkpoint);
+        }
       }
     },
     buildReceiptRequest: async (card, result, validationOptions) => buildReceiptRequest(card, result, validationOptions),
@@ -4124,7 +5088,10 @@ if (isMain()) {
     const stateCommand = process.argv[2] === "reconcile-open" ||
       process.argv[2] === "reconcile-close" || process.argv[2] === "resume-close";
     const persistCheckpoint = !stateCommand && shouldPersistFailureCheckpoint(checkpoint);
-    if (persistCheckpoint && error?.releaseGuardRetained !== true) {
+    if (
+      persistCheckpoint && error?.releaseGuardRetained !== true &&
+      error?.preserveSourceJournal !== true
+    ) {
       checkpoint.reconciliationRequired = Boolean(
         executionAttempted ||
         (checkpoint.replayLockPath && checkpoint.stage !== "complete"),
