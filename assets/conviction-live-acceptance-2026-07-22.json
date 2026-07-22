@@ -1,0 +1,102 @@
+{
+  "version": "conviction-live-acceptance-pack-v1",
+  "productVersion": "0.4.5",
+  "releaseCommit": "9bbf68df66e0b60851fa170165d1f45373967d3a",
+  "origin": "https://conviction-bay.vercel.app",
+  "date": "2026-07-22",
+  "label": "controlled-house-acceptance-not-external-traction",
+  "production": {
+    "openFee": "0.05 USD₮0 on X Layer",
+    "managerFee": "0.10 USD₮0 on X Layer",
+    "openCloseExecution": "native OKX Agentic Wallet with official polymarket-plugin v0.7.0",
+    "takeProfitExecution": "digest-pinned Conviction fallback",
+    "custody": "buyer wallet signs and holds every position"
+  },
+  "gates": {
+    "OPEN": {
+      "verdict": "PASS",
+      "reportProvenance": "reconstructed from the canonical owner-only journal and public chain evidence after the convenience report was overwritten",
+      "paymentTransaction": "0x1b69f93f01931c383d0824d9b654ad20ea76394eb85d879698ce2ba54fda5f19",
+      "polygonSettlementTransaction": "0xf54b4b0deb2f0e53e0c01688eb5a66277177e96af2913d03cbf84d90d7da7313",
+      "orderId": "0xff6a71f0733f50947f4d2144122e7fd45e746f5e0e2cf31abee7a0543b320727",
+      "buyerWallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+      "outcome": "YES",
+      "shares": "10",
+      "totalDebit": "1.1 pUSD",
+      "maxPrice": "0.11",
+      "positionProofHash": "0x7048783191aa7128c283c2acae0f3c2c37b2b34d29e6c31618b2211e1874ea98",
+      "independentlyObservedSeconds": 69.0,
+      "checks": {
+        "buyerSeatPaymentVerified": true,
+        "exactlyOneTradeConfirmation": true,
+        "buyerWalletFillVerified": true,
+        "sameJourneyProofReturned": true,
+        "underTwoMinutes": true,
+        "substitutedTokenRejectedWithZeroOrders": true,
+        "crossedCapRejectedWithZeroOrders": true,
+        "substitutedWalletRejectedWithZeroOrders": true
+      }
+    },
+    "CLOSE": {
+      "verdict": "PASS",
+      "reportProvenance": "original live gate report",
+      "paymentTransaction": "0xd1473733f1b53b9b5063d108d6d45f08753a26b91e6e90c19c371f1338637968",
+      "polygonSettlementTransaction": "0x2b751c3c72a9143c47446e3b6ade38f3581281e461c1b44856d905733e93ceaa",
+      "sourcePositionProofHash": "0x7048783191aa7128c283c2acae0f3c2c37b2b34d29e6c31618b2211e1874ea98",
+      "closePassportHash": "0xd377a96657389bc80115838504965cbdbf62b8448e91b079ccfc8c999ac6142a",
+      "localSeconds": 44.7,
+      "independentlyObservedSeconds": 49.2,
+      "checks": {
+        "buyerSeatPaymentVerified": true,
+        "exactlyOneTradeConfirmation": true,
+        "exactFokSellVerified": true,
+        "sameJourneyProofReturned": true,
+        "underTwoMinutes": true,
+        "substitutedTokenRejectedWithZeroOrders": true,
+        "rewrittenSharesRejectedWithZeroOrders": true,
+        "crossedFloorRejectedWithZeroOrders": true,
+        "substitutedSourceRejectedWithZeroOrders": true,
+        "expiredCardRejectedWithZeroOrders": true,
+        "paymentAloneCannotAuthorizeTrade": true
+      }
+    },
+    "TAKE_PROFIT": {
+      "verdict": "PASS",
+      "reportProvenance": "reconstructed from the canonical owner-only journal after the convenience report was overwritten",
+      "paymentTransaction": "0x12c9ac287cc813d843ccf958c5d236137da6f7aa9b0a52cb1bdd8f49a85fcda6",
+      "orderId": "0xc0832b1708d703c02b77e94525d804ca38da53f517a7902897fe38c7175c6d2f",
+      "intentHash": "0xb18617a46f2349c8eb46fa63afa6ef9674e5eca6e4d8a47c1ec37cd5ab3757d6",
+      "restingOrderProofHash": "0xde58901d5dd2f66f81c65bac263c3a0ccee2d7ff579642a371994b0b24536189",
+      "takeProfitPassportHash": "0xb441022d03ad32daeee1bb9edeaec7a94360893fdc765b2629cb71e45006f639",
+      "shares": "10",
+      "targetPrice": "0.12",
+      "localSeconds": 67.0,
+      "independentlyObservedSeconds": 70.5,
+      "terminalFollowUp": {
+        "status": "CANCELED",
+        "matchedSharesBefore": "0",
+        "matchedSharesAfter": "0",
+        "fillCancelRaceOccurred": false,
+        "orderTerminal": true
+      },
+      "checks": {
+        "buyerSeatPaymentVerified": true,
+        "exactlyOnePlacementConfirmation": true,
+        "postOnlyGtdOrderAuthenticated": true,
+        "sameJourneyArmedProofReturned": true,
+        "underTwoMinutes": true,
+        "substitutedTokenRejectedWithZeroOrders": true,
+        "crossedTargetRejectedWithZeroOrders": true,
+        "substitutedSourceRejectedWithZeroOrders": true,
+        "expiredCardRejectedWithZeroOrders": true,
+        "paymentAloneCannotAuthorizeOrder": true,
+        "lateReservationRejectedWithZeroOrders": true
+      }
+    }
+  },
+  "limitations": [
+    "These are controlled house tests, not external revenue, external traction, investment performance, or a market recommendation.",
+    "The OPEN and TAKE_PROFIT convenience reports were transparently reconstructed from canonical local journals and public chain evidence after later offline runs overwrote the convenience files.",
+    "A cold external-buyer run remains pending."
+  ]
+}

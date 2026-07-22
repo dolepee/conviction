@@ -29,7 +29,7 @@
   },
   "relationshipToPaidService": {
     "isPaidServiceOutput": false,
-    "explanation": "This file is a separate retrospective bounds check for one controlled house fill. The paid 0.05 USD₮0 service delivers only a fresh pre-execution position card.",
+    "explanation": "This historical file is a retrospective bounds check for one controlled house fill produced before the native execution release. For current OPEN, CLOSE, and TAKE_PROFIT acceptance evidence, see conviction-live-acceptance-2026-07-22.json.",
     "samplePaidOutput": "https://conviction-bay.vercel.app/assets/conviction-sample-position-card.json"
   },
   "summary": {
