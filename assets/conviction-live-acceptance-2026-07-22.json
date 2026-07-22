@@ -1,16 +1,23 @@
 {
-  "version": "conviction-live-acceptance-pack-v1",
-  "productVersion": "0.4.5",
-  "releaseCommit": "9bbf68df66e0b60851fa170165d1f45373967d3a",
+  "version": "conviction-live-acceptance-pack-v2",
+  "currentProductionVersion": "0.4.6",
+  "currentProductionReleaseTag": "v0.4.6",
   "origin": "https://conviction-bay.vercel.app",
   "date": "2026-07-22",
   "label": "controlled-house-acceptance-not-external-traction",
-  "production": {
+  "currentProduction": {
     "openFee": "0.05 USD₮0 on X Layer",
     "managerFee": "0.10 USD₮0 on X Layer",
     "openCloseExecution": "native OKX Agentic Wallet with official polymarket-plugin v0.7.0",
     "takeProfitExecution": "digest-pinned Conviction fallback",
     "custody": "buyer wallet signs and holds every position"
+  },
+  "evidenceExecution": {
+    "runtime": "repository-backed Conviction buyer orchestrator",
+    "timing": "all recorded gate transactions occurred before the v0.4.5 native OKX execution handoff merged",
+    "proves": "fresh buyer-seat x402 payment, signed bounds, separate trade consent, exact venue action, and same-journey independent proof",
+    "doesNotProve": "a cold external buyer or a live v0.4.5 native OKX handoff",
+    "nativeOkxHandoffLiveTested": false
   },
   "gates": {
     "OPEN": {
@@ -96,6 +103,8 @@
   },
   "limitations": [
     "These are controlled house tests, not external revenue, external traction, investment performance, or a market recommendation.",
+    "These gate transactions used the repository-backed buyer orchestrator and predate the v0.4.5 native OKX handoff; they must not be presented as native-path executions.",
+    "Published controlled OPEN settlements recorded zero on-chain venue fee. The nonzero-fee verification path is covered by deterministic and adversarial tests but remains unproven in a live settlement.",
     "The OPEN and TAKE_PROFIT convenience reports were transparently reconstructed from canonical local journals and public chain evidence after later offline runs overwrote the convenience files.",
     "A cold external-buyer run remains pending."
   ]

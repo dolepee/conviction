@@ -62,6 +62,7 @@ The full wire contract is in [`docs/SERVICE_CONTRACT.md`](docs/SERVICE_CONTRACT.
 Requires Node.js 22.x LTS and Python 3. Buyer-state claims, journal updates, and crash-safe lock releases use Python's standard `fcntl.flock` support to serialize independent local processes.
 
 ```sh
+npm ci
 npm run gate
 npx vercel dev
 ```
@@ -220,13 +221,15 @@ npm run gate
 
 The local release gate checks JavaScript and Python syntax, deterministic YES/NO OPEN/CLOSE/TAKE_PROFIT compilation, outcome-specific market resolution, server-computed exposure and proceeds, stale/price/liquidity/rounding refusal paths, source, intent, token, order, trade, and receipt substitution, exact x402 challenges, payment/trade-consent separation, post-only placement, authenticated initial order binding, lifecycle status, exact cancellation, aggregate Polygon fill verification, launch-surface markers, and A2A secret-refusal behavior. It runs Gates A, B, and C in offline mode, where adversarial mutations must fail with zero orders.
 
-Offline success is not live acceptance. On 2026-07-22, controlled house runs separately passed all three fresh live gates against production: OPEN paid `0.05 USD₮0`, filled exactly 10 YES in the buyer wallet, and returned the Polygon proof; CLOSE paid `0.10 USD₮0`, sold those exact 10 YES, and returned the Polygon proof; TAKE_PROFIT paid `0.10 USD₮0`, armed one exact zero-fill post-only GTD SELL with an authenticated order proof, and then canceled that exact order with no fill/cancel race. Each payment-to-proof path completed in under two minutes. These are acceptance proofs, not external traction or financial-performance claims.
+Offline success is not live acceptance. On 2026-07-22, controlled house runs separately passed all three fresh live gates against the then-production repository-backed buyer orchestrator: OPEN paid `0.05 USD₮0`, filled exactly 10 YES in the buyer wallet, and returned the Polygon proof; CLOSE paid `0.10 USD₮0`, sold those exact 10 YES, and returned the Polygon proof; TAKE_PROFIT paid `0.10 USD₮0`, armed one exact zero-fill post-only GTD SELL with an authenticated order proof, and then canceled that exact order with no fill/cancel race. Each payment-to-proof path completed in under two minutes. These transactions predate the v0.4.5 native OKX handoff and are not presented as native-path executions. They are acceptance proofs, not external traction or financial-performance claims.
 
 ## Operational boundary
 
 New Polymarket deposit-wallet setup currently grants max pUSD allowances and blanket ERC-1155 approvals to official Polymarket exchange contracts. Conviction discloses this before execution and recommends a dedicated low-balance wallet. The current official plugin has no revoke command.
 
 Polymarket V2 signs the token, principal, shares, and price but applies operator-set fees at match time. Conviction rechecks the current venue fee immediately before execution, reserves that fee in the displayed total, and verifies the actual settlement afterward. A reusable wallet may hold more than this order needs; that balance does not authorize another order, but the venue fee itself is not part of the V2 signature. Gas is separate.
+
+Published controlled OPEN settlements recorded zero on-chain venue fee. The nonzero-fee verification path is covered by deterministic and adversarial tests, but remains unproven in a live settlement.
 
 A CLOSE card is bound to a prior independently reverified OPEN proof, but that source proof is provenance rather than an on-chain lot identifier. It is not consumed by a close. Conviction therefore treats the fresh wallet balance and approval as the sale authority, rechecks both before submission, and verifies the exact outcome-token debit and net pUSD credit afterward.
 
@@ -236,13 +239,13 @@ Never send Conviction a seed phrase, private key, bearer token, CLOB credential,
 
 ## Status
 
-- Production runtime: [v0.4.5](https://github.com/dolepee/conviction/tree/v0.4.5) is deployed at `https://conviction-bay.vercel.app`; native OKX Agentic Wallet plus the official Plugin Store runtime is the no-Conviction-install OPEN/CLOSE path, while TAKE_PROFIT retains the signed, corrected fallback without changing fees, trade bounds, or custody
+- Production runtime: [v0.4.6](https://github.com/dolepee/conviction/tree/v0.4.6) is deployed at `https://conviction-bay.vercel.app`; native OKX Agentic Wallet plus the official Plugin Store runtime is the no-Conviction-install OPEN/CLOSE path, while TAKE_PROFIT retains the signed, corrected fallback without changing fees, trade bounds, or custody
 - OPEN: fresh buyer-seat `0.05 USD₮0` payment, one confirmed bounded order, exact 10 YES Polygon fill, and independent position proof passed in 42.0 seconds locally / 48.8 seconds independently ([payment](https://www.oklink.com/xlayer/tx/0xccbf4d92a1c80a7697d2f17b2d41129806826a7e28a4325303e3abcaaf17be6c), [fill](https://polygonscan.com/tx/0x716734f1bccb9c7c6c20cc7d0f064c857159b075fd12707ddbedd40c18cb3409))
 - CLOSE: fresh buyer-seat `0.10 USD₮0` payment, one confirmed exact 10 YES FOK sale, and independent close proof passed in 56.7 seconds locally / 61.7 seconds independently ([payment](https://www.oklink.com/xlayer/tx/0x03e05a3fdc18dbbd320e30abb062830b67fecf9d77a3e0c6142dca195c03d279), [fill](https://polygonscan.com/tx/0x7f0bb701c22bdb8aff43a66c259de01330e5b41c45908d36e677a4216dfbfba4))
 - TAKE_PROFIT: fresh buyer-seat `0.10 USD₮0` payment armed exactly one zero-match post-only 9 YES GTD order with an authenticated proof in 38.0 seconds locally / 42.3 seconds independently; exact cancellation then returned `CANCELED`, zero matched, no open orders, and no global execution lock ([payment](https://www.oklink.com/xlayer/tx/0x2f1257db47bba77f45766767a18ededca6b82310c725a08f62e7797e549ba80a))
 - Public web surface: OPEN preview/manual verifier and managed-position copy are deployed
 - OKX.AI ASP: Conviction `#7034` submitted its final two-service catalog on 2026-07-22 (`0.05 USDT` OPEN and `0.10 USDT` Position Manager); approval and external buyer proof remain pending
-- Shareable evidence: the sanitized [2026-07-22 live acceptance pack](assets/conviction-live-acceptance-2026-07-22.json) records the controlled OPEN, CLOSE, TAKE_PROFIT, cancellation, timing, and adversarial gate results
+- Shareable evidence: the sanitized [2026-07-22 live acceptance pack](assets/conviction-live-acceptance-2026-07-22.json) records the controlled OPEN, CLOSE, TAKE_PROFIT, cancellation, timing, adversarial results, and the explicit pre-native execution provenance
 
 These are controlled house acceptance proofs between house wallets. They prove
 the machine-payment, bounded execution, and independent verification paths, not
