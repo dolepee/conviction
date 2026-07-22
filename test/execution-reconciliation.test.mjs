@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile as fsWriteFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+const writeFile = (file, data, options = {}) => fsWriteFile(file, data, { ...options, mode: 0o600 });
 
 import { sha256 } from "../src/canonical.mjs";
 import {
@@ -20,6 +22,7 @@ const ORDER = `0x${"55".repeat(32)}`;
 const SETTLEMENT = `0x${"66".repeat(32)}`;
 const POSITION_PROOF = `0x${"77".repeat(32)}`;
 const TOKEN = "123456789";
+const OPEN_REPLAY = `0x${"99".repeat(32)}`;
 
 const OPEN_ARGV = [
   "buy", "--market-id", CONDITION, "--token-id", TOKEN,
@@ -108,6 +111,10 @@ function baseLiveState({ mode, journal, executionLock, executionArgv }) {
     executionArgv,
     executionArgvHash: sha256(executionArgv),
     executionLockPath: executionLock,
+    ...(mode === "open" ? {
+      replayKey: OPEN_REPLAY,
+      replayLockPath: join(join(journal, ".."), `open-${OPEN_REPLAY.slice(2)}.lock.json`),
+    } : {}),
     liveResult: { fixture: "live" },
     orderId: ORDER,
     settlementTx: null,
@@ -121,6 +128,14 @@ async function writeExecutionLock(executionLock, journal) {
   }));
 }
 
+async function writeOpenReplayLock(state) {
+  await writeFile(state.replayLockPath, JSON.stringify({
+    version: "conviction-open-replay-lock-v1",
+    replayKey: state.replayKey,
+    journalPath: state.journalPath,
+  }));
+}
+
 test("OPEN reconciliation independently verifies a persisted settlement and releases only its execution lock", async () => {
   const directory = await mkdtemp(join(tmpdir(), "conviction-open-settlement-reconcile-"));
   const journal = join(directory, "journey.json");
@@ -131,7 +146,11 @@ test("OPEN reconciliation independently verifies a persisted settlement and rele
     settlementTx: SETTLEMENT,
   };
   try {
-    await Promise.all([writeFile(journal, JSON.stringify(state)), writeExecutionLock(executionLock, journal)]);
+    await Promise.all([
+      writeFile(journal, JSON.stringify(state)),
+      writeExecutionLock(executionLock, journal),
+      writeOpenReplayLock(state),
+    ]);
     let proofReads = 0;
     const result = await reconcileOpenJournal({
       file: journal,
@@ -184,7 +203,11 @@ test("OPEN reconciliation rejects a valid signed settlement that predates live-t
     settlementTx: SETTLEMENT,
   };
   try {
-    await Promise.all([writeFile(journal, JSON.stringify(state)), writeExecutionLock(executionLock, journal)]);
+    await Promise.all([
+      writeFile(journal, JSON.stringify(state)),
+      writeExecutionLock(executionLock, journal),
+      writeOpenReplayLock(state),
+    ]);
     await assert.rejects(reconcileOpenJournal({
       file: journal,
       trustedIssuers: new Map(),
@@ -205,7 +228,11 @@ test("OPEN reconciliation rejects a valid signed settlement that predates live-t
         throw new Error("must not validate a pre-confirmation settlement");
       },
     }), (error) => error?.code === "settlement_before_confirmation");
-    assert.deepEqual((await readdir(directory)).sort(), ["journey.json", "polymarket-execution.lock.json"]);
+    assert.deepEqual((await readdir(directory)).sort(), [
+      `open-${OPEN_REPLAY.slice(2)}.lock.json`,
+      "journey.json",
+      "polymarket-execution.lock.json",
+    ].sort());
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -285,7 +312,11 @@ test("OPEN terminal zero-fill reconciliation requires exact owner-bound CLOB pro
   const card = validated("OPEN");
   const state = baseLiveState({ mode: "open", journal, executionLock, executionArgv: OPEN_ARGV });
   try {
-    await Promise.all([writeFile(journal, JSON.stringify(state)), writeExecutionLock(executionLock, journal)]);
+    await Promise.all([
+      writeFile(journal, JSON.stringify(state)),
+      writeExecutionLock(executionLock, journal),
+      writeOpenReplayLock(state),
+    ]);
     let exactReads = 0;
     const result = await reconcileOpenJournal({
       file: journal,
@@ -325,7 +356,11 @@ test("OPEN reconciliation retains its lock when terminal evidence is active or t
     const card = validated("OPEN");
     const state = baseLiveState({ mode: "open", journal, executionLock, executionArgv: OPEN_ARGV });
     try {
-      await Promise.all([writeFile(journal, JSON.stringify(state)), writeExecutionLock(executionLock, journal)]);
+      await Promise.all([
+        writeFile(journal, JSON.stringify(state)),
+        writeExecutionLock(executionLock, journal),
+        writeOpenReplayLock(state),
+      ]);
       await assert.rejects(reconcileOpenJournal({
         file: journal,
         trustedIssuers: new Map(),
@@ -335,7 +370,14 @@ test("OPEN reconciliation retains its lock when terminal evidence is active or t
         validateTerminalResultImpl: () => live(card, "OPEN"),
         fetchExactOrderImpl: async () => exactSnapshot("OPEN", orderMutation),
       }));
-      assert.deepEqual((await readdir(directory)).sort(), ["journey.json", "polymarket-execution.lock.json"]);
+      assert.deepEqual(
+        (await readdir(directory)).sort(),
+        [
+          "journey.json",
+          `open-${OPEN_REPLAY.slice(2)}.lock.json`,
+          "polymarket-execution.lock.json",
+        ].sort(),
+      );
       const preserved = JSON.parse(await readFile(journal, "utf8"));
       assert.equal(preserved.reconciliationRequired, true);
       assert.equal(preserved.executionLockPath, executionLock);

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { chmod, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
+import { chmod, mkdir, open, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, stderr } from "node:process";
 import { promisify } from "node:util";
@@ -57,11 +58,14 @@ const PAYMENT_SIGNATURE_HEADER = "PAYMENT-SIGNATURE";
 let executionAttempted = false;
 const journalDirectory = join(homedir(), ".local", "state", "conviction", "reconciliation");
 const executionLockFile = join(journalDirectory, "polymarket-execution.lock.json");
+const releaseLockBasename = "polymarket-execution.release.lock.json";
+const releaseMutexHelper = join(dirname(fileURLToPath(import.meta.url)), "state-release-mutex.py");
 const journalPath = join(
   journalDirectory,
   `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}.json`,
 );
 const checkpoint = {
+  journalRevision: 0,
   mode: null,
   stage: "not_started",
   paymentTx: null,
@@ -101,12 +105,123 @@ const checkpoint = {
   journalPath,
 };
 
-export async function writeReconciliationJournal(value, { directory = journalDirectory, file = journalPath } = {}) {
+function journalRevision(value, label = "Reconciliation journal") {
+  const revision = value?.journalRevision ?? 0;
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw Object.assign(new Error(`${label} revision is invalid`), {
+      code: "invalid_journal_revision",
+    });
+  }
+  return revision;
+}
+
+function replaceRecord(target, source) {
+  for (const key of Object.keys(target)) delete target[key];
+  Object.assign(target, source);
+}
+
+export async function resolveFailedLockAttachment({
+  state,
+  before,
+  field,
+  file,
+  lockText,
+  journal,
+  mutexLease,
+  error,
+} = {}) {
+  mutexLease?.assertAlive();
+  let durable;
+  try {
+    durable = JSON.parse(await readFile(journal, "utf8"));
+    await ownerOnlyStateFile(journal, "Reconciliation journal");
+  } catch {
+    throw Object.assign(new Error("Lock attachment may have reached durable state; reconciliation is required"), {
+      code: "lock_attachment_ambiguous",
+      cause: error,
+    });
+  }
+  const currentLockText = await readFile(file, "utf8");
+  if (currentLockText !== lockText) {
+    throw Object.assign(new Error("Claimed lock generation changed during ambiguous attachment"), {
+      code: "lock_generation_mismatch",
+      cause: error,
+    });
+  }
+  if (durable?.[field] === file) {
+    replaceRecord(state, durable);
+    throw Object.assign(new Error("Lock was durably attached even though its writer reported failure"), {
+      code: "lock_attachment_ambiguous",
+      cause: error,
+    });
+  }
+  replaceRecord(state, before);
+  mutexLease?.assertAlive();
+  await unlink(file);
+}
+
+export async function writeReconciliationJournal(value, {
+  directory = journalDirectory,
+  file = journalPath,
+  mutexHeld = false,
+  mutexLease,
+  expectedRevision,
+  targetRevision,
+} = {}) {
+  if (!mutexHeld) {
+    return withStateReleaseMutex(directory, (lease) => writeReconciliationJournal(value, {
+      directory,
+      file,
+      mutexHeld: true,
+      mutexLease: lease,
+      expectedRevision,
+      targetRevision,
+    }));
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw Object.assign(new Error("Reconciliation journal must be an object"), {
+      code: "invalid_reconciliation_journal",
+    });
+  }
+  mutexLease?.assertAlive();
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
+  const expected = expectedRevision === undefined
+    ? journalRevision(value)
+    : journalRevision({ journalRevision: expectedRevision }, "Expected reconciliation journal");
+  const target = targetRevision === undefined
+    ? expected + 1
+    : journalRevision({ journalRevision: targetRevision }, "Target reconciliation journal");
+  if (!Number.isSafeInteger(target) || target !== expected + 1) {
+    throw Object.assign(new Error("Reconciliation journal revision must advance exactly once"), {
+      code: "invalid_journal_revision",
+    });
+  }
+  let durableRevision = 0;
+  let durableExists = true;
+  try {
+    const durable = JSON.parse(await readFile(file, "utf8"));
+    await ownerOnlyStateFile(file, "Reconciliation journal");
+    durableRevision = journalRevision(durable);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    durableExists = false;
+  }
+  if ((durableExists && durableRevision !== expected) || (!durableExists && expected !== 0)) {
+    throw Object.assign(new Error("Reconciliation journal changed before this state update"), {
+      code: "stale_journal_write",
+      details: { expectedRevision: expected, durableRevision: durableExists ? durableRevision : null },
+    });
+  }
+  const next = structuredClone(value);
+  next.journalRevision = target;
   const temporary = `${file}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  mutexLease?.assertAlive();
+  await writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  mutexLease?.assertAlive();
   await rename(temporary, file);
+  mutexLease?.assertAlive();
+  replaceRecord(value, next);
   return file;
 }
 
@@ -432,38 +547,470 @@ export function closeReplayKey({ request, sellerWallet }) {
   });
 }
 
+export function openReplayKey({ request, buyerWallet }) {
+  const market = String(request?.market || "").trim().toLowerCase();
+  const outcome = String(request?.outcome || request?.side || "").toUpperCase();
+  if (!market || (outcome !== "YES" && outcome !== "NO")) {
+    throw Object.assign(new Error("Open replay identity has no canonical market and outcome"), {
+      code: "invalid_replay_identity",
+    });
+  }
+  return sha256({
+    version: "conviction-open-replay-v1",
+    buyerWallet: String(buyerWallet || "").toLowerCase(),
+    market,
+    outcome,
+    budgetRaw: parseDecimal(request?.budget, 6, "open replay budget").toString(),
+    maxPriceRaw: parseDecimal(request?.maxPrice, 6, "open replay maximum price").toString(),
+  });
+}
+
+async function ownerOnlyStateFile(file, label, { statImpl = stat } = {}) {
+  const fileStat = await statImpl(file);
+  const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (!fileStat.isFile() || (fileStat.mode & 0o077) !== 0) {
+    throw Object.assign(new Error(`${label} must be an owner-only regular file`), {
+      code: "unsafe_state_permissions",
+    });
+  }
+  if (expectedUid !== null && fileStat.uid !== expectedUid) {
+    throw Object.assign(new Error(`${label} must belong to the current OS user`), {
+      code: "unsafe_state_owner",
+    });
+  }
+}
+
+async function parsedJournalHash(file) {
+  return sha256(JSON.parse(await readFile(file, "utf8")));
+}
+
+function validReleaseGuard(guard) {
+  return guard?.version === "conviction-state-release-guard-v1" &&
+    typeof guard?.journalPath === "string" && HASH_RE.test(String(guard?.sourceJournalHash || "")) &&
+    HASH_RE.test(String(guard?.targetJournalHash || "")) &&
+    HASH_RE.test(String(guard?.transitionId || "")) && Array.isArray(guard?.fields) &&
+    guard.fields.length > 0 && guard.fields.every((field) =>
+      field === "replayLockPath" || field === "executionLockPath" || field === "reservationLockPath") &&
+    guard?.targetState && typeof guard.targetState === "object" && !Array.isArray(guard.targetState) &&
+    sha256(guard.targetState) === guard.targetJournalHash &&
+    guard?.lockHashes && typeof guard.lockHashes === "object" && !Array.isArray(guard.lockHashes) &&
+    guard.fields.every((field) => guard.lockHashes[field] === null || HASH_RE.test(String(guard.lockHashes[field] || ""))) &&
+    Number.isSafeInteger(guard?.pid) && guard.pid > 0 && Number.isFinite(Date.parse(String(guard?.claimedAt || "")));
+}
+
+async function resumableStateReleaseGuard({
+  releaseFile,
+  journal,
+  sourceJournalHash,
+  transitionId,
+  fields,
+  statImpl = stat,
+}) {
+  let text;
+  try {
+    [text] = await Promise.all([
+      readFile(releaseFile, "utf8"),
+      ownerOnlyStateFile(releaseFile, "State-release guard", { statImpl }),
+    ]);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  let guard;
+  try { guard = JSON.parse(text); } catch { return null; }
+  const canonicalFields = [...new Set(fields)].sort();
+  if (
+    !validReleaseGuard(guard) || guard.journalPath !== journal ||
+    guard.sourceJournalHash !== sourceJournalHash || guard.transitionId !== transitionId ||
+    sha256(guard.fields) !== sha256(canonicalFields)
+  ) return null;
+  let currentHash;
+  try { currentHash = await parsedJournalHash(journal); } catch { return null; }
+  return currentHash === sourceJournalHash ? Object.freeze({ guard, text }) : null;
+}
+
+/**
+ * Every global/scoped lock claim observes the same release guard. A completed
+ * guard left by a crashed process may be removed only when its exact target
+ * journal hash is already durable; otherwise the exact transaction must resume.
+ */
+async function claimStateReleaseMutex({
+  directory = journalDirectory,
+  helper = releaseMutexHelper,
+} = {}) {
+  let helperStat;
+  try { helperStat = await stat(helper); } catch (error) {
+    throw Object.assign(new Error("State-release mutex helper is unavailable"), {
+      code: "state_release_mutex_failed",
+      cause: error,
+    });
+  }
+  const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (!helperStat.isFile() || (expectedUid !== null && helperStat.uid !== expectedUid)) {
+    throw Object.assign(new Error("State-release mutex helper is not an owner-controlled regular file"), {
+      code: "state_release_mutex_failed",
+    });
+  }
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
+  const physicalDirectory = await realpath(directory);
+  const mutexFile = join(tmpdir(), `conviction-state-release-${sha256(physicalDirectory).slice(2)}.mutex`);
+  const child = spawn("python3", [helper, mutexFile], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stdoutText = "";
+  let stderrText = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => { stderrText += chunk; });
+  const acquired = await new Promise((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+    };
+    child.once("error", (error) => finish(rejectPromise, error));
+    child.once("exit", (code) => {
+      if (!settled) {
+        const busy = stdoutText.trim() === "BUSY" || code === 75;
+        finish(rejectPromise, Object.assign(
+          new Error(busy
+            ? "Another state-lock reconciliation is already in progress"
+            : `State-release mutex helper exited before locking${stderrText ? `: ${stderrText.trim()}` : ""}`),
+          { code: busy ? "execution_release_in_progress" : "state_release_mutex_failed" },
+        ));
+      }
+    });
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdoutText += chunk;
+      const line = stdoutText.split("\n", 1)[0];
+      if (line === "LOCKED") finish(resolvePromise, true);
+      if (line === "BUSY") {
+        finish(rejectPromise, Object.assign(
+          new Error("Another state-lock reconciliation is already in progress"),
+          { code: "execution_release_in_progress" },
+        ));
+      }
+    });
+  });
+  if (!acquired) throw Object.assign(new Error("State-release mutex was not acquired"), { code: "state_release_mutex_failed" });
+  try {
+    await ownerOnlyStateFile(mutexFile, "State-release mutex");
+  } catch (validationError) {
+    const exited = new Promise((resolvePromise) => {
+      if (child.exitCode !== null || child.signalCode !== null) return resolvePromise();
+      child.once("exit", () => resolvePromise());
+      child.once("error", () => resolvePromise());
+    });
+    child.stdin.end();
+    await exited;
+    throw validationError;
+  }
+  let released = false;
+  const assertAlive = () => {
+    if (released || child.exitCode !== null || child.signalCode !== null || child.stdin.destroyed) {
+      throw Object.assign(new Error("State-release mutex helper is no longer holding the kernel lock"), {
+        code: "state_release_mutex_lost",
+      });
+    }
+  };
+  return Object.freeze({
+    assertAlive,
+    release: async () => {
+      if (released) return;
+      assertAlive();
+      released = true;
+      const exited = new Promise((resolvePromise, rejectPromise) => {
+        child.once("error", rejectPromise);
+        child.once("exit", (code) => code === 0
+          ? resolvePromise()
+          : rejectPromise(Object.assign(new Error("State-release mutex helper exited abnormally"), {
+              code: "state_release_mutex_failed",
+            })));
+      });
+      child.stdin.end();
+      await exited;
+    },
+  });
+}
+
+export async function withStateReleaseMutex(directory, callback, { helper = releaseMutexHelper } = {}) {
+  const lease = await claimStateReleaseMutex({ directory, helper });
+  try {
+    return await callback(lease);
+  } finally {
+    await lease.release();
+  }
+}
+
+export async function assertNoStateReleaseInProgress({
+  directory = journalDirectory,
+  releaseFile = join(directory, releaseLockBasename),
+  statImpl = stat,
+  mutexHeld = false,
+} = {}) {
+  if (!mutexHeld) {
+    return withStateReleaseMutex(directory, () => assertNoStateReleaseInProgress({
+      directory,
+      releaseFile,
+      statImpl,
+      mutexHeld: true,
+    }));
+  }
+  let text;
+  try {
+    [text] = await Promise.all([
+      readFile(releaseFile, "utf8"),
+      ownerOnlyStateFile(releaseFile, "State-release guard", { statImpl }),
+    ]);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+  let guard;
+  try { guard = JSON.parse(text); } catch {}
+  if (validReleaseGuard(guard)) {
+    let currentHash = null;
+    try { currentHash = await parsedJournalHash(guard.journalPath); } catch {}
+    if (currentHash === guard.targetJournalHash) {
+      const unchanged = await readFile(releaseFile, "utf8");
+      if (unchanged !== text) {
+        throw Object.assign(new Error("State-release guard changed during completed-release recovery"), {
+          code: "state_release_guard_mismatch",
+        });
+      }
+      await unlink(releaseFile);
+      return false;
+    }
+  }
+  throw Object.assign(
+    new Error("A Conviction state-lock release is in progress; retry only after reconciliation finishes"),
+    { code: "execution_release_in_progress", details: { executionReleaseLockPath: releaseFile } },
+  );
+}
+
+async function claimStateReleaseGuard({
+  journal,
+  stateDirectory,
+  sourceJournalHash,
+  targetJournalHash,
+  targetState,
+  transitionId,
+  fields,
+  lockHashes,
+  now = Date.now,
+  statImpl = stat,
+  assertMutexAlive = () => {},
+} = {}) {
+  const releaseFile = join(stateDirectory, releaseLockBasename);
+  const canonicalFields = [...new Set(fields)].sort();
+  const guard = {
+    version: "conviction-state-release-guard-v1",
+    journalPath: journal,
+    sourceJournalHash,
+    targetJournalHash,
+    targetState,
+    transitionId,
+    fields: canonicalFields,
+    lockHashes,
+    pid: process.pid,
+    claimedAt: new Date(typeof now === "function" ? now() : now).toISOString(),
+  };
+  let guardText;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let handle;
+    try {
+      assertMutexAlive();
+      handle = await open(releaseFile, "wx", 0o600);
+      guardText = `${JSON.stringify(guard, null, 2)}\n`;
+      await handle.writeFile(guardText);
+      await handle.close();
+      handle = null;
+      break;
+    } catch (error) {
+      await handle?.close();
+      if (error?.code !== "EEXIST") throw error;
+      let existingText;
+      try {
+        [existingText] = await Promise.all([
+          readFile(releaseFile, "utf8"),
+          ownerOnlyStateFile(releaseFile, "State-release guard", { statImpl }),
+        ]);
+      } catch (readError) {
+        if (readError?.code === "ENOENT" && attempt === 0) continue;
+        throw readError;
+      }
+      let existing;
+      try { existing = JSON.parse(existingText); } catch {}
+      if (
+        !validReleaseGuard(existing) || existing.journalPath !== journal ||
+        existing.sourceJournalHash !== sourceJournalHash ||
+        existing.targetJournalHash !== targetJournalHash ||
+        existing.transitionId !== transitionId ||
+        sha256(existing.fields) !== sha256(canonicalFields) ||
+        sha256(existing.lockHashes) !== sha256(lockHashes) ||
+        sha256(existing.targetState) !== sha256(targetState)
+      ) {
+        throw Object.assign(new Error("Existing state-release guard belongs to another reconciliation"), {
+          code: "state_release_guard_mismatch",
+        });
+      }
+      if (attempt > 0) {
+        throw Object.assign(new Error("Another state-lock reconciliation is already in progress"), {
+          code: "execution_release_in_progress",
+          details: { executionReleaseLockPath: releaseFile },
+        });
+      }
+      let currentHash;
+      try { currentHash = await parsedJournalHash(journal); } catch {
+        throw Object.assign(new Error("Guarded reconciliation journal cannot be authenticated"), {
+          code: "reconciliation_journal_changed",
+        });
+      }
+      if (currentHash !== existing.sourceJournalHash && currentHash !== existing.targetJournalHash) {
+        throw Object.assign(new Error("Guarded reconciliation journal differs from both durable release states"), {
+          code: "reconciliation_journal_changed",
+        });
+      }
+      const unchanged = await readFile(releaseFile, "utf8");
+      if (unchanged !== existingText) {
+        throw Object.assign(new Error("State-release guard changed during stale-owner recovery"), {
+          code: "state_release_guard_mismatch",
+        });
+      }
+      assertMutexAlive();
+      await unlink(releaseFile);
+    }
+  }
+  return async () => {
+    let currentText;
+    try { currentText = await readFile(releaseFile, "utf8"); } catch {
+      throw Object.assign(new Error("State-release guard disappeared before durable completion"), {
+        code: "state_release_guard_mismatch",
+      });
+    }
+    if (currentText !== guardText) {
+      throw Object.assign(new Error("State-release guard generation changed before completion"), {
+        code: "state_release_guard_mismatch",
+      });
+    }
+    assertMutexAlive();
+    await unlink(releaseFile);
+  };
+}
+
+async function claimReplayLock({
+  key,
+  journal,
+  directory,
+  kind,
+  state,
+  writeState = writeReconciliationJournal,
+  transition,
+  beforePersist,
+}) {
+  const isOpen = kind === "open";
+  const file = join(directory, `${kind}-${String(key).slice(2)}.lock.json`);
+  const releaseFile = join(directory, releaseLockBasename);
+  return withStateReleaseMutex(directory, async (mutexLease) => {
+    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true });
+    if (state && resolve(String(state.journalPath || "")) !== resolve(journal)) {
+      throw Object.assign(new Error(`${kind.toUpperCase()} replay state belongs to another journal`), {
+        code: "lock_ownership_mismatch",
+      });
+    }
+    if (state && await parsedJournalHash(journal) !== sha256(state)) {
+      throw Object.assign(new Error(`${kind.toUpperCase()} replay state is stale before lock claim`), {
+        code: "stale_journal_write",
+      });
+    }
+    const lock = {
+      version: isOpen ? "conviction-open-replay-lock-v1" : "conviction-close-replay-lock-v1",
+      generation: randomUUID(),
+      replayKey: key,
+      journalPath: journal,
+      claimedAt: new Date().toISOString(),
+    };
+    const lockText = `${JSON.stringify(lock, null, 2)}\n`;
+    let handle;
+    try {
+      mutexLease.assertAlive();
+      handle = await open(file, "wx", 0o600);
+      await handle.writeFile(lockText);
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        throw Object.assign(
+          new Error(`This exact ${kind.toUpperCase()} request was already claimed; reconcile its journal before any retry`),
+          { code: `${kind}_replay_blocked`, details: { replayLockPath: file } },
+        );
+      }
+      throw error;
+    } finally {
+      await handle?.close();
+    }
+    if (state) {
+      const before = structuredClone(state);
+      try {
+        await beforePersist?.(Object.freeze({ file, lock: Object.freeze({ ...lock }) }));
+        state.replayLockPath = file;
+        await transition?.(state, { lockPath: file, lock: Object.freeze({ ...lock }) });
+        await writeState(state, {
+          directory,
+          file: journal,
+          mutexHeld: true,
+          mutexLease,
+        });
+      } catch (error) {
+        await resolveFailedLockAttachment({
+          state,
+          before,
+          field: "replayLockPath",
+          file,
+          lockText,
+          journal,
+          mutexLease,
+          error,
+        });
+        throw error;
+      }
+    }
+    return file;
+  });
+}
+
 export async function claimCloseReplayLock({
   key,
   journal,
   directory = journalDirectory,
+  state,
+  writeState,
+  transition,
+  beforePersist,
 } = {}) {
   if (!HASH_RE.test(String(key || ""))) {
     throw Object.assign(new Error("Close replay key is invalid"), { code: "invalid_replay_key" });
   }
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
-  const file = join(directory, `close-${String(key).slice(2)}.lock.json`);
-  let handle;
-  try {
-    handle = await open(file, "wx", 0o600);
-    await handle.writeFile(`${JSON.stringify({
-      version: "conviction-close-replay-lock-v1",
-      replayKey: key,
-      journalPath: journal,
-      claimedAt: new Date().toISOString(),
-    }, null, 2)}\n`);
-  } catch (error) {
-    if (error?.code === "EEXIST") {
-      throw Object.assign(
-        new Error("This exact CLOSE request was already claimed; reconcile its journal before any retry"),
-        { code: "close_replay_blocked", details: { replayLockPath: file } },
-      );
-    }
-    throw error;
-  } finally {
-    await handle?.close();
+  return claimReplayLock({ key, journal, directory, kind: "close", state, writeState, transition, beforePersist });
+}
+
+export async function claimOpenReplayLock({
+  key,
+  journal,
+  directory = journalDirectory,
+  state,
+  writeState,
+  transition,
+  beforePersist,
+} = {}) {
+  if (!HASH_RE.test(String(key || ""))) {
+    throw Object.assign(new Error("Open replay key is invalid"), { code: "invalid_replay_key" });
   }
-  return file;
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
+  return claimReplayLock({ key, journal, directory, kind: "open", state, writeState, transition, beforePersist });
 }
 
 export async function claimExecutionLock({
@@ -471,58 +1018,118 @@ export async function claimExecutionLock({
   directory = journalDirectory,
   file = executionLockFile,
   releaseFile = join(directory, "polymarket-execution.release.lock.json"),
+  state,
+  writeState = writeReconciliationJournal,
+  transition,
+  beforePersist,
 } = {}) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
-  const releaseInProgress = async () => {
+  return withStateReleaseMutex(directory, async (mutexLease) => {
+    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true });
+    if (state && resolve(String(state.journalPath || "")) !== resolve(journal)) {
+      throw Object.assign(new Error("Execution-lock state belongs to another journal"), {
+        code: "lock_ownership_mismatch",
+      });
+    }
+    if (state && await parsedJournalHash(journal) !== sha256(state)) {
+      throw Object.assign(new Error("Execution state is stale before lock claim"), {
+        code: "stale_journal_write",
+      });
+    }
+    const lock = {
+      version: "conviction-polymarket-execution-lock-v1",
+      generation: randomUUID(),
+      pid: process.pid,
+      journalPath: journal,
+      claimedAt: new Date().toISOString(),
+    };
+    const lockText = `${JSON.stringify(lock, null, 2)}\n`;
+    let handle;
     try {
-      await readFile(releaseFile, "utf8");
-      return true;
+      mutexLease.assertAlive();
+      handle = await open(file, "wx", 0o600);
+      await handle.writeFile(lockText);
     } catch (error) {
-      if (error?.code === "ENOENT") return false;
+      if (error?.code === "EEXIST") {
+        throw Object.assign(
+          new Error("Another Conviction execution is unresolved; reconcile its journal before trading"),
+          { code: "execution_reconciliation_required", details: { executionLockPath: file } },
+        );
+      }
       throw error;
+    } finally {
+      await handle?.close();
     }
-  };
-  if (await releaseInProgress()) {
-    throw Object.assign(
-      new Error("A Conviction execution lock is being reconciled; retry only after that release finishes"),
-      { code: "execution_release_in_progress", details: { executionReleaseLockPath: releaseFile } },
-    );
-  }
-  const lock = {
-    version: "conviction-polymarket-execution-lock-v1",
-    pid: process.pid,
-    journalPath: journal,
-    claimedAt: new Date().toISOString(),
-  };
-  let handle;
-  try {
-    handle = await open(file, "wx", 0o600);
-    await handle.writeFile(`${JSON.stringify(lock, null, 2)}\n`);
-  } catch (error) {
-    if (error?.code === "EEXIST") {
-      throw Object.assign(
-        new Error("Another Conviction execution is unresolved; reconcile its journal before trading"),
-        { code: "execution_reconciliation_required", details: { executionLockPath: file } },
-      );
+    if (state) {
+      const before = structuredClone(state);
+      try {
+        await beforePersist?.(Object.freeze({ file, lock: Object.freeze({ ...lock }) }));
+        state.executionLockPath = file;
+        await transition?.(state, { lockPath: file, lock: Object.freeze({ ...lock }) });
+        await writeState(state, {
+          directory,
+          file: journal,
+          mutexHeld: true,
+          mutexLease,
+        });
+      } catch (error) {
+        await resolveFailedLockAttachment({
+          state,
+          before,
+          field: "executionLockPath",
+          file,
+          lockText,
+          journal,
+          mutexLease,
+          error,
+        });
+        throw error;
+      }
     }
-    throw error;
-  } finally {
-    await handle?.close();
-  }
-  if (await releaseInProgress()) {
-    try {
-      const current = JSON.parse(await readFile(file, "utf8"));
-      if (sha256(current) === sha256(lock)) await unlink(file);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+    return file;
+  });
+}
+
+async function releaseUnattachedExecutionLock({
+  file,
+  journal,
+  directory = journalDirectory,
+} = {}) {
+  return withStateReleaseMutex(directory, async (mutexLease) => {
+    await assertNoStateReleaseInProgress({ directory, mutexHeld: true });
+    const canonicalFile = safeStatePath(file, "execution lock", directory);
+    const canonicalJournal = safeStatePath(journal, "journal", directory);
+    const [lockText, durableText] = await Promise.all([
+      readFile(canonicalFile, "utf8"),
+      readFile(canonicalJournal, "utf8"),
+      ownerOnlyStateFile(canonicalFile, "Execution lock"),
+      ownerOnlyStateFile(canonicalJournal, "Reconciliation journal"),
+    ]);
+    const lock = JSON.parse(lockText);
+    const durable = JSON.parse(durableText);
+    if (
+      lock?.version !== "conviction-polymarket-execution-lock-v1" ||
+      lock?.journalPath !== canonicalJournal
+    ) {
+      throw Object.assign(new Error("Unattached execution lock belongs to another journey"), {
+        code: "lock_ownership_mismatch",
+      });
     }
-    throw Object.assign(
-      new Error("A Conviction execution-lock release raced this claim; no execution may start"),
-      { code: "execution_release_in_progress", details: { executionReleaseLockPath: releaseFile } },
-    );
-  }
-  return file;
+    if (durable?.executionLockPath === canonicalFile) {
+      throw Object.assign(new Error("Execution lock is already attached to the durable journey"), {
+        code: "execution_reconciliation_required",
+      });
+    }
+    mutexLease.assertAlive();
+    if (await readFile(canonicalFile, "utf8") !== lockText) {
+      throw Object.assign(new Error("Unattached execution-lock generation changed before cleanup"), {
+        code: "lock_generation_mismatch",
+      });
+    }
+    await unlink(canonicalFile);
+    return true;
+  });
 }
 
 export async function settleExecutionLock(
@@ -532,22 +1139,38 @@ export async function settleExecutionLock(
     proofVerified,
     unlinkImpl = unlink,
     now = Date.now(),
+    journal = state?.journalPath,
+    stateDirectory = journal ? dirname(journal) : journalDirectory,
+    writeState = writeReconciliationJournal,
+    transition,
+    transitionId = "execution-lock-settlement-v1",
   } = {},
 ) {
   if (!state?.executionLockPath) return { released: false, retained: false };
   if (liveAttempted && !proofVerified) {
     return { released: false, retained: true, path: state.executionLockPath };
   }
-  try {
-    await unlinkImpl(state.executionLockPath);
-    const releasedPath = state.executionLockPath;
-    state.executionLockReleasedAt = new Date(now).toISOString();
-    state.executionLockPath = null;
-    return { released: true, retained: false, path: releasedPath };
-  } catch (error) {
-    state.executionLockReleaseError = error?.code || "lock_release_failed";
-    return { released: false, retained: true, path: state.executionLockPath };
+  if (!journal) {
+    throw Object.assign(new Error("Execution lock cannot be released without its durable journal"), {
+      code: "invalid_reconciliation_journal",
+    });
   }
+  const releasedPath = state.executionLockPath;
+  const released = await releaseReconciledLocks(state, {
+    stateDirectory,
+    journal,
+    fields: ["executionLockPath"],
+    unlinkImpl,
+    writeState,
+    now,
+    transition,
+    transitionId,
+  });
+  return {
+    released: released.includes(releasedPath),
+    retained: Boolean(state.executionLockPath),
+    path: releasedPath,
+  };
 }
 
 export function requirePinnedCloseExecutionReadiness(readiness, { wallet, tokenId, sharesRaw }) {
@@ -765,11 +1388,13 @@ function validateStoredPaymentAuthorization(metadata, {
 function isRecoverablePaymentAuthorizationState(state) {
   const allowedStages = new Set([
     "payment_authorization_created",
+    "payment_header_rejected_after_authorization",
     "paid_request_rejected_pre_settlement",
     "paid_request_settlement_ambiguous",
   ]);
   const response = state?.paidServiceResponse;
-  const responseMatchesStage = state?.stage === "payment_authorization_created"
+  const responseMatchesStage = state?.stage === "payment_authorization_created" ||
+      state?.stage === "payment_header_rejected_after_authorization"
     ? response === null || response === undefined
     : state?.stage === "paid_request_rejected_pre_settlement"
       ? Number.isInteger(response?.status) && response.status >= 400 && response.paymentResponsePresent === false
@@ -863,8 +1488,10 @@ function safeStatePath(value, kind, stateDirectory = journalDirectory) {
   const valid = kind === "journal"
     ? name.endsWith(".json") && !name.endsWith(".lock.json")
     : kind === "replay lock"
-      ? /^close-[0-9a-f]{64}\.lock\.json$/.test(name)
-      : name === "polymarket-execution.lock.json";
+      ? /^(?:open|close)-[0-9a-f]{64}\.lock\.json$/.test(name)
+      : kind === "reservation lock"
+        ? /^take-profit-[0-9a-f]{64}\.lock\.json$/.test(name)
+        : name === "polymarket-execution.lock.json";
   if (!valid) {
     throw Object.assign(new Error(`${kind} path is not a recognized Conviction state file`), {
       code: "unsafe_state_path",
@@ -885,6 +1512,7 @@ export async function verifyJournalLockOwnership(
   const definitions = {
     replayLockPath: "replay lock",
     executionLockPath: "execution lock",
+    reservationLockPath: "reservation lock",
   };
   const checked = [];
   for (const field of fields) {
@@ -902,6 +1530,7 @@ export async function verifyJournalLockOwnership(
     let lock;
     try {
       lock = JSON.parse(await readFile(file, "utf8"));
+      await ownerOnlyStateFile(file, kind);
     } catch (error) {
       if (error?.code === "ENOENT") {
         if (requirePresent) {
@@ -916,20 +1545,26 @@ export async function verifyJournalLockOwnership(
         code: "lock_ownership_mismatch",
       });
     }
+    const replayKind = basename(file).startsWith("open-") ? "open" : "close";
     const owned = field === "replayLockPath"
       ? HASH_RE.test(String(state.replayKey || "")) &&
-        basename(file) === `close-${String(state.replayKey).slice(2)}.lock.json` &&
-        lock?.version === "conviction-close-replay-lock-v1" &&
+        basename(file) === `${replayKind}-${String(state.replayKey).slice(2)}.lock.json` &&
+        lock?.version === `conviction-${replayKind}-replay-lock-v1` &&
         lock?.replayKey === state.replayKey && lock?.journalPath === journal
-      : basename(file) === "polymarket-execution.lock.json" &&
-        lock?.version === "conviction-polymarket-execution-lock-v1" &&
-        lock?.journalPath === journal;
+      : field === "reservationLockPath"
+        ? HASH_RE.test(String(state.replayKey || "")) &&
+          basename(file) === `take-profit-${String(state.replayKey).slice(2)}.lock.json` &&
+          lock?.version === "conviction-take-profit-reservation-v1" &&
+          lock?.replayKey === state.replayKey && lock?.journalPath === journal
+        : basename(file) === "polymarket-execution.lock.json" &&
+          lock?.version === "conviction-polymarket-execution-lock-v1" &&
+          lock?.journalPath === journal;
     if (!owned) {
       throw Object.assign(new Error(`${kind} belongs to another journey`), {
         code: "lock_ownership_mismatch",
       });
     }
-    checked.push({ field, file, missing: false });
+    checked.push({ field, file, missing: false, lockHash: sha256(lock) });
   }
 
   return checked;
@@ -937,31 +1572,265 @@ export async function verifyJournalLockOwnership(
 
 export async function releaseReconciledLocks(
   state,
+  options = {},
+) {
+  const stateDirectory = options.stateDirectory || journalDirectory;
+  return withStateReleaseMutex(stateDirectory, (mutexLease) => releaseReconciledLocksLocked(state, {
+    ...options,
+    stateDirectory,
+    mutexLease,
+  }));
+}
+
+async function releaseReconciledLocksLocked(
+  state,
   {
     stateDirectory = journalDirectory,
     journal,
     fields = ["replayLockPath", "executionLockPath"],
+    expectedLockHashes = {},
+    transition,
+    transitionId,
+    writeState = writeReconciliationJournal,
+    unlinkImpl = unlink,
+    now = Date.now,
+    beforeUnlink,
+    afterUnlink,
+    beforeGuardRelease,
+    statImpl = stat,
+    mutexLease,
   } = {},
 ) {
-  const checked = await verifyJournalLockOwnership(state, {
-    stateDirectory,
-    journal,
-    fields,
+  mutexLease?.assertAlive();
+  const canonicalJournal = safeStatePath(journal, "journal", stateDirectory);
+  await ownerOnlyStateFile(canonicalJournal, "Reconciliation journal", { statImpl });
+  const selectedFields = [...new Set(fields)].filter((field) => state?.[field]).sort();
+  if (selectedFields.length === 0) return [];
+  const source = structuredClone(state);
+  const sourceRevision = journalRevision(source);
+  const sourceHash = sha256(source);
+  const stableTransitionId = sha256({
+    version: "conviction-state-release-transition-v1",
+    kind: String(transitionId || "release-selected-locks"),
+    fields: selectedFields,
+    sourceVersion: source.version || null,
+    sourceMode: source.mode || null,
+    sourceAction: source.action || null,
+    sourceStage: source.stage || null,
   });
-
-  const released = [];
-  for (const { field, file, missing } of checked) {
-    if (!missing) {
-      try {
-        await unlink(file);
-        released.push(file);
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
+  const durableBeforeGuard = JSON.parse(await readFile(canonicalJournal, "utf8"));
+  if (sha256(durableBeforeGuard) !== sourceHash) {
+    throw Object.assign(new Error("Reconciliation journal changed before lock-release preparation"), {
+      code: "reconciliation_journal_changed",
+    });
+  }
+  const preparedLocks = await verifyJournalLockOwnership(source, {
+    stateDirectory,
+    journal: canonicalJournal,
+    fields: selectedFields,
+  });
+  for (const item of preparedLocks) {
+    const expectedHash = expectedLockHashes?.[item.field];
+    if (expectedHash !== undefined && !item.missing && expectedHash !== item.lockHash) {
+      throw Object.assign(new Error(`${item.field} generation differs from the reconciled operation`), {
+        code: "lock_generation_mismatch",
+      });
+    }
+  }
+  const observedNow = Number(typeof now === "function" ? now() : now);
+  if (!Number.isFinite(observedNow)) {
+    throw Object.assign(new Error("State-release clock is invalid"), { code: "invalid_reconciliation_clock" });
+  }
+  const releaseFile = join(stateDirectory, releaseLockBasename);
+  const resumable = await resumableStateReleaseGuard({
+    releaseFile,
+    journal: canonicalJournal,
+    sourceJournalHash: sourceHash,
+    transitionId: stableTransitionId,
+    fields: selectedFields,
+    statImpl,
+  });
+  const releaseNow = resumable ? Date.parse(resumable.guard.claimedAt) : observedNow;
+  if (!Number.isFinite(releaseNow)) {
+    throw Object.assign(new Error("State-release guard clock is invalid"), {
+      code: "state_release_guard_mismatch",
+    });
+  }
+  if (!resumable && preparedLocks.some((item) => item.missing)) {
+    throw Object.assign(new Error("A lock may be missing only when resuming its exact durable release guard"), {
+      code: "lock_ownership_mismatch",
+    });
+  }
+  const releasedAt = new Date(releaseNow).toISOString();
+  let next;
+  let targetHash;
+  let guardedLockHashes;
+  if (resumable) {
+    next = structuredClone(resumable.guard.targetState);
+    targetHash = resumable.guard.targetJournalHash;
+    if (journalRevision(next) !== sourceRevision + 1 || sha256(next) !== targetHash) {
+      throw Object.assign(new Error("Crash-incomplete release target has an invalid journal generation"), {
+        code: "state_release_guard_mismatch",
+      });
+    }
+    for (const field of selectedFields) {
+      const releasedField = field === "executionLockPath"
+        ? "executionLockReleasedAt"
+        : field === "replayLockPath" ? "replayLockReleasedAt" : "reservationLockReleasedAt";
+      if (next[field] !== null || next[releasedField] !== releasedAt) {
+        throw Object.assign(new Error(`${field} crash target is not the exact guarded release state`), {
+          code: "state_release_guard_mismatch",
+        });
       }
     }
-    state[field] = null;
+    guardedLockHashes = structuredClone(resumable.guard.lockHashes);
+    for (const item of preparedLocks) {
+      const expectedGeneration = guardedLockHashes[item.field];
+      if (!item.missing && item.lockHash !== expectedGeneration) {
+        throw Object.assign(new Error(`${item.field} differs from the crash-incomplete guarded generation`), {
+          code: "lock_generation_mismatch",
+        });
+      }
+      const requestedGeneration = expectedLockHashes?.[item.field];
+      if (requestedGeneration !== undefined && requestedGeneration !== expectedGeneration) {
+        throw Object.assign(new Error(`${item.field} requested generation differs from the guarded transaction`), {
+          code: "lock_generation_mismatch",
+        });
+      }
+    }
+  } else {
+    next = structuredClone(source);
+    for (const field of selectedFields) {
+      next[field] = null;
+      if (field === "executionLockPath") {
+        next.executionLockReleasedAt = releasedAt;
+        next.executionLockReleaseError = null;
+      } else if (field === "replayLockPath") {
+        next.replayLockReleasedAt = releasedAt;
+        next.replayLockReleaseError = null;
+      } else if (field === "reservationLockPath") {
+        next.reservationLockReleasedAt = releasedAt;
+        next.reservationLockReleaseError = null;
+      }
+    }
+    if (transition) await transition(next, { releasedAt, now: releaseNow });
+    if (journalRevision(next) !== sourceRevision) {
+      throw Object.assign(new Error("State-release transition changed the journal revision"), {
+        code: "invalid_journal_revision",
+      });
+    }
+    next.journalRevision = sourceRevision + 1;
+    targetHash = sha256(next);
+    guardedLockHashes = Object.fromEntries(preparedLocks.map((item) => [
+      item.field,
+      item.missing ? null : item.lockHash,
+    ]));
   }
-  return released;
+  const releaseGuard = await claimStateReleaseGuard({
+    journal: canonicalJournal,
+    stateDirectory,
+    sourceJournalHash: sourceHash,
+    targetJournalHash: targetHash,
+    targetState: next,
+    transitionId: stableTransitionId,
+    fields: selectedFields,
+    lockHashes: guardedLockHashes,
+    now: releaseNow,
+    statImpl,
+    assertMutexAlive: () => mutexLease?.assertAlive(),
+  });
+  let destructive = false;
+  try {
+    mutexLease?.assertAlive();
+    const durable = JSON.parse(await readFile(canonicalJournal, "utf8"));
+    if (sha256(durable) !== sourceHash) {
+      throw Object.assign(new Error("Reconciliation journal changed before guarded lock release"), {
+        code: "reconciliation_journal_changed",
+      });
+    }
+    const checked = await verifyJournalLockOwnership(source, {
+      stateDirectory,
+      journal: canonicalJournal,
+      fields: selectedFields,
+    });
+    for (const item of checked) {
+      if (item.missing && !resumable) {
+        throw Object.assign(new Error(`${item.field} disappeared before its guarded release`), {
+          code: "lock_generation_mismatch",
+        });
+      }
+      const expectedHash = guardedLockHashes[item.field];
+      if (!item.missing && expectedHash !== item.lockHash) {
+        throw Object.assign(new Error(`${item.field} generation differs from the reconciled operation`), {
+          code: "lock_generation_mismatch",
+        });
+      }
+    }
+    await beforeUnlink?.(Object.freeze(checked.map((item) => Object.freeze({ ...item }))));
+    const released = [];
+    for (const { field, file, missing, lockHash } of checked) {
+      released.push(file);
+      if (missing) {
+        destructive = true;
+        continue;
+      }
+      let current;
+      try { current = JSON.parse(await readFile(file, "utf8")); } catch (error) {
+        if (error?.code === "ENOENT") {
+          if (!resumable) {
+            throw Object.assign(new Error(`${field} disappeared during its guarded release`), {
+              code: "lock_generation_mismatch",
+            });
+          }
+          destructive = true;
+          continue;
+        }
+        throw error;
+      }
+      if (sha256(current) !== lockHash) {
+        throw Object.assign(new Error(`${field} generation changed during guarded release`), {
+          code: "lock_generation_mismatch",
+        });
+      }
+      destructive = true;
+      mutexLease?.assertAlive();
+      await unlinkImpl(file);
+    }
+    await afterUnlink?.(Object.freeze([...released]));
+    mutexLease?.assertAlive();
+    await writeState(next, {
+      directory: stateDirectory,
+      file: canonicalJournal,
+      mutexHeld: true,
+      mutexLease,
+      expectedRevision: sourceRevision,
+      targetRevision: sourceRevision + 1,
+    });
+    mutexLease?.assertAlive();
+    const durableAfterRelease = JSON.parse(await readFile(canonicalJournal, "utf8"));
+    if (sha256(durableAfterRelease) !== targetHash) {
+      throw Object.assign(new Error("Reconciliation journal differs from the guarded release target"), {
+        code: "reconciliation_journal_changed",
+      });
+    }
+    replaceRecord(state, next);
+    await beforeGuardRelease?.(Object.freeze({
+      journalPath: canonicalJournal,
+      targetJournalHash: targetHash,
+      released: Object.freeze([...released]),
+    }));
+    mutexLease?.assertAlive();
+    await releaseGuard();
+    return released;
+  } catch (error) {
+    if (!destructive) {
+      try { await releaseGuard(); } catch (guardError) {
+        error.releaseGuardError = guardError?.code || "state_release_guard_mismatch";
+      }
+    }
+    error.releaseGuardRetained = destructive;
+    throw error;
+  }
 }
 
 /**
@@ -1011,24 +1880,28 @@ export async function recoverKnownUnstartedCloseExecution(
     stateDirectory,
     journal,
     fields: ["executionLockPath"],
+    writeState,
+    now,
+    transitionId: "close-known-unstarted-recovery-v1",
+    transition: (next, { releasedAt }) => {
+      next.stage = "trade_confirmed";
+      next.executionArgv = null;
+      next.executionArgvHash = null;
+      next.executionAttemptedAt = null;
+      next.reconciliationRequired = true;
+      next.executionBlockedBeforeLaunch = {
+        code: String(errorCode || "execution_blocked_before_launch"),
+        at: releasedAt,
+        liveProcessStarted: false,
+        replayLockRetained: true,
+      };
+    },
   });
   if (releasedLocks.length !== 1 || state.executionLockPath) {
     throw Object.assign(new Error("CLOSE execution lock was not released exactly once"), {
       code: "execution_lock_release_failed",
     });
   }
-  state.stage = "trade_confirmed";
-  state.executionArgv = null;
-  state.executionArgvHash = null;
-  state.executionAttemptedAt = null;
-  state.reconciliationRequired = true;
-  state.executionBlockedBeforeLaunch = {
-    code: String(errorCode || "execution_blocked_before_launch"),
-    at: new Date(now).toISOString(),
-    liveProcessStarted: false,
-    replayLockRetained: true,
-  };
-  await writeState(state, { directory: stateDirectory, file: journal });
   return Object.freeze({
     ok: true,
     status: state.stage,
@@ -1043,9 +1916,12 @@ async function releaseUnsentReplayLock(state, { journal = journalPath } = {}) {
     await releaseReconciledLocks(state, {
       journal,
       fields: ["replayLockPath"],
+      transitionId: "unsent-payment-replay-release-v1",
+      transition: (next, { releasedAt }) => {
+        next.replayKey = null;
+        next.replayLockReleaseError = null;
+      },
     });
-    state.replayKey = null;
-    state.replayLockReleaseError = null;
   } catch (error) {
     state.replayLockReleaseError = error?.code || "lock_release_failed";
     state.reconciliationRequired = true;
@@ -1104,6 +1980,7 @@ export async function reconcileOpenJournal({
   validateTerminalResultImpl = validateTerminalZeroOpenResult,
   fetchExactOrderImpl = fetchExactOrder,
   verifyTerminalOrderImpl = verifyTerminalZeroFillOrder,
+  authorizationStateImpl = fetchEip3009AuthorizationState,
   stateDirectory = journalDirectory,
 } = {}) {
   const journal = safeStatePath(file, "journal", stateDirectory);
@@ -1113,6 +1990,125 @@ export async function reconcileOpenJournal({
       code: "invalid_reconciliation_journal",
     });
   }
+
+  if (isRecoverablePaymentAuthorizationState(state)) {
+    if (state.replayKey !== openReplayKey({ request: state.request, buyerWallet: state.buyerWallet })) {
+      throw Object.assign(new Error("OPEN payment replay identity differs from its reserved request"), {
+        code: "invalid_replay_key",
+      });
+    }
+    const authorization = validateStoredPaymentAuthorization(state.paymentAuthorization, {
+      paymentPayer: state.paymentPayer,
+      service: POSITION_CARD_SERVICE,
+    });
+    const expiresAtMs = Number(BigInt(authorization.validBefore) * 1_000n);
+    if (now <= expiresAtMs) {
+      return {
+        ok: true,
+        status: "waiting_for_authorization_expiry",
+        expiresAt: new Date(expiresAtMs).toISOString(),
+        reconciliationRequired: true,
+        journalPath: journal,
+      };
+    }
+    const authorizationState = await authorizationStateImpl(authorization);
+    if (BigInt(authorizationState?.blockTimestamp ?? -1) <= BigInt(authorization.validBefore)) {
+      return {
+        ok: true,
+        status: "waiting_for_authorization_expiry",
+        expiresAt: new Date(expiresAtMs).toISOString(),
+        reconciliationRequired: true,
+        journalPath: journal,
+      };
+    }
+    if (authorizationState?.used !== false) {
+      return {
+        ok: true,
+        status: "manual_reconciliation_required",
+        reason: "payment_authorization_consumed_or_ambiguous",
+        reconciliationRequired: true,
+        journalPath: journal,
+        stage: state.stage,
+      };
+    }
+    const releasedLocks = await releaseReconciledLocks(state, {
+      stateDirectory,
+      journal,
+      fields: ["replayLockPath"],
+      now,
+      transitionId: "open-expired-authorization-reconciliation-v1",
+      transition: (next, { releasedAt }) => {
+        next.reconciliationAuthorizationState = authorizationState;
+        next.stage = "expired_unsettled_authorization_reconciled";
+        next.reconciliationRequired = false;
+        next.reconciledAt = releasedAt;
+        next.reconciliationReason = "expired_unsettled_authorization";
+      },
+    });
+    return {
+      ok: true,
+      status: state.stage,
+      reconciliationRequired: false,
+      journalPath: journal,
+      releasedLocks,
+    };
+  }
+
+  if (!state.executionArgvHash && state.paidCard) {
+    const validated = validateCardImpl(state.paidCard, {
+      trustedIssuers,
+      allowExpired: true,
+      now,
+    });
+    const expectedReplayKey = openReplayKey({ request: state.request, buyerWallet: state.buyerWallet });
+    if (
+      state.replayKey !== expectedReplayKey || validated.wallet !== state.buyerWallet ||
+      validated.outcome !== String(state.request?.side || "").toUpperCase() ||
+      BigInt(validated.bounds?.requestedBudgetRaw ?? -1) !== parseDecimal(state.request?.budget, 6, "open request budget") ||
+      parseDecimal(validated.bounds?.maxPrice, 6, "open card maximum price") !==
+        parseDecimal(state.request?.maxPrice, 6, "open request maximum price")
+    ) {
+      throw Object.assign(new Error("Paid OPEN card differs from its reserved buyer request"), {
+        code: "invalid_replay_key",
+      });
+    }
+    await verifyJournalLockOwnership(state, {
+      stateDirectory,
+      journal,
+      fields: ["replayLockPath"],
+      requirePresent: true,
+    });
+    if (Date.parse(validated.expiresAt) > now) {
+      return {
+        ok: true,
+        status: "waiting_for_card_expiry",
+        expiresAt: validated.expiresAt,
+        reconciliationRequired: true,
+        journalPath: journal,
+      };
+    }
+    const releasedLocks = await releaseReconciledLocks(state, {
+      stateDirectory,
+      journal,
+      fields: ["replayLockPath", "executionLockPath"],
+      now,
+      transitionId: "open-expired-unexecuted-reconciliation-v1",
+      transition: (next, { releasedAt }) => {
+        next.stage = "expired_unexecuted_reconciled";
+        next.reconciliationRequired = false;
+        next.reconciledAt = releasedAt;
+        next.reconciliationReason = "expired_without_execution";
+      },
+    });
+    return {
+      ok: true,
+      status: state.stage,
+      reconciliationRequired: false,
+      journalPath: journal,
+      releasedLocks,
+    };
+  }
+
   const validated = validateCardImpl(state.paidCard, {
     trustedIssuers,
     allowExpired: true,
@@ -1122,7 +2118,7 @@ export async function reconcileOpenJournal({
   await verifyJournalLockOwnership(state, {
     stateDirectory,
     journal,
-    fields: ["executionLockPath"],
+    fields: ["replayLockPath", "executionLockPath"],
     requirePresent: true,
   });
 
@@ -1213,25 +2209,28 @@ export async function reconcileOpenJournal({
   const releasedLocks = await releaseReconciledLocks(state, {
     stateDirectory,
     journal,
-    fields: ["executionLockPath"],
+    fields: ["replayLockPath", "executionLockPath"],
+    now,
+    transitionId: "open-terminal-reconciliation-v1",
+    transition: (next, { releasedAt }) => {
+      next.stage = status;
+      next.reconciliationRequired = false;
+      next.reconciledAt = releasedAt;
+      next.reconciliationReason = proof ? "verified_settlement" : "authenticated_terminal_zero_fill";
+      if (proof) {
+        next.positionProofHash = proof.positionProofHash;
+        next.positionPassportHash = proof.positionPassportHash || null;
+      } else {
+        next.terminalZeroFillProof = terminal.proof;
+        next.terminalZeroFillProofHash = terminal.proofHash;
+      }
+    },
   });
-  if (releasedLocks.length !== 1) {
-    throw Object.assign(new Error("OPEN reconciliation did not release exactly its execution lock"), {
+  if (releasedLocks.length !== 2) {
+    throw Object.assign(new Error("OPEN reconciliation did not release its replay and execution locks"), {
       code: "execution_lock_release_failed",
     });
   }
-  state.stage = status;
-  state.reconciliationRequired = false;
-  state.reconciledAt = new Date(now).toISOString();
-  state.reconciliationReason = proof ? "verified_settlement" : "authenticated_terminal_zero_fill";
-  if (proof) {
-    state.positionProofHash = proof.positionProofHash;
-    state.positionPassportHash = proof.positionPassportHash || null;
-  } else {
-    state.terminalZeroFillProof = terminal.proof;
-    state.terminalZeroFillProofHash = terminal.proofHash;
-  }
-  await writeReconciliationJournal(state, { directory: dirname(journal), file: journal });
   return {
     ok: true,
     status,
@@ -1271,6 +2270,7 @@ export async function reconcileCloseJournal({
   let reason;
   let proof;
   let terminal;
+  let reconciledAuthorizationState;
   if (HASH_RE.test(String(state.settlementTx || "")) && HASH_RE.test(String(state.orderId || "")) && state.paidCard) {
     proof = await verifyClose(state.settlementTx, {
       intent: state.paidCard.intent,
@@ -1408,7 +2408,7 @@ export async function reconcileCloseJournal({
         stage: state.stage,
       };
     }
-    state.reconciliationAuthorizationState = authorizationState;
+    reconciledAuthorizationState = authorizationState;
     reason = "expired_unsettled_authorization";
   } else {
     return {
@@ -1429,26 +2429,32 @@ export async function reconcileCloseJournal({
     fields: reason === "expired_unsettled_authorization"
       ? ["replayLockPath"]
       : ["replayLockPath", "executionLockPath"],
+    now,
+    transitionId: "close-terminal-reconciliation-v1",
+    transition: (next, { releasedAt }) => {
+      next.stage = reason === "verified_settlement"
+        ? "complete_reconciled"
+        : reason === "authenticated_terminal_zero_fill"
+          ? "terminal_zero_fill_reconciled"
+          : reason === "expired_unsettled_authorization"
+            ? "expired_unsettled_authorization_reconciled"
+            : "expired_unexecuted_reconciled";
+      next.reconciliationRequired = false;
+      next.reconciledAt = releasedAt;
+      next.reconciliationReason = reason;
+      if (reason === "expired_unsettled_authorization") {
+        next.reconciliationAuthorizationState = reconciledAuthorizationState;
+      }
+      if (proof) {
+        next.closeProofHash = proof.closeProofHash;
+        next.closePassportHash = proof.closePassportHash;
+      }
+      if (terminal) {
+        next.terminalZeroFillProof = terminal.proof;
+        next.terminalZeroFillProofHash = terminal.proofHash;
+      }
+    },
   });
-  state.stage = reason === "verified_settlement"
-    ? "complete_reconciled"
-    : reason === "authenticated_terminal_zero_fill"
-      ? "terminal_zero_fill_reconciled"
-    : reason === "expired_unsettled_authorization"
-      ? "expired_unsettled_authorization_reconciled"
-      : "expired_unexecuted_reconciled";
-  state.reconciliationRequired = false;
-  state.reconciledAt = new Date(now).toISOString();
-  state.reconciliationReason = reason;
-  if (proof) {
-    state.closeProofHash = proof.closeProofHash;
-    state.closePassportHash = proof.closePassportHash;
-  }
-  if (terminal) {
-    state.terminalZeroFillProof = terminal.proof;
-    state.terminalZeroFillProofHash = terminal.proofHash;
-  }
-  await writeReconciliationJournal(state, { directory: dirname(journal), file: journal });
   return {
     ok: true,
     status: state.stage,
@@ -1699,31 +2705,33 @@ export async function resumePaidCloseJournal({
   let lockClaimed = false;
   let lockStateVerified = false;
   let liveAttempted = false;
-  const preLockCheckpointHash = sha256(state);
+  let releaseGuardRetained = false;
   try {
-    state.executionLockPath = await claimExecutionLockImpl({
+    await claimExecutionLockImpl({
       journal,
       directory: stateDirectory,
       file: executionFile,
+      state,
+      writeState: writeReconciliationJournal,
+      transition: (next) => {
+        next.stage = "resume_execution_lock_acquired";
+        next.resumeStartedAt = new Date(now()).toISOString();
+      },
     });
     lockClaimed = true;
+    lockStateVerified = true;
     const lockedState = JSON.parse(await readFile(journal, "utf8"));
     resumeInvariant(
-      sha256(lockedState) === preLockCheckpointHash,
+      sha256(lockedState) === sha256(state),
       "resume_checkpoint_changed",
       "Paid CLOSE checkpoint changed while acquiring the execution lock",
     );
-    requireExactResumeCheckpoint(lockedState, journal);
-    await verifyJournalLockOwnership(lockedState, {
+    await verifyJournalLockOwnership(state, {
       stateDirectory,
       journal,
-      fields: ["replayLockPath"],
+      fields: ["replayLockPath", "executionLockPath"],
       requirePresent: true,
     });
-    lockStateVerified = true;
-    state.stage = "resume_execution_lock_acquired";
-    state.resumeStartedAt = new Date(now()).toISOString();
-    await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
 
     await adapters.ensureTradingMode({ sellerWallet: state.buyerWallet });
     validated = await adapters.validateCloseCard(state.paidCard, {
@@ -1834,12 +2842,15 @@ export async function resumePaidCloseJournal({
       stateDirectory,
       journal,
       fields: ["replayLockPath", "executionLockPath"],
+      now,
+      transitionId: "close-paid-resume-complete-v1",
+      transition: (next, { releasedAt }) => {
+        next.stage = "complete_resumed";
+        next.reconciliationRequired = false;
+        next.resumedAt = releasedAt;
+        next.resumeError = null;
+      },
     });
-    state.stage = "complete_resumed";
-    state.reconciliationRequired = false;
-    state.resumedAt = new Date(now()).toISOString();
-    state.resumeError = null;
-    await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
     return {
       ok: true,
       status: state.stage,
@@ -1861,6 +2872,24 @@ export async function resumePaidCloseJournal({
       },
     };
   } catch (error) {
+    if (lockClaimed && !lockStateVerified && !liveAttempted) {
+      try {
+        await releaseUnattachedExecutionLock({
+          file: state.executionLockPath,
+          journal,
+          directory: stateDirectory,
+        });
+        lockClaimed = false;
+        state.executionLockPath = null;
+      } catch (releaseError) {
+        state.resumeError = {
+          code: error?.code || "resume_failed",
+          at: new Date(now()).toISOString(),
+          executionAmbiguous: false,
+          lockReleaseError: releaseError?.code || "lock_release_failed",
+        };
+      }
+    }
     state.reconciliationRequired = true;
     state.resumeError = {
       code: error?.code || "resume_failed",
@@ -1869,22 +2898,30 @@ export async function resumePaidCloseJournal({
     };
     if (lockClaimed && !liveAttempted) {
       try {
+        await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
         await releaseReconciledLocks(state, {
           stateDirectory,
           journal,
           fields: ["executionLockPath"],
+          now,
+          transitionId: "close-paid-resume-prelaunch-release-v1",
+          transition: (next) => {
+            if (lockStateVerified) {
+              next.stage = "trade_confirmed";
+              next.executionArgv = null;
+              next.executionArgvHash = null;
+              next.executionAttemptedAt = null;
+            }
+          },
         });
-        if (lockStateVerified) {
-          state.stage = "trade_confirmed";
-          state.executionArgv = null;
-          state.executionArgvHash = null;
-          state.executionAttemptedAt = null;
-        }
       } catch (releaseError) {
-        state.resumeError.lockReleaseError = releaseError?.code || "lock_release_failed";
+        releaseGuardRetained = releaseError?.releaseGuardRetained === true;
+        if (!releaseGuardRetained) {
+          state.resumeError.lockReleaseError = releaseError?.code || "lock_release_failed";
+        }
       }
     }
-    if (lockClaimed && lockStateVerified) {
+    if (lockClaimed && lockStateVerified && !releaseGuardRetained) {
       try {
         await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
       } catch {}
@@ -2387,11 +3424,9 @@ async function main() {
       return json;
     },
     requestPaymentChallenge: async () => {
-      if (closeMode) {
-        checkpoint.paymentRequestedAt = new Date().toISOString();
-        checkpoint.stage = "payment_challenge_requested";
-        await writeReconciliationJournal(checkpoint);
-      }
+      checkpoint.paymentRequestedAt = new Date().toISOString();
+      checkpoint.stage = "payment_challenge_requested";
+      await writeReconciliationJournal(checkpoint);
       const { response, json } = await postJson(pinnedServiceUrl(service), requestBody);
       const encoded = response.headers.get("payment-required");
       if (response.status !== 402 || !encoded) {
@@ -2405,19 +3440,19 @@ async function main() {
     },
     payAndRequestCard: async ({ challenge }) => {
       let createdReplayLock = false;
-      if (closeMode) {
-        checkpoint.replayKey = closeReplayKey({
-          request: journeyRequest,
-          sellerWallet: options.sellerWallet,
-        });
-        checkpoint.replayLockPath = await claimCloseReplayLock({
-          key: checkpoint.replayKey,
-          journal: journalPath,
-        });
-        checkpoint.stage = "payment_authorization_starting";
-        await writeReconciliationJournal(checkpoint);
-        createdReplayLock = true;
-      }
+      const replayKey = closeMode
+        ? closeReplayKey({ request: journeyRequest, sellerWallet: options.sellerWallet })
+        : openReplayKey({ request: journeyRequest, buyerWallet: options.buyerWallet });
+      await (closeMode ? claimCloseReplayLock : claimOpenReplayLock)({
+        key: replayKey,
+        journal: journalPath,
+        state: checkpoint,
+        transition: (next) => {
+          next.replayKey = replayKey;
+          next.stage = "payment_authorization_starting";
+        },
+      });
+      createdReplayLock = true;
       let signed;
       try {
         signed = await commandJson(
@@ -2506,9 +3541,13 @@ async function main() {
     validateDryRun: async (card, dryRun, validationOptions) => validatePluginPreview(card, dryRun, validationOptions),
     validateCloseDryRun: async (card, dryRun, validationOptions) => validateClosePluginPreview(card, dryRun, validationOptions),
     execute: async (argv) => {
-      checkpoint.executionLockPath = await claimExecutionLock({ journal: journalPath });
-      checkpoint.stage = "execution_lock_acquired";
-      await writeReconciliationJournal(checkpoint);
+      await claimExecutionLock({
+        journal: journalPath,
+        state: checkpoint,
+        transition: (next) => {
+          next.stage = "execution_lock_acquired";
+        },
+      });
       try {
         // Exact CLOB recovery requires the accepted order to strictly postdate
         // the buyer's confirmation second. Waiting here keeps the temporal
@@ -2618,7 +3657,7 @@ async function main() {
         } catch (error) {
           if (!executionAttempted) {
             checkpoint.stage = "execution_blocked_before_launch";
-            checkpoint.reconciliationRequired = closeMode;
+            checkpoint.reconciliationRequired = true;
             await writeReconciliationJournal(checkpoint);
           }
           throw error;
@@ -2667,6 +3706,7 @@ async function main() {
         await settleExecutionLock(checkpoint, {
           liveAttempted: executionAttempted,
           proofVerified: false,
+          transitionId: "buyer-prelaunch-execution-release-v1",
         });
         await writeReconciliationJournal(checkpoint);
       }
@@ -2725,23 +3765,16 @@ async function main() {
           confirm,
           emit,
         });
-    stdout.write(`${JSON.stringify(result)}\n`);
-    checkpoint.stage = "complete";
-    checkpoint.reconciliationRequired = false;
-    await settleExecutionLock(checkpoint, {
-      liveAttempted: executionAttempted,
-      proofVerified: true,
+    await releaseReconciledLocks(checkpoint, {
+      journal: journalPath,
+      fields: ["replayLockPath", "executionLockPath"],
+      transitionId: "buyer-complete-reconciliation-v1",
+      transition: (next) => {
+        next.stage = "complete";
+        next.reconciliationRequired = false;
+      },
     });
-    if (checkpoint.replayLockPath) {
-      try {
-        await unlink(checkpoint.replayLockPath);
-        checkpoint.replayLockReleasedAt = new Date().toISOString();
-        checkpoint.replayLockPath = null;
-      } catch (error) {
-        checkpoint.replayLockReleaseError = error?.code || "lock_release_failed";
-      }
-    }
-    await writeReconciliationJournal(checkpoint);
+    stdout.write(`${JSON.stringify(result)}\n`);
   } finally {
     readline.close();
   }
@@ -2766,7 +3799,7 @@ if (isMain()) {
     const stateCommand = process.argv[2] === "reconcile-open" ||
       process.argv[2] === "reconcile-close" || process.argv[2] === "resume-close";
     const persistCheckpoint = !stateCommand && shouldPersistFailureCheckpoint(checkpoint);
-    if (persistCheckpoint) {
+    if (persistCheckpoint && error?.releaseGuardRetained !== true) {
       checkpoint.reconciliationRequired = Boolean(
         executionAttempted ||
         (checkpoint.replayLockPath && checkpoint.stage !== "complete"),

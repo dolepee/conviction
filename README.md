@@ -59,7 +59,7 @@ The full wire contract is in [`docs/SERVICE_CONTRACT.md`](docs/SERVICE_CONTRACT.
 
 ## Run locally
 
-Requires Node.js 22.x LTS and Python 3.
+Requires Node.js 22.x LTS and Python 3. Buyer-state claims, journal updates, and crash-safe lock releases use Python's standard `fcntl.flock` support to serialize independent local processes.
 
 ```sh
 npm run gate

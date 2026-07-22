@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile as fsWriteFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+const writeFile = (file, data, options = {}) => fsWriteFile(file, data, { ...options, mode: 0o600 });
 
 import {
   claimCloseReplayLock,
@@ -11,6 +13,7 @@ import {
   fetchEip3009AuthorizationState,
   normalizeOpenOrders,
   normalizeSourcePosition,
+  openReplayKey,
   parseArgs,
   parseJsonOutput,
   paymentAuthorizationMetadata,
@@ -700,10 +703,11 @@ test("buyer CLI atomically journals reconciliation state outside Git with owner-
 
 test("buyer CLI serializes the final Polymarket execution window", async () => {
   const directory = await mkdtemp(join(tmpdir(), "conviction-execution-lock-test-"));
-  const file = join(directory, "execution.lock.json");
+  const file = join(directory, "polymarket-execution.lock.json");
+  const journal = join(directory, "journey.json");
   try {
     assert.equal(
-      await claimExecutionLock({ journal: "/tmp/first.json", directory, file }),
+      await claimExecutionLock({ journal, directory, file }),
       file,
     );
     assert.equal((await stat(file)).mode & 0o777, 0o600);
@@ -712,7 +716,8 @@ test("buyer CLI serializes the final Polymarket execution window", async () => {
       (error) => error?.code === "execution_reconciliation_required" &&
         error?.details?.executionLockPath === file,
     );
-    const checkpoint = { executionLockPath: file };
+    const checkpoint = { journalPath: journal, executionLockPath: file };
+    await writeReconciliationJournal(checkpoint, { directory, file: journal });
     assert.deepEqual(
       await settleExecutionLock(checkpoint, { liveAttempted: true, proofVerified: false }),
       { released: false, retained: true, path: file },
@@ -964,7 +969,7 @@ function rejectedPaymentState({ replayLock, validBefore = "10", stage = "paid_re
     replayKey,
     replayLockPath: replayLock,
     executionLockPath: null,
-    paidServiceResponse: stage === "payment_authorization_created"
+    paidServiceResponse: stage === "payment_authorization_created" || stage === "payment_header_rejected_after_authorization"
       ? null
       : { status: stage === "paid_request_rejected_pre_settlement" ? 422 : 200, paymentResponsePresent: false },
     paymentAuthorization: {
@@ -1071,8 +1076,12 @@ test("CLOSE reconciliation retains the lock when a rejected authorization was co
   }
 });
 
-test("CLOSE reconciliation safely recovers timeout and ambiguous-response stages after finalized expiry", async () => {
-  for (const stage of ["payment_authorization_created", "paid_request_settlement_ambiguous"]) {
+test("CLOSE reconciliation safely recovers rejected-header, timeout, and ambiguous-response stages after finalized expiry", async () => {
+  for (const stage of [
+    "payment_authorization_created",
+    "payment_header_rejected_after_authorization",
+    "paid_request_settlement_ambiguous",
+  ]) {
     const directory = await mkdtemp(join(tmpdir(), `conviction-reconcile-${stage}-test-`));
     const journal = join(directory, "journey.json");
     const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
@@ -1124,6 +1133,130 @@ test("CLOSE reconciliation never releases a replay lock owned by another journal
       `close-${"a".repeat(64)}.lock.json`,
       "journey.json",
     ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function recoverableOpenPaymentState({ journal, validBefore = "1", stage, usedResponse = false }) {
+  const request = { market: "fixture-open-market", side: "YES", budget: "1.35", maxPrice: "0.27" };
+  const buyerWallet = "0x2222222222222222222222222222222222222222";
+  const replayKey = openReplayKey({ request, buyerWallet });
+  const replayLockPath = join(join(journal, ".."), `open-${replayKey.slice(2)}.lock.json`);
+  return {
+    state: {
+      mode: "open",
+      stage,
+      journalPath: journal,
+      reconciliationRequired: true,
+      request,
+      paymentPayer: "0x1111111111111111111111111111111111111111",
+      buyerWallet,
+      paymentTx: null,
+      paidCard: null,
+      orderId: null,
+      settlementTx: null,
+      tradeConfirmedAt: null,
+      liveResult: null,
+      executionArgv: null,
+      executionArgvHash: null,
+      replayKey,
+      replayLockPath,
+      executionLockPath: null,
+      paidServiceResponse: stage === "payment_authorization_created" || stage === "payment_header_rejected_after_authorization"
+        ? null
+        : {
+            status: stage === "paid_request_rejected_pre_settlement" ? 422 : 200,
+            paymentResponsePresent: usedResponse,
+          },
+      paymentAuthorization: {
+        version: "conviction-x402-authorization-v1",
+        scheme: "exact-eip3009",
+        network: SERVICE_NETWORK,
+        asset: SERVICE_ASSET,
+        from: "0x1111111111111111111111111111111111111111",
+        to: SERVICE_PAYEE,
+        value: SERVICE_PRICE_ATOMIC,
+        validAfter: "0",
+        validBefore,
+        nonce: `0x${"cd".repeat(32)}`,
+      },
+    },
+    replayLockPath,
+    replayLock: {
+      version: "conviction-open-replay-lock-v1",
+      replayKey,
+      journalPath: journal,
+    },
+  };
+}
+
+test("OPEN keeps every ambiguous EIP-3009 payment reserved until finalized expiry proves it unused", async () => {
+  for (const stage of [
+    "payment_authorization_created",
+    "payment_header_rejected_after_authorization",
+    "paid_request_rejected_pre_settlement",
+    "paid_request_settlement_ambiguous",
+  ]) {
+    const directory = await mkdtemp(join(tmpdir(), `conviction-open-${stage}-`));
+    const journal = join(directory, "journey.json");
+    const fixture = recoverableOpenPaymentState({ journal, stage });
+    try {
+      await Promise.all([
+        writeFile(journal, `${JSON.stringify(fixture.state, null, 2)}\n`),
+        writeFile(fixture.replayLockPath, `${JSON.stringify(fixture.replayLock, null, 2)}\n`),
+      ]);
+      let reads = 0;
+      const waiting = await reconcileOpenJournal({
+        file: journal,
+        trustedIssuers: new Map(),
+        now: 999,
+        stateDirectory: directory,
+        authorizationStateImpl: async () => { reads += 1; return { used: false, blockTimestamp: "2" }; },
+      });
+      assert.equal(waiting.status, "waiting_for_authorization_expiry");
+      assert.equal(reads, 0);
+      await access(fixture.replayLockPath);
+
+      const result = await reconcileOpenJournal({
+        file: journal,
+        trustedIssuers: new Map(),
+        now: 2_000,
+        stateDirectory: directory,
+        authorizationStateImpl: async () => {
+          reads += 1;
+          return { used: false, blockTimestamp: "2", blockNumber: "10", blockHash: `0x${"12".repeat(32)}` };
+        },
+      });
+      assert.equal(result.status, "expired_unsettled_authorization_reconciled");
+      assert.equal(result.reconciliationRequired, false);
+      assert.equal(reads, 1);
+      await assert.rejects(access(fixture.replayLockPath), (error) => error?.code === "ENOENT");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("OPEN never releases an ambiguous payment reservation when its authorization was consumed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-open-consumed-auth-"));
+  const journal = join(directory, "journey.json");
+  const fixture = recoverableOpenPaymentState({ journal, stage: "paid_request_settlement_ambiguous", usedResponse: true });
+  try {
+    await Promise.all([
+      writeFile(journal, `${JSON.stringify(fixture.state, null, 2)}\n`),
+      writeFile(fixture.replayLockPath, `${JSON.stringify(fixture.replayLock, null, 2)}\n`),
+    ]);
+    const result = await reconcileOpenJournal({
+      file: journal,
+      trustedIssuers: new Map(),
+      now: 2_000,
+      stateDirectory: directory,
+      authorizationStateImpl: async () => ({ used: true, blockTimestamp: "2" }),
+    });
+    assert.equal(result.status, "manual_reconciliation_required");
+    assert.equal(result.reason, "payment_authorization_consumed_or_ambiguous");
+    await access(fixture.replayLockPath);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

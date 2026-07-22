@@ -369,7 +369,9 @@ test("TAKE_PROFIT reconciliation releases only a finalized terminal or zero-fill
       assert.equal(journal, context.journal);
       assert.equal(options.journal, context.journalPath);
       assert.deepEqual(options.fields, ["executionLockPath"]);
+      await options.transition(journal, { releasedAt: "2023-11-14T22:13:20.000Z" });
       journal.executionLockPath = null;
+      await options.writeState(journal, { file: context.journalPath });
       return ["/private/state/polymarket-execution.lock.json"];
     },
     writeState: async (journal, options) => {

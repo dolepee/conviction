@@ -402,15 +402,20 @@ test("reconcile-tp persists exact ARMED recovery before releasing only its owner
     releaseLocks: async (journal, options) => {
       assert.deepEqual(options.fields, ["executionLockPath"]);
       assert.equal(journal.reservationLockPath, fixture.reservationLockPath);
-      await assert.rejects(
-        claimExecutionLock({
-          journal: join(fixture.stateDirectory, "racing-close.json"),
-          directory: fixture.stateDirectory,
-          file: fixture.executionLockPath,
-        }),
-        (error) => error?.code === "execution_release_in_progress",
-      );
-      return releaseReconciledLocks(journal, options);
+      return releaseReconciledLocks(journal, {
+        ...options,
+        beforeUnlink: async (checked) => {
+          await assert.rejects(
+            claimExecutionLock({
+              journal: join(fixture.stateDirectory, "racing-close.json"),
+              directory: fixture.stateDirectory,
+              file: fixture.executionLockPath,
+            }),
+            (error) => error?.code === "execution_release_in_progress",
+          );
+          await options.beforeUnlink?.(checked);
+        },
+      });
     },
   });
 
@@ -534,91 +539,88 @@ test("a crash after unlink but before final journal write retries idempotently a
   await access(fixture.reservationLockPath);
 });
 
-test("reconcile safely reclaims only an exact dead-owner release guard", async () => {
-  for (const owner of ["dead", "live", "foreign"]) {
-    const fixture = await diskFixture();
-    await assert.rejects(
-      runTakeProfitReconcileCli({
-        journal: fixture.journalPath,
-        issuerRegistry: fixture.issuerRegistry,
-        json: true,
-      }, {
-        stateDirectory: fixture.stateDirectory,
-        now: () => Date.parse(FETCHED_AT),
-        fetchExactOrderImpl: async () => orderSnapshot(),
-        releaseLocks: async () => {
-          throw Object.assign(new Error("stop after release-guard acquisition"), { code: "simulated_guard_crash" });
-        },
-      }),
-      (error) => error?.code === "simulated_guard_crash",
-    );
-    const journal = JSON.parse(await readFile(fixture.journalPath, "utf8"));
-    const guardPath = join(fixture.stateDirectory, "polymarket-execution.release.lock.json");
-    const staleGuard = {
-      version: "conviction-polymarket-execution-release-v1",
-      journalPath: owner === "foreign" ? join(fixture.stateDirectory, "foreign-take-profit.json") : fixture.journalPath,
-      expectedExecutionLockHash: journal.prePassportRecovery.executionLockHash,
-      pid: owner === "live" ? process.pid : 2_147_483_647,
-      claimedAt: "2026-07-21T02:00:13.000Z",
-    };
-    await writeFile(guardPath, `${JSON.stringify(staleGuard, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-    if (owner === "dead") await unlink(fixture.executionLockPath);
+async function leaveExactArmedReleaseGuard(fixture) {
+  let writes = 0;
+  await assert.rejects(
+    runTakeProfitReconcileCli({
+      journal: fixture.journalPath,
+      issuerRegistry: fixture.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: fixture.stateDirectory,
+      now: () => Date.parse(FETCHED_AT),
+      fetchExactOrderImpl: async () => orderSnapshot(),
+      writeState: async (journal, options) => {
+        writes += 1;
+        if (writes === 2) {
+          throw Object.assign(new Error("simulated crash after guarded unlink"), {
+            code: "simulated_guard_crash",
+          });
+        }
+        return writeTakeProfitState(journal, options);
+      },
+    }),
+    (error) => error?.code === "simulated_guard_crash",
+  );
+  const guardPath = join(fixture.stateDirectory, "polymarket-execution.release.lock.json");
+  await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+  return { guardPath, guard: JSON.parse(await readFile(guardPath, "utf8")) };
+}
 
-    if (owner !== "dead") {
-      await assert.rejects(
-        runTakeProfitReconcileCli({
-          journal: fixture.journalPath,
-          issuerRegistry: fixture.issuerRegistry,
-          json: true,
-        }, {
-          stateDirectory: fixture.stateDirectory,
-          now: () => Date.parse(FETCHED_AT),
-          fetchExactOrderImpl: async () => orderSnapshot(),
-        }),
-        (error) => error?.code === (owner === "live" ? "execution_release_in_progress" : "execution_release_guard_mismatch"),
-      );
-      assert.deepEqual(JSON.parse(await readFile(guardPath, "utf8")), staleGuard);
-      await access(fixture.executionLockPath);
-    } else {
-      const result = await runTakeProfitReconcileCli({
-        journal: fixture.journalPath,
-        issuerRegistry: fixture.issuerRegistry,
-        json: true,
-      }, {
-        stateDirectory: fixture.stateDirectory,
-        now: () => Date.parse(FETCHED_AT),
-        fetchExactOrderImpl: async () => orderSnapshot(),
-      });
+test("reconcile resumes only an exact source, target, field set, and lock generation", async () => {
+  for (const mutation of ["exact", "source", "target", "fields", "generation"]) {
+    const fixture = await diskFixture();
+    const { guardPath, guard } = await leaveExactArmedReleaseGuard(fixture);
+    if (mutation === "source") guard.journalPath = join(fixture.stateDirectory, "foreign.json");
+    if (mutation === "target") {
+      guard.targetState.executionLockPath = fixture.executionLockPath;
+      guard.targetJournalHash = sha256(guard.targetState);
+    }
+    if (mutation === "fields") guard.fields = ["executionLockPath", "reservationLockPath"];
+    if (mutation === "generation") guard.lockHashes.executionLockPath = `0x${"d".repeat(64)}`;
+    if (mutation !== "exact") {
+      await writeFile(guardPath, `${JSON.stringify(guard, null, 2)}\n`, { mode: 0o600 });
+    }
+
+    const retry = runTakeProfitReconcileCli({
+      journal: fixture.journalPath,
+      issuerRegistry: fixture.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: fixture.stateDirectory,
+      now: () => Date.parse(FETCHED_AT) + 1_000,
+      fetchExactOrderImpl: async () => orderSnapshot(),
+    });
+    if (mutation === "exact") {
+      const result = await retry;
       assert.equal(result.reconciliationRequired, false);
       await assert.rejects(access(guardPath), (error) => error?.code === "ENOENT");
-      await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
       await access(fixture.reservationLockPath);
+    } else {
+      await assert.rejects(
+        retry,
+        (error) => [
+          "state_release_guard_mismatch",
+          "lock_generation_mismatch",
+          "lock_ownership_mismatch",
+        ].includes(error?.code),
+      );
+      await access(guardPath);
     }
   }
 });
 
-test("resolved ARMED recovery clears an exact dead-owner guard left after its final journal write", async () => {
+test("a completed exact release guard is cleaned before the next generation can claim", async () => {
   const fixture = await diskFixture();
-  await runTakeProfitReconcileCli({
-    journal: fixture.journalPath,
-    issuerRegistry: fixture.issuerRegistry,
-    json: true,
-  }, {
-    stateDirectory: fixture.stateDirectory,
-    now: () => Date.parse(FETCHED_AT),
-    fetchExactOrderImpl: async () => orderSnapshot(),
+  const { guardPath, guard } = await leaveExactArmedReleaseGuard(fixture);
+  const durable = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  const target = structuredClone(guard.targetState);
+  await writeTakeProfitState(target, {
+    directory: fixture.stateDirectory,
+    file: fixture.journalPath,
+    expectedRevision: durable.journalRevision,
+    targetRevision: target.journalRevision,
   });
-  const journal = JSON.parse(await readFile(fixture.journalPath, "utf8"));
-  assert.equal(journal.reconciliationRequired, false);
-  assert.equal(journal.executionLockPath, null);
-  const guardPath = join(fixture.stateDirectory, "polymarket-execution.release.lock.json");
-  await writeFile(guardPath, `${JSON.stringify({
-    version: "conviction-polymarket-execution-release-v1",
-    journalPath: fixture.journalPath,
-    expectedExecutionLockHash: journal.prePassportRecovery.executionLockHash,
-    pid: 2_147_483_647,
-    claimedAt: "2026-07-21T02:00:14.000Z",
-  }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
 
   const result = await runTakeProfitReconcileCli({
     journal: fixture.journalPath,
@@ -629,7 +631,6 @@ test("resolved ARMED recovery clears an exact dead-owner guard left after its fi
     now: () => Date.parse(FETCHED_AT),
     fetchExactOrderImpl: async () => orderSnapshot({ order: { status: "CANCELED" } }),
   });
-  assert.equal(result.status, "CANCELED");
   assert.equal(result.reconciliationRequired, false);
   await assert.rejects(access(guardPath), (error) => error?.code === "ENOENT");
   const nextLock = await claimExecutionLock({
@@ -881,7 +882,12 @@ test("reconcile-tp continues a first-fetch fill through independent proof and re
     releaseLocks: async (journal, options) => {
       releases += 1;
       assert.equal(options.journal, await realpath(fixture.journalPath));
+      await options.transition(journal, { releasedAt: FETCHED_AT });
       journal.executionLockPath = null;
+      await options.writeState(journal, {
+        directory: fixture.stateDirectory,
+        file: fixture.journalPath,
+      });
       return ["polymarket-execution.lock.json"];
     },
     writeState: async (journal, options) => {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, realpath, rename, stat, unlink, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -27,6 +28,7 @@ import {
 import { fetchAndVerifyX402Payment } from "../src/x402-payment-verifier.mjs";
 import { fetchAndVerifyTakeProfitAggregateFill } from "../src/take-profit-fill-verifier.mjs";
 import {
+  assertNoStateReleaseInProgress,
   claimExecutionLock,
   fetchEip3009AuthorizationState,
   normalizeOpenOrders,
@@ -37,9 +39,12 @@ import {
   paymentTransaction,
   releaseReconciledLocks,
   requireDistinctPaymentPayer,
+  resolveFailedLockAttachment,
   settleExecutionLock,
   summarizeOpenSellReservations,
   validatePaymentChallenge,
+  withStateReleaseMutex,
+  writeReconciliationJournal,
 } from "./buyer-orchestrator.mjs";
 import {
   buildTakeProfitOrderProof,
@@ -172,53 +177,153 @@ export function takeProfitReplayKey({ request, sellerWallet }) {
   });
 }
 
-export async function claimTakeProfitReservation({ key, journal, directory = STATE_DIRECTORY } = {}) {
+export async function claimTakeProfitReservation({
+  key,
+  journal,
+  directory = STATE_DIRECTORY,
+  state,
+  writeState = writeTakeProfitState,
+  transition,
+  beforePersist,
+} = {}) {
   fail(HASH_RE.test(String(key || "")), "invalid_replay_key", "TAKE_PROFIT replay key is invalid");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
   const file = join(directory, `take-profit-${String(key).slice(2)}.lock.json`);
-  let handle;
-  try {
-    handle = await open(file, "wx", 0o600);
-    await handle.writeFile(`${JSON.stringify({
+  const releaseFile = join(directory, "polymarket-execution.release.lock.json");
+  return withStateReleaseMutex(directory, async (mutexLease) => {
+    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true });
+    fail(!state || resolve(String(state.journalPath || "")) === resolve(journal), "reservation_ownership_mismatch", "TAKE_PROFIT reservation state belongs to another journal");
+    if (state) {
+      const durable = JSON.parse(await readFile(journal, "utf8"));
+      fail(sha256(durable) === sha256(state), "stale_journal_write", "TAKE_PROFIT reservation state is stale before lock claim");
+    }
+    const lock = {
       version: "conviction-take-profit-reservation-v1",
+      generation: randomUUID(),
       replayKey: key,
       journalPath: journal,
       orderId: null,
       status: "PAYMENT_PENDING",
       claimedAt: new Date().toISOString(),
-    }, null, 2)}\n`);
-  } catch (error) {
-    if (error?.code === "EEXIST") {
-      throw Object.assign(new Error("This exact TAKE_PROFIT is already reserved; inspect its journal instead of paying or placing again"), {
-        code: "take_profit_replay_blocked",
-        details: { reservationLockPath: file },
-      });
+    };
+    const lockText = `${JSON.stringify(lock, null, 2)}\n`;
+    let handle;
+    try {
+      mutexLease.assertAlive();
+      handle = await open(file, "wx", 0o600);
+      await handle.writeFile(lockText);
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        throw Object.assign(new Error("This exact TAKE_PROFIT is already reserved; inspect its journal instead of paying or placing again"), {
+          code: "take_profit_replay_blocked",
+          details: { reservationLockPath: file },
+        });
+      }
+      throw error;
+    } finally {
+      await handle?.close();
     }
-    throw error;
-  } finally {
-    await handle?.close();
-  }
-  return file;
+    if (state) {
+      const before = structuredClone(state);
+      try {
+        await beforePersist?.(Object.freeze({ file, lock: Object.freeze({ ...lock }) }));
+        state.reservationLockPath = file;
+        await transition?.(state, { lockPath: file, lock: Object.freeze({ ...lock }) });
+        await writeState(state, {
+          directory,
+          file: journal,
+          mutexHeld: true,
+          mutexLease,
+        });
+      } catch (error) {
+        await resolveFailedLockAttachment({
+          state,
+          before,
+          field: "reservationLockPath",
+          file,
+          lockText,
+          journal,
+          mutexLease,
+          error,
+        });
+        throw error;
+      }
+    }
+    return file;
+  });
 }
 
-export async function writeTakeProfitState(value, { directory = STATE_DIRECTORY, file } = {}) {
+export async function writeTakeProfitState(value, {
+  directory = STATE_DIRECTORY,
+  file,
+  mutexHeld = false,
+  mutexLease,
+  expectedRevision,
+  targetRevision,
+} = {}) {
   fail(typeof file === "string" && file.startsWith(`${directory}/`) && basename(file).endsWith(".json"), "invalid_state_path", "TAKE_PROFIT journal path is invalid");
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(directory, 0o700);
-  const temporary = `${file}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, file);
-  return file;
+  return writeReconciliationJournal(value, {
+    directory,
+    file,
+    mutexHeld,
+    mutexLease,
+    expectedRevision,
+    targetRevision,
+  });
 }
 
-async function updateReservation(file, update) {
-  const current = JSON.parse(await readFile(file, "utf8"));
-  const next = { ...current, ...update };
-  const temporary = `${file}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, file);
-  return next;
+async function updateReservation(file, update, { directory = dirname(file), journal, replayKey } = {}) {
+  const releaseFile = join(directory, "polymarket-execution.release.lock.json");
+  return withStateReleaseMutex(directory, async (mutexLease) => {
+    const current = JSON.parse(await readFile(file, "utf8"));
+    fail(
+      current?.version === "conviction-take-profit-reservation-v1" &&
+        current?.journalPath === journal && current?.replayKey === replayKey,
+      "reservation_ownership_mismatch",
+      "TAKE_PROFIT reservation changed before its order binding was persisted",
+    );
+    const bindingFields = ["orderId", "intentHash", "takeProfitPassportHash", "restingOrderProofHash", "status"];
+    const alreadyExact = bindingFields.every((field) => current?.[field] === update?.[field]);
+    if (alreadyExact) return current;
+    await assertNoStateReleaseInProgress({ directory, releaseFile, mutexHeld: true });
+    fail(
+      current?.orderId == null && current?.status === "PAYMENT_PENDING" &&
+        current?.intentHash == null && current?.takeProfitPassportHash == null &&
+        current?.restingOrderProofHash == null,
+      "reservation_ownership_mismatch",
+      "TAKE_PROFIT reservation already contains another order binding",
+    );
+    const next = { ...current, ...update };
+    const temporary = `${file}.tmp`;
+    mutexLease.assertAlive();
+    await writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+    mutexLease.assertAlive();
+    await rename(temporary, file);
+    mutexLease.assertAlive();
+    return next;
+  });
+}
+
+async function progressTakeProfitReservation(journal, {
+  stateDirectory = dirname(journal.journalPath),
+  now = Date.now,
+} = {}) {
+  const armed = journal.status === "ARMED";
+  return updateReservation(journal.reservationLockPath, {
+    orderId: journal.orderId,
+    intentHash: journal.intentHash,
+    takeProfitPassportHash: journal.takeProfitPassportHash,
+    restingOrderProofHash: journal.restingOrderProofHash,
+    status: journal.status,
+    ...(armed
+      ? { armedAt: new Date(typeof now === "function" ? now() : now).toISOString() }
+      : { recoveryBoundAt: new Date(typeof now === "function" ? now() : now).toISOString() }),
+  }, {
+    directory: stateDirectory,
+    journal: journal.journalPath,
+    replayKey: journal.replayKey,
+  });
 }
 
 async function commandJson(file, args, label, {
@@ -482,6 +587,7 @@ function validateTakeProfitAuthorizationCheckpoint(journalInput) {
 async function validateTakeProfitReservationOwnership(context, recovery, {
   stateDirectory,
   statImpl = stat,
+  allowProgressed = false,
 } = {}) {
   const expected = join(stateDirectory, `take-profit-${recovery.replayKey.slice(2)}.lock.json`);
   let actual;
@@ -500,12 +606,23 @@ async function validateTakeProfitReservationOwnership(context, recovery, {
   const lock = JSON.parse(await readFile(actual, "utf8"));
   let lockJournal;
   try { lockJournal = await realpath(resolve(String(lock?.journalPath || ""))); } catch { lockJournal = null; }
+  const baseOwned = lock?.version === "conviction-take-profit-reservation-v1" &&
+    lock?.replayKey === recovery.replayKey && lockJournal === context.journalPath;
+  const paymentPending = lock?.orderId == null && lock?.status === "PAYMENT_PENDING" &&
+    lock?.intentHash == null && lock?.takeProfitPassportHash == null && lock?.restingOrderProofHash == null;
+  const progressed = allowProgressed &&
+    lock?.orderId === recovery.journal?.orderId &&
+    lock?.intentHash === recovery.journal?.intentHash &&
+    lock?.takeProfitPassportHash === recovery.journal?.takeProfitPassportHash &&
+    lock?.restingOrderProofHash === recovery.journal?.restingOrderProofHash &&
+    lock?.status === recovery.journal?.status &&
+    HASH_RE.test(String(lock?.orderId || "")) && HASH_RE.test(String(lock?.intentHash || "")) &&
+    HASH_RE.test(String(lock?.takeProfitPassportHash || "")) &&
+    HASH_RE.test(String(lock?.restingOrderProofHash || ""));
   fail(
-    lock?.version === "conviction-take-profit-reservation-v1" &&
-      lock?.replayKey === recovery.replayKey && lockJournal === context.journalPath &&
-      lock?.orderId == null && lock?.status === "PAYMENT_PENDING",
+    baseOwned && (paymentPending || progressed),
     "reservation_ownership_mismatch",
-    "TAKE_PROFIT reservation belongs to another request or has progressed to an order",
+    "TAKE_PROFIT reservation belongs to another request or has an inexact progressed order binding",
   );
   return actual;
 }
@@ -532,6 +649,7 @@ async function reconcileTakeProfitNonOrderState(context, {
   stateDirectory,
   authorizationStateImpl = fetchEip3009AuthorizationState,
   writeState = writeTakeProfitState,
+  releaseLocks = releaseReconciledLocks,
   unlinkImpl = unlink,
   statImpl = stat,
 } = {}) {
@@ -562,6 +680,9 @@ async function reconcileTakeProfitNonOrderState(context, {
     stateDirectory: canonicalStateDirectory,
     statImpl,
   });
+  let reconciliationAuthorizationState = null;
+  let reconciliationReason;
+  let reconciledStage;
 
   if (isAuthorizationOnly) {
     if (recovery.authorization == null) {
@@ -614,9 +735,9 @@ async function reconcileTakeProfitNonOrderState(context, {
       "invalid_authorization_state",
       "Unused authorization state is not pinned to a finalized X Layer block",
     );
-    recovery.journal.reconciliationAuthorizationState = authorizationState;
-    recovery.journal.reconciliationReason = "expired_unused_payment_authorization";
-    recovery.journal.stage = "expired_unused_payment_authorization_reconciled";
+    reconciliationAuthorizationState = authorizationState;
+    reconciliationReason = "expired_unused_payment_authorization";
+    reconciledStage = "expired_unused_payment_authorization_reconciled";
   } else {
     const expiresAtMs = Date.parse(recovery.validated.expiresAt);
     if (timestamp <= expiresAtMs) {
@@ -629,20 +750,32 @@ async function reconcileTakeProfitNonOrderState(context, {
         journalPath: context.journalPath,
       });
     }
-    recovery.journal.reconciliationReason = "expired_paid_card_without_order_spawn";
-    recovery.journal.stage = "expired_paid_unstarted_reconciled";
+    reconciliationReason = "expired_paid_card_without_order_spawn";
+    reconciledStage = "expired_paid_unstarted_reconciled";
   }
 
   const currentText = await readFile(context.journalPath, "utf8");
   fail(currentText === context.journalText, "reconciliation_journal_changed", "TAKE_PROFIT journal changed during reconciliation");
-  await unlinkImpl(reservationPath);
-  recovery.journal.reservationLockPath = null;
-  recovery.journal.reconciliationRequired = false;
-  recovery.journal.reconciledAt = new Date(timestamp).toISOString();
-  await writeState(recovery.journal, { directory: canonicalStateDirectory, file: context.journalPath });
+  const released = await releaseLocks(recovery.journal, {
+    stateDirectory: canonicalStateDirectory,
+    journal: context.journalPath,
+    fields: ["reservationLockPath"],
+    transitionId: "take-profit-unstarted-reconciliation-v1",
+    writeState,
+    unlinkImpl,
+    now: timestamp,
+    transition: (next, { releasedAt }) => {
+      next.reconciliationAuthorizationState = reconciliationAuthorizationState;
+      next.reconciliationReason = reconciliationReason;
+      next.stage = reconciledStage;
+      next.reconciliationRequired = false;
+      next.reconciledAt = releasedAt;
+    },
+  });
+  fail(released.length === 1 && released[0] === reservationPath, "reservation_release_failed", "TAKE_PROFIT reservation was not released exactly once");
   return Object.freeze({
     ok: true,
-    status: recovery.journal.stage,
+    status: reconciledStage,
     reconciliationRequired: false,
     reservationReleased: true,
     journalPath: context.journalPath,
@@ -982,6 +1115,19 @@ async function loadReconcileContext(options, {
     context.journal.takeProfitPassportHash != null || context.journal.restingOrderProofHash != null;
   if (hasPassportMaterial || context.journal.stage === "armed" || context.journal.stage === "submitted") {
     const binding = validateTakeProfitJournal(context.journal, { trustedIssuers: context.trustedIssuers });
+    await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
+    await validateTakeProfitReservationOwnership(context, {
+      journal: context.journal,
+      replayKey: context.journal.replayKey,
+    }, {
+      stateDirectory: canonicalStateDirectory,
+      statImpl,
+      allowProgressed: true,
+    });
+    await progressTakeProfitReservation(context.journal, {
+      stateDirectory: canonicalStateDirectory,
+      now,
+    });
     return {
       ...context,
       stateDirectory: canonicalStateDirectory,
@@ -1012,6 +1158,7 @@ async function loadReconcileContext(options, {
   await validateTakeProfitReservationOwnership(context, recovery, {
     stateDirectory: canonicalStateDirectory,
     statImpl,
+    allowProgressed: true,
   });
   const executionLock = await inspectOwnerVerifiedRecoveredExecutionLock(context, {
     stateDirectory: canonicalStateDirectory,
@@ -1023,6 +1170,10 @@ async function loadReconcileContext(options, {
   const unchangedText = await readFile(context.journalPath, "utf8");
   fail(unchangedText === context.journalText, "prepassport_journal_changed", "TAKE_PROFIT journal changed before its recovered passport was persisted");
   await writeState(recovered.journal, { directory: canonicalStateDirectory, file: context.journalPath });
+  await progressTakeProfitReservation(recovered.journal, {
+    stateDirectory: canonicalStateDirectory,
+    now,
+  });
   return {
     ...context,
     journalText: `${JSON.stringify(recovered.journal, null, 2)}\n`,
@@ -1231,97 +1382,6 @@ async function inspectOwnerVerifiedRecoveredExecutionLock(context, {
   return Object.freeze({ path: expected, hash: sha256(lock), missing: false });
 }
 
-async function claimRecoveredExecutionReleaseGuard(context, {
-  stateDirectory,
-  expectedExecutionLockHash,
-  now = Date.now,
-  statImpl = stat,
-} = {}) {
-  const file = join(stateDirectory, "polymarket-execution.release.lock.json");
-  const guard = {
-    version: "conviction-polymarket-execution-release-v1",
-    journalPath: context.journalPath,
-    expectedExecutionLockHash,
-    pid: process.pid,
-    claimedAt: new Date(now()).toISOString(),
-  };
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let handle;
-    try {
-      handle = await open(file, "wx", 0o600);
-      await handle.writeFile(`${JSON.stringify(guard, null, 2)}\n`);
-      await handle.close();
-      handle = null;
-      break;
-    } catch (error) {
-      await handle?.close();
-      if (error?.code !== "EEXIST") throw error;
-
-      let guardStat;
-      let existingText;
-      try {
-        [guardStat, existingText] = await Promise.all([statImpl(file), readFile(file, "utf8")]);
-      } catch (readError) {
-        if (readError?.code === "ENOENT" && attempt === 0) continue;
-        throw readError;
-      }
-      const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
-      fail(guardStat.isFile() && (guardStat.mode & 0o077) === 0, "unsafe_state_permissions", "Execution-release guard must be owner-only");
-      if (expectedUid !== null) {
-        fail(guardStat.uid === expectedUid, "unsafe_state_owner", "Execution-release guard must belong to the current OS user");
-      }
-      let existing;
-      try { existing = JSON.parse(existingText); } catch {
-        fail(false, "execution_release_guard_mismatch", "Existing execution-release guard is invalid");
-      }
-      const claimedAt = String(existing?.claimedAt || "");
-      const claimedAtMs = Date.parse(claimedAt);
-      fail(
-        existing?.version === "conviction-polymarket-execution-release-v1" &&
-          existing?.journalPath === context.journalPath &&
-          existing?.expectedExecutionLockHash === expectedExecutionLockHash &&
-          Number.isSafeInteger(existing?.pid) && existing.pid > 0 &&
-          Number.isFinite(claimedAtMs) && new Date(claimedAtMs).toISOString() === claimedAt,
-        "execution_release_guard_mismatch",
-        "Existing execution-release guard belongs to another reconciliation",
-      );
-      let ownerAlive = true;
-      try {
-        process.kill(existing.pid, 0);
-      } catch (processError) {
-        ownerAlive = processError?.code !== "ESRCH";
-      }
-      if (ownerAlive || attempt > 0) {
-        throw Object.assign(new Error("Another execution-lock reconciliation is already in progress"), {
-          code: "execution_release_in_progress",
-          details: { executionReleaseLockPath: file },
-        });
-      }
-      const unchangedText = await readFile(file, "utf8");
-      fail(unchangedText === existingText, "execution_release_guard_mismatch", "Execution-release guard changed during stale-owner recovery");
-      try {
-        await unlink(file);
-      } catch (unlinkError) {
-        if (unlinkError?.code !== "ENOENT") throw unlinkError;
-      }
-    }
-  }
-  return async () => {
-    let current;
-    try {
-      current = JSON.parse(await readFile(file, "utf8"));
-    } catch {
-      fail(false, "execution_release_guard_mismatch", "Execution-release guard disappeared or became invalid");
-    }
-    fail(
-      sha256(current) === sha256(guard),
-      "execution_release_guard_mismatch",
-      "Execution-release guard belongs to another reconciliation",
-    );
-    await unlink(file);
-  };
-}
-
 async function settleRecoveredArmedPlacement({
   context,
   status,
@@ -1336,13 +1396,7 @@ async function settleRecoveredArmedPlacement({
   if (!placementState) return null;
   if (placementState === "resolved") {
     await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
-    const releaseGuard = await claimRecoveredExecutionReleaseGuard(context, {
-      stateDirectory,
-      expectedExecutionLockHash: context.journal.prePassportRecovery.executionLockHash,
-      now,
-      statImpl,
-    });
-    await releaseGuard();
+    await assertNoStateReleaseInProgress({ directory: stateDirectory });
     const lifecycleRequiresFollowUp = status?.status !== "ARMED" && !takeProfitReconciliationResolved(status);
     return Object.freeze({
       ...status,
@@ -1354,68 +1408,64 @@ async function settleRecoveredArmedPlacement({
 
   const currentText = await readFile(context.journalPath, "utf8");
   fail(currentText === context.journalText, "prepassport_journal_changed", "Recovered ARMED journal changed before execution-lock release");
-  const releaseGuard = await claimRecoveredExecutionReleaseGuard(context, {
+  const reservationPath = await validateTakeProfitReservationOwnership(context, {
+    journal: context.journal,
+    replayKey: context.journal.replayKey,
+  }, {
     stateDirectory,
-    expectedExecutionLockHash: context.journal.prePassportRecovery.executionLockHash,
+    statImpl,
+    allowProgressed: true,
+  });
+  const reservationText = await readFile(reservationPath, "utf8");
+  const observedLock = await inspectOwnerVerifiedRecoveredExecutionLock(context, { stateDirectory, statImpl });
+  fail(
+    observedLock.missing || observedLock.hash === context.journal.prePassportRecovery.executionLockHash,
+    "lock_generation_mismatch",
+    "Recovered TAKE_PROFIT execution lock is from another operation",
+  );
+  fail(
+    context.journal.prePassportRecovery.executionLockHash !== null || observedLock.missing,
+    "lock_generation_mismatch",
+    "A new execution lock appeared after the recovered TAKE_PROFIT snapshot",
+  );
+  const declaredLock = Boolean(context.journal.executionLockPath);
+  if (observedLock.path) context.journal.executionLockPath = observedLock.path;
+  const released = await releaseLocks(context.journal, {
+    stateDirectory,
+    journal: context.journalPath,
+    fields: ["executionLockPath"],
+    transitionId: "take-profit-prepassport-armed-recovery-v1",
+    expectedLockHashes: { executionLockPath: context.journal.prePassportRecovery.executionLockHash },
+    writeState,
     now,
     statImpl,
+    beforeUnlink: async () => {
+      fail(
+        await readFile(reservationPath, "utf8") === reservationText,
+        "reservation_ownership_mismatch",
+        "Recovered ARMED reconciliation changed its TAKE_PROFIT reservation before release",
+      );
+    },
+    afterUnlink: async () => {
+      fail(
+        await readFile(reservationPath, "utf8") === reservationText,
+        "reservation_ownership_mismatch",
+        "Recovered ARMED reconciliation changed its TAKE_PROFIT reservation during release",
+      );
+    },
+    transition: (next, { releasedAt }) => {
+      next.latestLifecycleStatus = "ARMED";
+      next.reconciliationRequired = false;
+      next.reconciledAt = releasedAt;
+      next.prePassportRecovery.executionLockReleasedAt = releasedAt;
+    },
   });
-  try {
-    const reservationPath = await validateTakeProfitReservationOwnership(context, {
-      journal: context.journal,
-      replayKey: context.journal.replayKey,
-    }, {
-      stateDirectory,
-      statImpl,
-    });
-    const reservationText = await readFile(reservationPath, "utf8");
-    const observedLock = await inspectOwnerVerifiedRecoveredExecutionLock(context, { stateDirectory, statImpl });
-    fail(
-      observedLock.missing || observedLock.hash === context.journal.prePassportRecovery.executionLockHash,
-      "lock_generation_mismatch",
-      "Recovered TAKE_PROFIT execution lock is from another operation",
-    );
-    fail(
-      context.journal.prePassportRecovery.executionLockHash !== null || observedLock.missing,
-      "lock_generation_mismatch",
-      "A new execution lock appeared after the recovered TAKE_PROFIT snapshot",
-    );
-    const declaredLock = Boolean(context.journal.executionLockPath);
-    if (observedLock.path) context.journal.executionLockPath = observedLock.path;
-    const reservationLockPath = context.journal.reservationLockPath;
-    await releaseLocks(context.journal, {
-      stateDirectory,
-      journal: context.journalPath,
-      fields: ["executionLockPath"],
-    });
-    fail(
-      context.journal.reservationLockPath === reservationLockPath,
-      "reservation_ownership_mismatch",
-      "Recovered ARMED reconciliation cannot alter its TAKE_PROFIT reservation",
-    );
-    fail(
-      await readFile(reservationPath, "utf8") === reservationText,
-      "reservation_ownership_mismatch",
-      "Recovered ARMED reconciliation changed its TAKE_PROFIT reservation",
-    );
-    const unchangedText = await readFile(context.journalPath, "utf8");
-    fail(unchangedText === context.journalText, "prepassport_journal_changed", "Recovered ARMED journal changed while releasing its execution lock");
-
-    const reconciledAt = new Date(now()).toISOString();
-    context.journal.latestLifecycleStatus = "ARMED";
-    context.journal.reconciliationRequired = false;
-    context.journal.reconciledAt = reconciledAt;
-    context.journal.prePassportRecovery.executionLockReleasedAt = reconciledAt;
-    await writeState(context.journal, { directory: stateDirectory, file: context.journalPath });
-    return Object.freeze({
-      ...status,
-      journalPath: context.journalPath,
-      reconciliationRequired: false,
-      executionLockReleased: declaredLock,
-    });
-  } finally {
-    await releaseGuard();
-  }
+  return Object.freeze({
+    ...status,
+    journalPath: context.journalPath,
+    reconciliationRequired: false,
+    executionLockReleased: declaredLock && released.length === 1,
+  });
 }
 
 export async function settleTakeProfitReconciliation({
@@ -1451,15 +1501,19 @@ export async function settleTakeProfitReconciliation({
     stateDirectory,
     journal: context.journalPath,
     fields: ["executionLockPath"],
+    transitionId: "take-profit-lifecycle-reconciliation-v1",
+    writeState,
+    now,
+    transition: (next, { releasedAt }) => {
+      next.latestLifecycleStatus = status.status;
+      if (status.version === "conviction-take-profit-status-with-fill-v1") {
+        next.latestFillProof = status.fillProof;
+        next.latestFillProofHash = status.fillProofHash;
+      }
+      next.reconciliationRequired = false;
+      next.reconciledAt = releasedAt;
+    },
   });
-  context.journal.latestLifecycleStatus = status.status;
-  if (status.version === "conviction-take-profit-status-with-fill-v1") {
-    context.journal.latestFillProof = status.fillProof;
-    context.journal.latestFillProofHash = status.fillProofHash;
-  }
-  context.journal.reconciliationRequired = false;
-  context.journal.reconciledAt = new Date(now()).toISOString();
-  await writeState(context.journal, { directory: stateDirectory, file: context.journalPath });
   return Object.freeze({
     ...status,
     journalPath: context.journalPath,
@@ -1558,15 +1612,22 @@ export async function runTakeProfitCancelCli(options, {
       trustedIssuers: context.trustedIssuers,
       now: now(),
     });
-    context.journal.executionLockPath = await claimExecutionLock({ journal: context.journalPath });
-    context.journal.cancelConsent = {
-      version: "conviction-take-profit-cancel-consent-v1",
-      orderId: cancelRequest.orderId,
-      confirmedAt,
-      preCancelSnapshotHash: cancelRequest.preCancelSnapshotHash,
-      argvHash: sha256(cancelRequest.argv),
-    };
-    await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
+    await claimExecutionLock({
+      journal: context.journalPath,
+      directory: stateDirectory,
+      file: join(stateDirectory, "polymarket-execution.lock.json"),
+      state: context.journal,
+      writeState: writeTakeProfitState,
+      transition: (next) => {
+        next.cancelConsent = {
+          version: "conviction-take-profit-cancel-consent-v1",
+          orderId: cancelRequest.orderId,
+          confirmedAt,
+          preCancelSnapshotHash: cancelRequest.preCancelSnapshotHash,
+          argvHash: sha256(cancelRequest.argv),
+        };
+      },
+    });
     context.journal.cancelAttemptedAt = new Date(now()).toISOString();
     context.journal.cancelExecutionArgv = [...cancelRequest.argv];
     context.journal.reconciliationRequired = true;
@@ -1624,11 +1685,16 @@ export async function runTakeProfitCancelCli(options, {
       (verifiedOutcome.finalized === true && verifiedOutcome.fillProof?.lifecycle?.orderTerminal === true)
     );
     context.journal.reconciliationRequired = !safelyResolved;
+    await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
     await settleExecutionLock(context.journal, {
       liveAttempted: true,
       proofVerified: safelyResolved,
+      stateDirectory,
+      journal: context.journalPath,
+      writeState: writeTakeProfitState,
+      now,
+      transitionId: "take-profit-cancel-terminal-release-v1",
     });
-    await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
     return { ...verifiedOutcome, journalPath: context.journalPath };
   } catch (error) {
     context.journal.reconciliationRequired = executionAttempted;
@@ -1637,13 +1703,18 @@ export async function runTakeProfitCancelCli(options, {
       at: new Date(now()).toISOString(),
       executionAmbiguous: executionAttempted,
     };
+    try { await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath }); } catch {}
     if (context.journal.executionLockPath) {
       await settleExecutionLock(context.journal, {
         liveAttempted: executionAttempted,
         proofVerified: false,
+        stateDirectory,
+        journal: context.journalPath,
+        writeState: writeTakeProfitState,
+        now,
+        transitionId: "take-profit-cancel-prelaunch-release-v1",
       });
     }
-    try { await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath }); } catch {}
     throw error;
   } finally {
     readline.close();
@@ -1899,14 +1970,19 @@ export async function runTakeProfitCli(options, {
       return { encoded, decoded };
     },
     payAndRequestCard: async ({ challenge }) => {
-      state.replayKey = takeProfitReplayKey({ request, sellerWallet: options.sellerWallet });
-      state.reservationLockPath = await claimTakeProfitReservation({
-        key: state.replayKey,
+      const replayKey = takeProfitReplayKey({ request, sellerWallet: options.sellerWallet });
+      await claimTakeProfitReservation({
+        key: replayKey,
         journal,
         directory: stateDirectory,
+        state,
+        writeState: writeTakeProfitState,
+        transition: (next) => {
+          next.replayKey = replayKey;
+          next.reconciliationRequired = true;
+          next.stage = "payment_authorization_starting";
+        },
       });
-      state.reconciliationRequired = true;
-      await persist("payment_authorization_starting");
       let signed;
       try {
         signed = await commandJson(
@@ -1915,10 +1991,18 @@ export async function runTakeProfitCli(options, {
           "Position Manager payment authorization",
         );
       } catch (error) {
-        await unlink(state.reservationLockPath);
-        state.reservationLockPath = null;
-        state.reconciliationRequired = false;
-        await persist("payment_authorization_failed_before_replay");
+        await releaseReconciledLocks(state, {
+          stateDirectory,
+          journal,
+          fields: ["reservationLockPath"],
+          transitionId: "take-profit-payment-presign-failure-v1",
+          writeState: writeTakeProfitState,
+          now,
+          transition: (next) => {
+            next.reconciliationRequired = false;
+            next.stage = "payment_authorization_failed_before_replay";
+          },
+        });
         throw error;
       }
       const data = signed?.data || signed;
@@ -1929,10 +2013,18 @@ export async function runTakeProfitCli(options, {
           service: POSITION_MANAGER_SERVICE,
         });
       } catch (error) {
-        await unlink(state.reservationLockPath);
-        state.reservationLockPath = null;
-        state.reconciliationRequired = false;
-        await persist("payment_authorization_rejected_before_replay");
+        await releaseReconciledLocks(state, {
+          stateDirectory,
+          journal,
+          fields: ["reservationLockPath"],
+          transitionId: "take-profit-payment-metadata-rejection-v1",
+          writeState: writeTakeProfitState,
+          now,
+          transition: (next) => {
+            next.reconciliationRequired = false;
+            next.stage = "payment_authorization_rejected_before_replay";
+          },
+        });
         throw error;
       }
       await persist("payment_authorization_created");
@@ -1977,7 +2069,16 @@ export async function runTakeProfitCli(options, {
     waitUntil: sleepUntil,
     execute: async (argv) => {
       try {
-        state.executionLockPath = await claimExecutionLock({ journal });
+        await claimExecutionLock({
+          journal,
+          directory: stateDirectory,
+          file: join(stateDirectory, "polymarket-execution.lock.json"),
+          state,
+          writeState: writeTakeProfitState,
+          transition: (next) => {
+            next.stage = "execution_lock_acquired";
+          },
+        });
       } catch (error) {
         markTakeProfitPreSpawnFailure(state, error, { liveSpawnStarted: false, now });
         await persist();
@@ -1986,7 +2087,6 @@ export async function runTakeProfitCli(options, {
       const tokenIndex = argv.indexOf("--token-id");
       const tokenId = tokenIndex >= 0 ? String(argv[tokenIndex + 1] || "") : "";
       try {
-        await persist("execution_lock_acquired");
         await ensureTradingMode();
         const lockedReadiness = await loadTakeProfitReadiness({ outcomeTokenId: tokenId });
         requirePinnedTakeProfitExecutionReadiness(lockedReadiness, {
@@ -2028,7 +2128,15 @@ export async function runTakeProfitCli(options, {
         }
         throw error;
       } finally {
-        await settleExecutionLock(state, { liveAttempted: executionAttempted, proofVerified: false });
+        await settleExecutionLock(state, {
+          liveAttempted: executionAttempted,
+          proofVerified: false,
+          stateDirectory,
+          journal,
+          writeState: writeTakeProfitState,
+          now,
+          transitionId: "take-profit-prelaunch-execution-release-v1",
+        });
         await persist();
       }
     },
@@ -2057,28 +2165,40 @@ export async function runTakeProfitCli(options, {
     state.restingOrderProofHash = result.restingOrderProofHash;
     state.initialOrderSnapshot = result.initialOrderSnapshot;
     state.initialOrderSnapshotHash = result.initialOrderSnapshotHash;
-    state.reconciliationRequired = !armed;
-    await settleExecutionLock(state, { liveAttempted: true, proofVerified: armed });
-    await updateReservation(state.reservationLockPath, {
-      orderId: result.orderId,
-      intentHash: result.intentHash,
-      takeProfitPassportHash: result.takeProfitPassportHash,
-      restingOrderProofHash: result.restingOrderProofHash,
-      status: result.status,
-      ...(armed ? { armedAt: new Date(now()).toISOString() } : { recoveryBoundAt: new Date(now()).toISOString() }),
-    });
+    // The authenticated passport is the durable source of truth. Persist it
+    // before progressing the scoped reservation or releasing the global lock,
+    // so every crash point is exactly recoverable without another placement.
+    state.reconciliationRequired = true;
     await persist();
+    await progressTakeProfitReservation(state, { stateDirectory, now });
+    if (armed) {
+      await settleExecutionLock(state, {
+        liveAttempted: true,
+        proofVerified: true,
+        stateDirectory,
+        journal,
+        writeState: writeTakeProfitState,
+        now,
+        transitionId: "take-profit-armed-release-v1",
+        transition: (next, { releasedAt }) => {
+          next.reconciliationRequired = false;
+          next.armedAt = releasedAt;
+        },
+      });
+    }
     return { ...result, journalPath: journal, reservationLockPath: state.reservationLockPath };
   } catch (error) {
-    state.reconciliationRequired = Boolean(
-      executionAttempted || state.paymentAuthorization || state.paymentTx || state.reservationLockPath,
-    );
-    state.lastError = {
-      code: error?.code || "take_profit_journey_failed",
-      at: new Date(now()).toISOString(),
-      executionAmbiguous: executionAttempted,
-    };
-    try { await persist(); } catch {}
+    if (error?.releaseGuardRetained !== true) {
+      state.reconciliationRequired = Boolean(
+        executionAttempted || state.paymentAuthorization || state.paymentTx || state.reservationLockPath,
+      );
+      state.lastError = {
+        code: error?.code || "take_profit_journey_failed",
+        at: new Date(now()).toISOString(),
+        executionAmbiguous: executionAttempted,
+      };
+      try { await persist(); } catch {}
+    }
     error.details = {
       ...(error?.details && typeof error.details === "object" ? error.details : {}),
       journalPath: journal,

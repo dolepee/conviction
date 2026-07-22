@@ -491,7 +491,7 @@ test("paid CLOSE resume refuses a replay lock owned by another journal", async (
   }
 });
 
-test("paid CLOSE resume never overwrites a checkpoint that changed while taking the execution lock", async () => {
+test("paid CLOSE resume atomically attaches its lock before a stale writer can overwrite it", async () => {
   const f = await fixture();
   try {
     const completedByOtherProcess = {
@@ -516,13 +516,14 @@ test("paid CLOSE resume never overwrites a checkpoint that changed while taking 
           return executionLock;
         },
       }),
-      (error) => error?.code === "resume_checkpoint_changed",
+      (error) => error?.code === "stale_journal_write",
     );
     assert.equal(f.calls.executions, 0);
     const preserved = JSON.parse(await readFile(f.journal, "utf8"));
-    assert.equal(preserved.stage, "complete_resumed");
-    assert.equal(preserved.reconciliationRequired, false);
-    assert.equal((await readdir(f.directory)).includes("polymarket-execution.lock.json"), false);
+    assert.equal(preserved.stage, "resume_execution_lock_acquired");
+    assert.equal(preserved.reconciliationRequired, true);
+    assert.equal(preserved.executionLockPath, join(f.directory, "polymarket-execution.lock.json"));
+    assert.equal((await readdir(f.directory)).includes("polymarket-execution.lock.json"), true);
   } finally {
     await rm(f.directory, { recursive: true, force: true });
   }
