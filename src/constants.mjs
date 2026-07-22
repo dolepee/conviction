@@ -1,12 +1,15 @@
 export const POLYGON_CHAIN_ID = 137;
 export const POLYGON_RPC_URL =
-  process.env.POLYGON_RPC_URL || "https://polygon-bor-rpc.publicnode.com";
+  process.env.POLYGON_RPC_URL || "https://polygon.drpc.org";
 
 export const GAMMA_API_URL = "https://gamma-api.polymarket.com";
 export const CLOB_API_URL = "https://clob.polymarket.com";
 
 export const CONTRACTS = Object.freeze({
   pUsd: "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb",
+  // Polymarket CTF position IDs are derived with the legacy USDC.e
+  // collateral address, even when settlement debits use pUSD.
+  ctfPositionCollateral: "0x2791bca1f2de4661ed88a30c99a7a9449aa84174",
   ctf: "0x4d97dcd97ec945f40cf65f87097ace5ea0476045",
   standardExchangeV2: "0xe111180000d2663c0091e4f400237545b87b996b",
 });
@@ -19,4 +22,3 @@ export const TOPICS = Object.freeze({
   orderFilled:
     "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee",
 });
-

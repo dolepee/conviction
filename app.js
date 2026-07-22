@@ -654,23 +654,28 @@ async function artifactForVerification() {
   const file = document.querySelector("#dossier-input").files[0];
   if (file) {
     const artifact = JSON.parse(await file.text());
-    if (!artifact?.intent || !artifact?.intentHash) throw new Error("Selected dossier has no canonical intent and intent hash");
+    if (artifact?.intent?.version !== "conviction-intent-v4" || !artifact?.intentHash || !artifact?.issuance) {
+      throw new Error("Public verification requires a Conviction-issued v4 dossier with its issuance signature");
+    }
     return artifact;
   }
-  if (!currentCompilation?.intent || !currentCompilation?.intentHash) {
-    throw new Error("Compile a card above or select its downloaded intent dossier");
+  if (currentCompilation?.intent?.version !== "conviction-intent-v4" || !currentCompilation?.intentHash || !currentCompilation?.issuance) {
+    throw new Error("Create a signed v4 card above or select its issued intent dossier");
   }
   return currentCompilation;
 }
 
 function renderVerification(payload) {
   const proof = payload.positionProof;
+  const issuerSigned = payload.assurance === "issuer-signed";
   const checks = Object.entries(proof.checks || {});
   verificationResult.hidden = false;
   verificationResult.innerHTML = `
     <div class="verification-proof">
-      <div class="result-top"><span>POSITION PROOF</span><b>VERIFIED ON POLYGON</b></div>
-      <h3>${escapeHtml(proof.outcome)} fill obeyed every bound.</h3>
+      <div class="result-top"><span>POSITION PROOF</span><b>${issuerSigned ? "ISSUER-SIGNED · VERIFIED ON POLYGON" : "SELF-ASSERTED MATCH"}</b></div>
+      <h3>${issuerSigned
+        ? `${escapeHtml(proof.outcome)} fill matched its pre-issued bounds and market.`
+        : "This fill matches supplied bounds, but Conviction did not issue the intent."}</h3>
       <div class="exposure-panel">
         <div><small>Actual principal</small><strong>${escapeHtml(proof.fill.actualOrderPrincipalRaw || proof.fill.actualSpendRaw)} raw</strong></div>
         <div><small>Actual venue fee</small><strong>${escapeHtml(proof.fill.actualFeeRaw || "0")} raw</strong></div>
@@ -711,10 +716,13 @@ verificationForm.addEventListener("submit", async (event) => {
       orderId: data.orderId,
       intent: artifact.intent,
       intentHash: artifact.intentHash,
+      issuance: artifact.issuance,
     }, request.signal);
     if (!isCurrentRequest("receipt", request)) return;
     renderVerification(payload);
-    verificationStatus.textContent = "Fill verified independently from Polygon events.";
+    verificationStatus.textContent = payload.assurance === "issuer-signed"
+      ? "Issuer signature, CTF market binding, signed window, and Polygon fill verified independently."
+      : "On-chain fill matched self-asserted bounds; no Conviction issuance was proven.";
   } catch (error) {
     if (isDiscardedRequest(error, "receipt", request)) return;
     clearVerificationResult();

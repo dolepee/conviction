@@ -18,7 +18,7 @@ test("health advertises exactly two paid products and all three bounded actions"
   const output = response();
   handler({ method: "GET" }, output);
   assert.equal(output.statusCode, 200);
-  assert.equal(output.body.version, "0.4.7");
+  assert.equal(output.body.version, "0.4.8");
   assert.equal(output.body.executorDiscovery, "/api/executor");
   assert.deepEqual(output.body.products, [
     { name: "OPEN", price: "0.05 USD₮0", path: "/api/service" },

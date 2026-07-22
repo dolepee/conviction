@@ -17,6 +17,9 @@ const PRICE_SCALE = 1_000_000n;
 const SHARE_SCALE = 1_000_000n;
 const BPS_SCALE = 10_000n;
 const V2_PRINCIPAL_STEP_RAW = 10_000n;
+const GET_COLLECTION_ID_SELECTOR = "856296f7";
+const GET_POSITION_ID_SELECTOR = "39dd7530";
+const ZERO_BYTES32 = "0".repeat(64);
 
 function ceilDiv(numerator, denominator) {
   return (numerator + denominator - 1n) / denominator;
@@ -34,6 +37,15 @@ function normalizeOutcome(value) {
 
 function lower(value) {
   return String(value || "").toLowerCase();
+}
+
+function abiWord(value) {
+  return String(value).replace(/^0x/i, "").padStart(64, "0");
+}
+
+function decodeUint256(result, label) {
+  invariant(/^0x[0-9a-f]{64}$/i.test(result || ""), "invalid_ctf_response", `Invalid ${label} response`);
+  return BigInt(result).toString();
 }
 
 function topicAddress(topic) {
@@ -249,6 +261,8 @@ export function verifyPositionProof({
   issuance,
   trustedIssuers,
   settlementBlock,
+  conditionTokenIds,
+  allowUnsigned = false,
 }) {
   const legacyIntent = intent?.version === "conviction-intent-v2";
   const signedIntent = intent?.version === "conviction-intent-v4";
@@ -256,6 +270,11 @@ export function verifyPositionProof({
     legacyIntent || intent?.version === "conviction-intent-v3" || signedIntent,
     "invalid_intent",
     "Unsupported intent version",
+  );
+  invariant(
+    signedIntent || allowUnsigned === true,
+    "unsigned_intent_not_allowed",
+    "Unsigned position intents are self-asserted and are not accepted by default",
   );
   invariant(TX_HASH_RE.test(intentHash || ""), "invalid_intent_hash", "Invalid intent hash");
   invariant(sha256(intent) === lower(intentHash), "intent_hash_mismatch", "Intent hash does not match the canonical intent");
@@ -304,6 +323,20 @@ export function verifyPositionProof({
     "Intent outcome-token mapping is inconsistent",
   );
   invariant(CONDITION_ID_RE.test(intent.market?.conditionId || ""), "invalid_intent", "Intent condition ID is invalid");
+  if (signedIntent) {
+    const claimedConditionTokens = [
+      String(intent.market?.outcomes?.YES?.tokenId || ""),
+      String(intent.market?.outcomes?.NO?.tokenId || ""),
+    ].sort();
+    const derivedConditionTokens = [String(conditionTokenIds?.YES || ""), String(conditionTokenIds?.NO || "")].sort();
+    invariant(
+      derivedConditionTokens.every((tokenId) => TOKEN_ID_RE.test(tokenId)) &&
+        claimedConditionTokens[0] === derivedConditionTokens[0] &&
+        claimedConditionTokens[1] === derivedConditionTokens[1],
+      "condition_token_mapping_mismatch",
+      "Signed market outcome-token set does not match the CTF condition on Polygon",
+    );
+  }
   const maxPriceRaw = parseDecimal(intent.order?.maxPrice, 6, "maxPrice");
   invariant(maxPriceRaw > 0n && maxPriceRaw < PRICE_SCALE, "invalid_intent", "Intent maximum price is invalid");
 
@@ -502,6 +535,7 @@ export function verifyPositionProof({
     };
     return {
       ok: true,
+      assurance: "self-asserted",
       intent,
       receiptProof: receiptResult.proof,
       positionProof,
@@ -557,6 +591,7 @@ export function verifyPositionProof({
             trustedIssuerSignature: true,
             settlementInsideSignedWindow: true,
             settlementBlockMatched: true,
+            marketConditionTokensMatched: true,
           }
         : {}),
     },
@@ -569,6 +604,7 @@ export function verifyPositionProof({
   };
   const result = {
     ok: true,
+    assurance: signedIntent ? "issuer-signed" : "self-asserted",
     intent,
     receiptProof: receiptResult.proof,
     positionProof,
@@ -608,6 +644,35 @@ async function rpc(method, params, { fetchImpl, rpcUrl }) {
   return body.result;
 }
 
+export async function deriveConditionTokenIds(
+  conditionId,
+  blockNumber,
+  { fetchImpl = fetch, rpcUrl = POLYGON_RPC_URL } = {},
+) {
+  invariant(CONDITION_ID_RE.test(conditionId || ""), "invalid_intent", "Intent condition ID is invalid");
+  invariant(/^0x[0-9a-f]+$/i.test(blockNumber || ""), "invalid_settlement_block", "Settlement block number is invalid");
+  const collectionIds = {};
+  for (const [outcome, indexSet] of [["YES", 1], ["NO", 2]]) {
+    const data = `0x${GET_COLLECTION_ID_SELECTOR}${ZERO_BYTES32}${abiWord(conditionId)}${abiWord(indexSet.toString(16))}`;
+    const collectionId = await rpc("eth_call", [{ to: CONTRACTS.ctf, data }, blockNumber], {
+      fetchImpl,
+      rpcUrl,
+    });
+    invariant(/^0x[0-9a-f]{64}$/i.test(collectionId || ""), "invalid_ctf_response", "Invalid CTF collection response");
+    collectionIds[outcome] = collectionId;
+  }
+  const tokenIds = {};
+  for (const outcome of ["YES", "NO"]) {
+    const data = `0x${GET_POSITION_ID_SELECTOR}${abiWord(CONTRACTS.ctfPositionCollateral)}${abiWord(collectionIds[outcome])}`;
+    tokenIds[outcome] = decodeUint256(
+      await rpc("eth_call", [{ to: CONTRACTS.ctf, data }, blockNumber], { fetchImpl, rpcUrl }),
+      "CTF position",
+    );
+  }
+  invariant(tokenIds.YES !== tokenIds.NO, "invalid_ctf_response", "CTF outcome token IDs must be distinct");
+  return Object.freeze(tokenIds);
+}
+
 export async function fetchAndVerifyReceipt(
   transactionHash,
   expected,
@@ -632,17 +697,24 @@ export async function fetchAndVerifyPosition(
     rpc("eth_getTransactionReceipt", [transactionHash], { fetchImpl, rpcUrl }),
   ]);
   let settlementBlock;
+  let conditionTokenIds;
   if (expected?.intent?.version === "conviction-intent-v4") {
     invariant(receipt && typeof receipt === "object", "missing_receipt", "Transaction receipt was not found");
     settlementBlock = await rpc("eth_getBlockByNumber", [receipt.blockNumber, false], {
       fetchImpl,
       rpcUrl,
     });
+    conditionTokenIds = await deriveConditionTokenIds(
+      expected.intent.market?.conditionId,
+      receipt.blockNumber,
+      { fetchImpl, rpcUrl },
+    );
   }
   return verifyPositionProof({
     chainId: Number(BigInt(chainHex)),
     receipt,
-    settlementBlock,
     ...expected,
+    settlementBlock,
+    conditionTokenIds,
   });
 }

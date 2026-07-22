@@ -26,6 +26,10 @@ const YES_TOKEN_HEX = BigInt(LIVE_MARKET_SNAPSHOT.yesTokenId).toString(16).padSt
 const NO_TOKEN_HEX = BigInt(LIVE_MARKET_SNAPSHOT.noTokenId).toString(16).padStart(64, "0");
 const FEE_ORDER_ID = `0x${"f".repeat(64)}`;
 const SETTLEMENT_BLOCK_HASH = `0x${"c".repeat(64)}`;
+const CONDITION_TOKEN_IDS = Object.freeze({
+  YES: LIVE_MARKET_SNAPSHOT.yesTokenId,
+  NO: LIVE_MARKET_SNAPSHOT.noTokenId,
+});
 
 function uintWord(value) {
   return BigInt(value).toString(16).padStart(64, "0");
@@ -248,6 +252,7 @@ test("verifies a synthetic NO receipt only against the selected NO token", () =>
 test("binds a canonical intent to the actual receipt-derived fill", () => {
   const prepared = compiled("yes");
   const result = verifyPositionProof({
+    allowUnsigned: true,
     chainId: 137,
     receipt: LIVE_RECEIPT,
     intent: prepared.intent,
@@ -259,11 +264,24 @@ test("binds a canonical intent to the actual receipt-derived fill", () => {
   assert.equal(result.positionProof.fill.actualSharesRaw, "5000000");
   assert.equal(result.positionProof.checks.averagePriceWithinMaximum, true);
   assert.equal(result.positionProof.checks.totalDebitWithinMaximum, true);
+  assert.equal(result.assurance, "self-asserted");
+});
+
+test("unsigned intents require an explicit internal self-asserted opt-in", () => {
+  const prepared = compiled("yes");
+  errorCode(() => verifyPositionProof({
+    chainId: 137,
+    receipt: LIVE_RECEIPT,
+    intent: prepared.intent,
+    intentHash: prepared.intentHash,
+    orderId: LIVE_EXPECTED_FILL.orderId,
+  }), "unsigned_intent_not_allowed");
 });
 
 test("preserves verification for the historical fee-free v2 intent", () => {
   const prepared = legacyCompiled();
   const result = verifyPositionProof({
+    allowUnsigned: true,
     chainId: 137,
     receipt: LIVE_RECEIPT,
     intent: prepared.intent,
@@ -278,6 +296,7 @@ test("preserves verification for the historical fee-free v2 intent", () => {
 test("verifies fee-bearing principal, fee, total debit, and NO token independently", () => {
   const prepared = feeCompiled();
   const result = verifyPositionProof({
+    allowUnsigned: true,
     chainId: 137,
     receipt: feeReceipt(),
     intent: prepared.intent,
@@ -297,6 +316,7 @@ test("verifies fee-bearing principal, fee, total debit, and NO token independent
 test("rejects excess fee, extra wallet debit, and nonzero builder attribution", () => {
   const prepared = feeCompiled();
   const base = {
+    allowUnsigned: true,
     chainId: 137,
     intent: prepared.intent,
     intentHash: prepared.intentHash,
@@ -321,6 +341,7 @@ test("rejects a YES receipt substituted for a canonical NO intent", () => {
   errorCode(
     () =>
       verifyPositionProof({
+        allowUnsigned: true,
         chainId: 137,
         receipt: LIVE_RECEIPT,
         intent: prepared.intent,
@@ -339,6 +360,7 @@ test("rejects an internally swapped outcome-token mapping even with a recomputed
   errorCode(
     () =>
       verifyPositionProof({
+        allowUnsigned: true,
         chainId: 137,
         receipt: LIVE_RECEIPT,
         intent: swapped,
@@ -356,6 +378,7 @@ test("rejects intent and exposure mutation and keeps the combined proof determin
   errorCode(
     () =>
       verifyPositionProof({
+        allowUnsigned: true,
         chainId: 137,
         receipt: LIVE_RECEIPT,
         intent: mutated,
@@ -370,6 +393,7 @@ test("rejects intent and exposure mutation and keeps the combined proof determin
   errorCode(
     () =>
       verifyPositionProof({
+        allowUnsigned: true,
         chainId: 137,
         receipt: LIVE_RECEIPT,
         intent: badExposure,
@@ -380,6 +404,7 @@ test("rejects intent and exposure mutation and keeps the combined proof determin
   );
 
   const input = {
+    allowUnsigned: true,
     chainId: 137,
     receipt: LIVE_RECEIPT,
     intent: prepared.intent,
@@ -412,6 +437,7 @@ test("creates a signed, block-time-bound v4 position passport", () => {
     intentHash: issued.intentHash,
     issuance: issued.issuance,
     trustedIssuers,
+    conditionTokenIds: CONDITION_TOKEN_IDS,
     orderId: LIVE_EXPECTED_FILL.orderId,
   };
   const first = verifyPositionProof(input);
@@ -425,6 +451,7 @@ test("creates a signed, block-time-bound v4 position passport", () => {
   assert.equal(first.positionProof.temporalBinding, true);
   assert.equal(first.positionProof.blockHash, SETTLEMENT_BLOCK_HASH);
   assert.equal(first.positionPassport.status, "VERIFIED");
+  assert.equal(first.assurance, "issuer-signed");
   assert.equal(first.positionPassportHash, second.positionPassportHash);
   assert.deepEqual(first.positionProof.checks, {
     canonicalIntentHash: true,
@@ -437,6 +464,7 @@ test("creates a signed, block-time-bound v4 position passport", () => {
     trustedIssuerSignature: true,
     settlementInsideSignedWindow: true,
     settlementBlockMatched: true,
+    marketConditionTokensMatched: true,
   });
 });
 
@@ -450,9 +478,17 @@ test("v4 never downgrades around missing issuance or substituted settlement bloc
     intentHash: issued.intentHash,
     issuance: issued.issuance,
     trustedIssuers,
+    conditionTokenIds: CONDITION_TOKEN_IDS,
     orderId: LIVE_EXPECTED_FILL.orderId,
   };
   errorCode(() => verifyPositionProof({ ...base, issuance: undefined }), "invalid_issuance");
+  errorCode(
+    () => verifyPositionProof({
+      ...base,
+      conditionTokenIds: { ...CONDITION_TOKEN_IDS, YES: "1" },
+    }),
+    "condition_token_mapping_mismatch",
+  );
   errorCode(
     () => verifyPositionProof({
       ...base,
@@ -476,6 +512,12 @@ test("fetches the canonical Polygon block before verifying a signed v4 settlemen
   const { issued, trustedIssuers } = signedCompiled();
   const settlement = signedReceiptAndBlock();
   const methods = [];
+  const ethCallResults = [
+    `0x${"1".repeat(64)}`,
+    `0x${"2".repeat(64)}`,
+    `0x${BigInt(CONDITION_TOKEN_IDS.YES).toString(16).padStart(64, "0")}`,
+    `0x${BigInt(CONDITION_TOKEN_IDS.NO).toString(16).padStart(64, "0")}`,
+  ];
   const result = await fetchAndVerifyPosition(
     settlement.receipt.transactionHash,
     {
@@ -495,10 +537,11 @@ test("fetches the canonical Polygon block before verifying a signed v4 settlemen
           eth_getTransactionReceipt: settlement.receipt,
           eth_getBlockByNumber: settlement.settlementBlock,
         };
+        const result = request.method === "eth_call" ? ethCallResults.shift() : values[request.method];
         return {
           ok: true,
           async json() {
-            return { jsonrpc: "2.0", id: request.id, result: values[request.method] };
+            return { jsonrpc: "2.0", id: request.id, result };
           },
         };
       },
@@ -506,6 +549,10 @@ test("fetches the canonical Polygon block before verifying a signed v4 settlemen
   );
   assert.equal(result.positionPassport.status, "VERIFIED");
   assert.deepEqual(methods.sort(), [
+    "eth_call",
+    "eth_call",
+    "eth_call",
+    "eth_call",
     "eth_chainId",
     "eth_getBlockByNumber",
     "eth_getTransactionReceipt",
