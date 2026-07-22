@@ -19,6 +19,7 @@ import {
   assertNoStateReleaseInProgress,
   claimExecutionLock,
   releaseReconciledLocks,
+  resumePendingStateRelease,
   withStateReleaseMutex,
   writeReconciliationJournal,
 } from "../scripts/buyer-orchestrator.mjs";
@@ -44,7 +45,9 @@ async function waitFor(file) {
   throw new Error(`Timed out waiting for ${file}`);
 }
 
-async function fixture(prefix = "conviction-release-durability-") {
+async function fixture(prefix = "conviction-release-durability-", {
+  purpose = "OPEN_PLACE",
+} = {}) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), prefix)));
   await chmod(directory, 0o700);
   const journal = join(directory, "journey.json");
@@ -68,11 +71,136 @@ async function fixture(prefix = "conviction-release-durability-") {
     directory,
     file: lockFile,
     state,
-    purpose: "OPEN_PLACE",
+    purpose,
     recoveryNotBefore: DEADLINE,
     transition(next) { next.stage = "execution_lock_acquired"; },
   });
   return { directory, journal, lockFile, releaseFile, state };
+}
+
+const CANCEL_ORDER_ID = `0x${"b7".repeat(32)}`;
+const CANCEL_INTENT_HASH = `0x${"c8".repeat(32)}`;
+const CANCEL_PASSPORT_HASH = `0x${"d9".repeat(32)}`;
+const CANCEL_ATTEMPTED_AT = "2026-07-22T08:00:00.000Z";
+
+async function takeProfitCancelFixture(prefix, { phase }) {
+  const f = await fixture(prefix, { purpose: "TP_CANCEL" });
+  Object.assign(f.state, {
+    mode: "take_profit",
+    action: "CANCEL",
+    stage: phase === "attempted" ? "cancel_execution_attempted" : "cancel_execution_lock_acquired",
+    reconciliationRequired: true,
+    cancelExecution: {
+      version: "conviction-take-profit-cancel-execution-v2",
+      phase,
+      orderId: CANCEL_ORDER_ID,
+      intentHash: CANCEL_INTENT_HASH,
+      takeProfitPassportHash: CANCEL_PASSPORT_HASH,
+      executionLockGeneration: f.state.executionLockGeneration,
+      executionLockHash: f.state.executionLockHash,
+      attemptedAt: phase === "attempted" ? CANCEL_ATTEMPTED_AT : null,
+    },
+  });
+  if (phase === "attempted") {
+    f.state.cancelOutcome = {
+      version: "conviction-take-profit-cancel-outcome-v1",
+      orderId: CANCEL_ORDER_ID,
+      status: "CANCELED",
+      orderTerminal: true,
+      settlementProofRequired: false,
+    };
+  }
+  await writeReconciliationJournal(f.state, { directory: f.directory, file: f.journal });
+  return f;
+}
+
+async function legacyV1Fixture(prefix) {
+  const f = await fixture(prefix);
+  const legacyLock = {
+    version: "conviction-polymarket-execution-lock-v1",
+    journalPath: f.journal,
+  };
+  await unlink(f.lockFile);
+  await writeFile(f.lockFile, `${JSON.stringify(legacyLock, null, 2)}\n`, { mode: 0o600 });
+  Object.assign(f.state, {
+    stage: "legacy_execution_lock_acquired",
+    executionLockPath: f.lockFile,
+    executionLockGeneration: null,
+    executionLockHash: null,
+    executionLockPurpose: null,
+    executionLockRecoveryNotBefore: null,
+    reconciliationRequired: true,
+  });
+  await writeReconciliationJournal(f.state, { directory: f.directory, file: f.journal });
+  return f;
+}
+
+function terminalCancelTransition(next, { releasedAt }) {
+  next.cancelExecution.phase = "terminal";
+  next.cancelExecution.terminalAt = releasedAt;
+  next.reconciliationRequired = false;
+}
+
+function knownUnstartedCancelTransition(next, { releasedAt }) {
+  next.cancelExecution.phase = "pre_spawn_failed";
+  next.cancelExecution.failedAt = releasedAt;
+  next.cancelError = {
+    code: "take_profit_cancel_pre_spawn_failed",
+    at: releasedAt,
+    executionAmbiguous: false,
+  };
+  next.reconciliationRequired = false;
+}
+
+async function leaveGuardBeforeUnlink(f, {
+  transition,
+  transitionId,
+  now = Date.parse("2026-07-22T08:00:01.000Z"),
+} = {}) {
+  await assert.rejects(
+    releaseReconciledLocks(f.state, {
+      stateDirectory: f.directory,
+      journal: f.journal,
+      fields: ["executionLockPath"],
+      transition,
+      transitionId,
+      now: () => now,
+      durableGuardPublishImpl: async (file, text) => {
+        await writeFile(file, text, { mode: 0o600 });
+        throw Object.assign(new Error("simulated crash after release-guard publication"), {
+          code: "simulated_after_guard_publish",
+          atomicPublishCompleted: true,
+          atomicPublishedPath: file,
+        });
+      },
+    }),
+    (error) => error?.code === "simulated_after_guard_publish" && error?.releaseGuardRetained === true,
+  );
+  return JSON.parse(await readFile(f.releaseFile, "utf8"));
+}
+
+async function leaveGuardAfterUnlink(f, {
+  transition,
+  transitionId,
+  now = Date.parse("2026-07-22T08:00:02.000Z"),
+} = {}) {
+  await assert.rejects(
+    releaseReconciledLocks(f.state, {
+      stateDirectory: f.directory,
+      journal: f.journal,
+      fields: ["executionLockPath"],
+      transition,
+      transitionId,
+      now: () => now,
+      writeState: async () => {
+        throw Object.assign(new Error("simulated crash after guarded unlink"), {
+          code: "simulated_after_guarded_unlink",
+        });
+      },
+    }),
+    (error) => error?.code === "simulated_after_guarded_unlink" && error?.releaseGuardRetained === true,
+  );
+  return JSON.parse(await readFile(f.releaseFile, "utf8"));
 }
 
 test("release-guard publication failure is nondestructive before publish and resumable after publish", async () => {
@@ -118,6 +246,204 @@ test("release-guard publication failure is nondestructive before publish and res
       assert.equal(await exists(f.lockFile), false);
       assert.equal(await exists(f.releaseFile), false);
       assert.equal(JSON.parse(await readFile(f.journal, "utf8")).stage, "released");
+    } finally {
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("generic restart resumes the guarded TP_CANCEL terminal transition before unlink without its label", async () => {
+  const f = await takeProfitCancelFixture("conviction-generic-cancel-before-unlink-", { phase: "attempted" });
+  try {
+    const sourceText = await readFile(f.journal, "utf8");
+    const lockText = await readFile(f.lockFile, "utf8");
+    const guard = await leaveGuardBeforeUnlink(f, {
+      transition: terminalCancelTransition,
+      transitionId: "take-profit-cancel-terminal-release-v2",
+    });
+    assert.equal(await readFile(f.journal, "utf8"), sourceText);
+    assert.equal(await readFile(f.lockFile, "utf8"), lockText);
+    assert.equal(guard.targetState.cancelExecution.phase, "terminal");
+    assert.equal(guard.targetState.cancelExecution.terminalAt, guard.claimedAt);
+    assert.equal(guard.targetState.reconciliationRequired, false);
+
+    const resumed = await resumePendingStateRelease({
+      journal: f.journal,
+      stateDirectory: f.directory,
+    });
+    assert.equal(resumed.resumed, true);
+    assert.equal(resumed.completed, true);
+    assert.deepEqual(resumed.released, [f.lockFile]);
+    assert.deepEqual(JSON.parse(await readFile(f.journal, "utf8")), guard.targetState);
+    assert.equal(await exists(f.lockFile), false);
+    assert.equal(await exists(f.releaseFile), false);
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("generic restart resumes a known-unstarted TP_CANCEL target after its lock was already unlinked", async () => {
+  const f = await takeProfitCancelFixture("conviction-generic-cancel-after-unlink-", { phase: "lock_acquired" });
+  try {
+    const sourceText = await readFile(f.journal, "utf8");
+    const guard = await leaveGuardAfterUnlink(f, {
+      transition: knownUnstartedCancelTransition,
+      transitionId: "take-profit-cancel-known-unstarted-v2",
+    });
+    assert.equal(await readFile(f.journal, "utf8"), sourceText);
+    assert.equal(await exists(f.lockFile), false);
+    assert.equal(guard.targetState.cancelExecution.phase, "pre_spawn_failed");
+    assert.equal(guard.targetState.cancelExecution.failedAt, guard.claimedAt);
+    assert.equal(guard.targetState.cancelError.executionAmbiguous, false);
+
+    const resumed = await resumePendingStateRelease({
+      journal: f.journal,
+      stateDirectory: f.directory,
+    });
+    assert.equal(resumed.resumed, true);
+    assert.equal(resumed.completed, true);
+    assert.deepEqual(resumed.released, [f.lockFile]);
+    assert.deepEqual(JSON.parse(await readFile(f.journal, "utf8")), guard.targetState);
+    assert.equal(await exists(f.releaseFile), false);
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("generic restart resumes an exact legacy v1 release after its lock was already unlinked", async () => {
+  const f = await legacyV1Fixture("conviction-generic-legacy-v1-after-unlink-");
+  try {
+    const sourceText = await readFile(f.journal, "utf8");
+    const guard = await leaveGuardAfterUnlink(f, {
+      transitionId: "legacy-v1-known-unstarted-release-v1",
+      transition(next, { releasedAt }) {
+        next.stage = "legacy_pre_spawn_failed";
+        next.legacyExecutionFailedAt = releasedAt;
+        next.reconciliationRequired = false;
+      },
+    });
+    assert.equal(await readFile(f.journal, "utf8"), sourceText);
+    assert.equal(await exists(f.lockFile), false);
+    assert.equal(guard.lockHashes.executionLockPath, sha256({
+      version: "conviction-polymarket-execution-lock-v1",
+      journalPath: f.journal,
+    }));
+    assert.equal(guard.targetState.executionLockHash, null);
+
+    const resumed = await resumePendingStateRelease({
+      journal: f.journal,
+      stateDirectory: f.directory,
+    });
+    assert.equal(resumed.resumed, true);
+    assert.equal(resumed.completed, true);
+    assert.deepEqual(resumed.released, [f.lockFile]);
+    assert.deepEqual(JSON.parse(await readFile(f.journal, "utf8")), guard.targetState);
+    assert.equal(await exists(f.releaseFile), false);
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("generic restart seeing the guarded target only removes the exact completed guard", async () => {
+  const f = await takeProfitCancelFixture("conviction-generic-cancel-target-guard-", { phase: "attempted" });
+  try {
+    await assert.rejects(
+      releaseReconciledLocks(f.state, {
+        stateDirectory: f.directory,
+        journal: f.journal,
+        fields: ["executionLockPath"],
+        transition: terminalCancelTransition,
+        transitionId: "take-profit-cancel-terminal-release-v2",
+        now: () => Date.parse("2026-07-22T08:00:03.000Z"),
+        beforeGuardRelease: () => {
+          throw Object.assign(new Error("simulated crash after guarded target write"), {
+            code: "simulated_after_guarded_target",
+          });
+        },
+      }),
+      (error) => error?.code === "simulated_after_guarded_target" && error?.releaseGuardRetained === true,
+    );
+    const targetText = await readFile(f.journal, "utf8");
+    const guardText = await readFile(f.releaseFile, "utf8");
+    const guard = JSON.parse(guardText);
+    assert.equal(sha256(JSON.parse(targetText)), guard.targetJournalHash);
+    assert.equal(await exists(f.lockFile), false);
+
+    const resumed = await resumePendingStateRelease({
+      journal: f.journal,
+      stateDirectory: f.directory,
+    });
+    assert.equal(resumed.resumed, true);
+    assert.equal(resumed.completed, true);
+    assert.deepEqual(resumed.released, []);
+    assert.equal(await readFile(f.journal, "utf8"), targetText);
+    assert.equal(await exists(f.releaseFile), false);
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("generic restart rejects foreign journal, target, hash, fields, and execution generation substitutions", async () => {
+  const cases = [
+    {
+      name: "foreign journal",
+      mutate(guard, f) { guard.journalPath = join(f.directory, "foreign-journey.json"); },
+      code: "state_release_guard_mismatch",
+    },
+    {
+      name: "target",
+      mutate(guard, f) {
+        guard.targetState.executionLockPath = f.lockFile;
+        guard.targetJournalHash = sha256(guard.targetState);
+      },
+      code: "state_release_guard_mismatch",
+    },
+    {
+      name: "source hash",
+      mutate(guard) { guard.sourceJournalHash = `0x${"41".repeat(32)}`; },
+      code: "reconciliation_journal_changed",
+    },
+    {
+      name: "fields",
+      mutate(guard) {
+        guard.fields = ["executionLockPath", "reservationLockPath"];
+        guard.lockHashes.reservationLockPath = null;
+      },
+      code: "state_release_guard_mismatch",
+    },
+    {
+      name: "execution generation",
+      mutate(guard) { guard.lockHashes.executionLockPath = `0x${"52".repeat(32)}`; },
+      code: "lock_generation_mismatch",
+    },
+  ];
+
+  for (const entry of cases) {
+    const f = await takeProfitCancelFixture(`conviction-generic-guard-${entry.name.replaceAll(" ", "-")}-`, {
+      phase: "attempted",
+    });
+    try {
+      const sourceText = await readFile(f.journal, "utf8");
+      const lockText = await readFile(f.lockFile, "utf8");
+      const guard = await leaveGuardBeforeUnlink(f, {
+        transition: terminalCancelTransition,
+        transitionId: "take-profit-cancel-terminal-release-v2",
+      });
+      entry.mutate(guard, f);
+      const mutatedGuardText = `${JSON.stringify(guard, null, 2)}\n`;
+      await writeFile(f.releaseFile, mutatedGuardText, { mode: 0o600 });
+
+      await assert.rejects(
+        resumePendingStateRelease({
+          journal: f.journal,
+          stateDirectory: f.directory,
+        }),
+        (error) => error?.code === entry.code,
+        `${entry.name} substitution must fail closed`,
+      );
+      assert.equal(await readFile(f.journal, "utf8"), sourceText);
+      assert.equal(await readFile(f.lockFile, "utf8"), lockText);
+      assert.equal(await readFile(f.releaseFile, "utf8"), mutatedGuardText);
     } finally {
       await rm(f.directory, { recursive: true, force: true });
     }
