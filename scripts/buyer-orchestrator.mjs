@@ -4289,7 +4289,7 @@ export async function resumePaidCloseJournal({
   for (const name of [
     "verifyPayment", "verifySourcePosition", "validateCloseCard", "ensureTradingMode",
     "checkCloseReadiness", "dryRun", "validateCloseDryRun", "execute",
-    "buildCloseReceiptRequest", "fetchCloseProof", "validateCloseProof",
+    "resolveExecutionRuntime", "buildCloseReceiptRequest", "fetchCloseProof", "validateCloseProof",
   ]) {
     resumeInvariant(typeof adapters?.[name] === "function", "invalid_adapter", `Missing resume adapter: ${name}`);
   }
@@ -4443,11 +4443,26 @@ export async function resumePaidCloseJournal({
     bindResumeCard({ state, request, validated, verifiedSource });
     consent = validateResumeConsent({ state, validated, paymentProof, now: now() });
     const launchWindow = requireExecutionLaunchWindow(validated, { now });
+    const persistedRuntime = await adapters.resolveExecutionRuntime();
+    resumeInvariant(
+      typeof persistedRuntime?.binary === "string" && persistedRuntime.binary.length > 0 &&
+        persistedRuntime?.evidence?.verification === "release-digest",
+      "runtime_evidence_unverified",
+      "Resumed CLOSE requires release-digest runtime evidence",
+    );
+    state.executionRuntime = structuredClone(persistedRuntime.evidence);
+    await writeReconciliationJournal(state, { directory: stateDirectory, file: journal });
+    const launchRuntime = await adapters.resolveExecutionRuntime();
+    resumeInvariant(
+      JSON.stringify(launchRuntime?.evidence || null) === JSON.stringify(state.executionRuntime),
+      "runtime_changed_before_execution",
+      "Pinned Polymarket runtime changed before resumed CLOSE execution",
+    );
     const liveResult = await adapters.execute(validated.executionCard.argv, {
       deadlineEpochMs: launchWindow.deadlineEpochMs,
       clock: now,
       onStart: () => { liveAttempted = true; },
-    });
+    }, launchRuntime.binary);
     const receiptRequest = await adapters.buildCloseReceiptRequest(state.paidCard, liveResult, {
       trustedIssuers,
     });
@@ -4516,6 +4531,7 @@ export async function resumePaidCloseJournal({
       settlementTx: proof.transactionHash,
       closeProofHash: proof.closeProofHash,
       closePassportHash: proof.closePassportHash,
+      executionRuntime: state.executionRuntime,
       releasedLocks,
       ordersPlaced: 1,
       timings: {
@@ -4787,8 +4803,15 @@ async function main() {
           executionOptions,
         ),
         validateCloseDryRun: (card, dryRun, validationOptions) => validateClosePluginPreview(card, dryRun, validationOptions),
-        execute: (executionArgv, executionOptions) => commandJson(
-          polymarketPluginCommand(),
+        resolveExecutionRuntime: () => {
+          const runtime = resolvePolymarketRuntime();
+          return {
+            binary: runtime.binary,
+            evidence: polymarketRuntimeEvidenceFromInspection(runtime),
+          };
+        },
+        execute: (executionArgv, executionOptions, runtimeBinary) => commandJson(
+          runtimeBinary,
           executionArgv,
           "Resumed Polymarket live order",
           executionOptions,
