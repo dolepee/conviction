@@ -539,6 +539,7 @@ function normalizeProof(input) {
   const candidate = outer.response && typeof outer.response === "object" ? outer.response : outer;
   return {
     outer: candidate,
+    assurance: candidate.assurance,
     intent: candidate.intent || candidate.canonicalIntent,
     receiptProof: candidate.receiptProof,
     positionProof: candidate.positionProof,
@@ -606,6 +607,11 @@ export function validateProof(cardInput, proofInput, options = {}) {
     "Receipt proof does not match the position proof",
   );
   if (signedV4) {
+    fail(
+      normalized.assurance === "issuer-signed" && position.checks?.marketConditionTokensMatched === true,
+      "proof_assurance_mismatch",
+      "Signed proof lacks issuer assurance or CTF market-token binding",
+    );
     fail(
       HASH_RE.test(receipt.blockHash || "") &&
         lower(receipt.blockHash) === lower(position.blockHash) &&
@@ -706,6 +712,7 @@ export function validateProof(cardInput, proofInput, options = {}) {
           "trustedIssuerSignature",
           "settlementInsideSignedWindow",
           "settlementBlockMatched",
+          "marketConditionTokensMatched",
         ]
       : []),
   ], "positionProof.checks");
