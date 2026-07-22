@@ -73,6 +73,6 @@ test("Gate B does not kill a paid checkpoint on a pre-payment wall-clock timer",
     "utf8",
   );
   assert.doesNotMatch(source, /child\.kill\(["']SIGKILL["']\)/);
-  assert.match(source, /paymentToProofMs = Number\(provedEvent\?\.at\) - Number\(paidEvent\?\.at\)/);
+  assert.match(source, /evaluateFilledOrderAcceptanceTiming/);
   assert.doesNotMatch(source, /journey\.wallMs < 120_000/);
 });

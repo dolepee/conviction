@@ -10,7 +10,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { strictlyPostdatesConfirmationSecond } from "../src/acceptance-timing.mjs";
+import {
+  evaluateFilledOrderAcceptanceTiming,
+  strictlyPostdatesConfirmationSecond,
+} from "../src/acceptance-timing.mjs";
 import { runOpenJourney } from "../src/buyer-orchestrator.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
@@ -199,12 +202,10 @@ if (mode === "live") {
     let errors = "";
     child.stdout.on("data", (chunk) => { output += chunk; process.stdout.write(chunk); });
     child.stderr.on("data", (chunk) => { errors += chunk; process.stderr.write(chunk); });
-    const timer = setTimeout(() => child.kill("SIGKILL"), 150_000);
     child.on("close", (code) => {
-      clearTimeout(timer);
       let report;
       try { report = JSON.parse(output.trim()); } catch {}
-      resolve({ code, report, errors, wallMs: Date.now() - gateStartedAt });
+      resolve({ code, report, errors });
     });
   });
 
@@ -274,6 +275,7 @@ if (mode === "live") {
     record("2", "Signed bounds shown and exactly one trade confirmation", consentOk ? "PASS" : "FAIL", `confirmations:${r.confirmation?.count}`);
 
     let position;
+    let proofObservedAt;
     try {
       position = await fetchAndVerifyPosition(r.settlementTx, {
         intent: r.card.intent,
@@ -282,6 +284,7 @@ if (mode === "live") {
         issuance: r.card.issuance,
         trustedIssuers,
       });
+      proofObservedAt = Date.now();
       const walletOk = position.ok && position.positionProof.wallet.toLowerCase() === required.buyerWallet.toLowerCase();
       const settledAfterConfirmation = strictlyPostdatesConfirmationSecond(
         position.positionProof.settledAt,
@@ -297,11 +300,20 @@ if (mode === "live") {
       record("4", "Verified position proof returns in the same journey", "FAIL", "independent verification failed");
     }
 
-    const chainSeconds = payment && position
-      ? Date.parse(position.positionProof.settledAt) / 1000 - Number(payment.proof.blockTimestamp)
-      : Number.POSITIVE_INFINITY;
-    const fast = journey.wallMs < 120_000 && chainSeconds >= 0 && chainSeconds < 120;
-    record("6", "Payment-to-proof journey finishes under two minutes", fast ? "PASS" : "FAIL", `${(journey.wallMs / 1000).toFixed(1)}s wall / ${chainSeconds}s chain`);
+    const timing = evaluateFilledOrderAcceptanceTiming({
+      paymentBlockTimestamp: payment?.proof?.blockTimestamp,
+      settledAt: position?.positionProof?.settledAt,
+      proofObservedAt,
+      localPaidAt: r.timings?.paidAt,
+      localProvedAt: r.timings?.provedAt,
+      recordedLocalPaymentToProofMs: r.timings?.paymentToProofMs,
+    });
+    const localSeconds = timing.localPaymentToProofMs / 1_000;
+    const chainSeconds = timing.chainPaymentToProofMs / 1_000;
+    const timingDetail = Number.isFinite(localSeconds) && Number.isFinite(chainSeconds)
+      ? `${localSeconds.toFixed(1)}s local / ${chainSeconds.toFixed(1)}s independently observed`
+      : "independent timing unavailable";
+    record("6", "Payment-to-proof journey finishes under two minutes", timing.ok ? "PASS" : "FAIL", timingDetail);
   }
 }
 

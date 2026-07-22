@@ -25,6 +25,58 @@ export function strictlyPostdatesConfirmationSecond(later, confirmation) {
 }
 
 /**
+ * Evaluate a filled OPEN/CLOSE payment-to-proof SLA without counting time
+ * spent waiting for the buyer's payment or trade consent. The local interval
+ * must agree with the orchestrator's recorded duration, while the verified X
+ * Layer payment block and this gate's proof-observation time independently
+ * form one nonnegative sub-120s interval.
+ */
+export function evaluateFilledOrderAcceptanceTiming({
+  paymentBlockTimestamp,
+  settledAt,
+  proofObservedAt,
+  localPaidAt,
+  localProvedAt,
+  recordedLocalPaymentToProofMs,
+} = {}) {
+  const paymentSecond = epochSeconds(paymentBlockTimestamp);
+  const settledAtMs = timestampMilliseconds(settledAt);
+  const proofObservedAtMs = timestampMilliseconds(proofObservedAt);
+  const paidAtMs = timestampMilliseconds(localPaidAt);
+  const provedAtMs = timestampMilliseconds(localProvedAt);
+  const recordedLocalMs = Number(recordedLocalPaymentToProofMs);
+  const timestampsValid = [
+    paymentSecond,
+    settledAtMs,
+    proofObservedAtMs,
+    paidAtMs,
+    provedAtMs,
+    recordedLocalMs,
+  ].every(Number.isFinite);
+  const chainPaymentToProofMs = timestampsValid
+    ? proofObservedAtMs - paymentSecond * 1_000
+    : Number.NaN;
+  const chainTimingBound = Number.isFinite(chainPaymentToProofMs) &&
+    chainPaymentToProofMs >= 0 && chainPaymentToProofMs < 120_000;
+  const settlementChronologyBound = timestampsValid &&
+    settledAtMs >= paymentSecond * 1_000 && settledAtMs <= proofObservedAtMs;
+  const localPaymentToProofMs = timestampsValid ? provedAtMs - paidAtMs : Number.NaN;
+  const localTimingBound = Number.isFinite(localPaymentToProofMs) &&
+    localPaymentToProofMs >= 0 && localPaymentToProofMs < 120_000 &&
+    localPaymentToProofMs === recordedLocalMs;
+
+  return Object.freeze({
+    ok: timestampsValid && chainTimingBound && settlementChronologyBound && localTimingBound,
+    timestampsValid,
+    chainTimingBound,
+    settlementChronologyBound,
+    localTimingBound,
+    chainPaymentToProofMs,
+    localPaymentToProofMs,
+  });
+}
+
+/**
  * Independently evaluate the time bindings used by live TAKE_PROFIT Gate C.
  * Local runtime timings are retained, but cannot establish the release gate by
  * themselves: the X Layer payment block, authenticated CLOB creation second,

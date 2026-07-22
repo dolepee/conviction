@@ -12,7 +12,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { strictlyPostdatesConfirmationSecond } from "../src/acceptance-timing.mjs";
+import {
+  evaluateFilledOrderAcceptanceTiming,
+  strictlyPostdatesConfirmationSecond,
+} from "../src/acceptance-timing.mjs";
 import { runCloseJourney } from "../src/buyer-orchestrator.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
 import { fetchAndVerifyClose } from "../src/exit-receipt-verifier.mjs";
@@ -572,6 +575,7 @@ if (mode === "live") {
 
     let close;
     let independentlyValidated;
+    let proofObservedAt;
     try {
       const expectedReceiptRequest = {
         transactionHash: report.settlementTx,
@@ -591,6 +595,7 @@ if (mode === "live") {
         trustedIssuers,
         expectedReceiptRequest,
       });
+      proofObservedAt = Date.now();
       const settlementOk = close.ok === true &&
         close.closeProof.wallet === required.sellerWallet &&
         BigInt(close.closeProof.fill.actualSharesRaw) === parseDecimal(required.shares, 6, "shares") &&
@@ -612,16 +617,20 @@ if (mode === "live") {
       record("4", "Independent close proof and passport return in the same journey", "FAIL", "independent verification failed");
     }
 
-    const chainSeconds = payment && close
-      ? Date.parse(close.closeProof.settledAt) / 1_000 - Number(payment.proof.blockTimestamp)
-      : Number.POSITIVE_INFINITY;
     const paidEvent = report.events?.find((event) => event.type === "payment_verified");
     const provedEvent = report.events?.find((event) => event.type === "close_proof_verified");
-    const paymentToProofMs = Number(provedEvent?.at) - Number(paidEvent?.at);
-    const timingBound = Number.isFinite(paymentToProofMs) && paymentToProofMs >= 0 &&
-      paymentToProofMs === Number(report.timings?.paymentToProofMs);
-    const fast = timingBound && paymentToProofMs < 120_000 && chainSeconds >= 0 && chainSeconds < 120;
-    record("6", "Payment-to-proof CLOSE journey finishes under two minutes", fast ? "PASS" : "FAIL", `${(paymentToProofMs / 1_000).toFixed(1)}s payment-to-proof / ${chainSeconds}s chain`);
+    const timing = evaluateFilledOrderAcceptanceTiming({
+      paymentBlockTimestamp: payment?.proof?.blockTimestamp,
+      settledAt: close?.closeProof?.settledAt,
+      proofObservedAt,
+      localPaidAt: paidEvent?.at,
+      localProvedAt: provedEvent?.at,
+      recordedLocalPaymentToProofMs: report.timings?.paymentToProofMs,
+    });
+    const timingDetail = Number.isFinite(timing.localPaymentToProofMs) && Number.isFinite(timing.chainPaymentToProofMs)
+      ? `${(timing.localPaymentToProofMs / 1_000).toFixed(1)}s local / ${(timing.chainPaymentToProofMs / 1_000).toFixed(1)}s independently observed`
+      : "independent timing unavailable";
+    record("6", "Payment-to-proof CLOSE journey finishes under two minutes", timing.ok ? "PASS" : "FAIL", timingDetail);
   }
 }
 
