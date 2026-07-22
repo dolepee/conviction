@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile as fsWriteFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile as fsWriteFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -784,28 +784,64 @@ test("buyer CLI atomically journals reconciliation state outside Git with owner-
 });
 
 test("buyer CLI serializes the final Polymarket execution window", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "conviction-execution-lock-test-"));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "conviction-execution-lock-test-")));
   const file = join(directory, "polymarket-execution.lock.json");
   const journal = join(directory, "journey.json");
+  const deadline = "2099-01-01T00:00:00.000Z";
+  const initialState = (journalPath) => ({
+    journalRevision: 0,
+    journalPath,
+    stage: "trade_confirmed",
+    executionLockPath: null,
+    executionLockGeneration: null,
+    executionLockHash: null,
+    executionLockPurpose: null,
+    executionLockRecoveryNotBefore: null,
+    reconciliationRequired: true,
+  });
   try {
+    const checkpoint = initialState(journal);
+    await writeReconciliationJournal(checkpoint, { directory, file: journal });
     assert.equal(
-      await claimExecutionLock({ journal, directory, file }),
+      await claimExecutionLock({
+        journal,
+        directory,
+        file,
+        state: checkpoint,
+        purpose: "OPEN_PLACE",
+        recoveryNotBefore: deadline,
+      }),
       file,
     );
     assert.equal((await stat(file)).mode & 0o777, 0o600);
+    const secondJournal = join(directory, "second.json");
+    const secondState = initialState(secondJournal);
+    await writeReconciliationJournal(secondState, { directory, file: secondJournal });
     await assert.rejects(
-      claimExecutionLock({ journal: "/tmp/second.json", directory, file }),
+      claimExecutionLock({
+        journal: secondJournal,
+        directory,
+        file,
+        state: secondState,
+        purpose: "CLOSE_PLACE",
+        recoveryNotBefore: deadline,
+      }),
       (error) => error?.code === "execution_reconciliation_required" &&
         error?.details?.executionLockPath === file,
     );
-    const checkpoint = { journalPath: journal, executionLockPath: file };
-    await writeReconciliationJournal(checkpoint, { directory, file: journal });
     assert.deepEqual(
       await settleExecutionLock(checkpoint, { liveAttempted: true, proofVerified: false }),
       { released: false, retained: true, path: file },
     );
     await assert.rejects(
-      claimExecutionLock({ journal: "/tmp/modified-close.json", directory, file }),
+      claimExecutionLock({
+        journal: secondJournal,
+        directory,
+        file,
+        state: secondState,
+        purpose: "CLOSE_PLACE",
+        recoveryNotBefore: deadline,
+      }),
       (error) => error?.code === "execution_reconciliation_required",
     );
     const released = await settleExecutionLock(checkpoint, {
@@ -816,8 +852,18 @@ test("buyer CLI serializes the final Polymarket execution window", async () => {
     assert.equal(released.released, true);
     assert.equal(checkpoint.executionLockPath, null);
     assert.equal(checkpoint.executionLockReleasedAt, "1970-01-01T00:00:01.000Z");
+    const nextJournal = join(directory, "verified-next-close.json");
+    const nextState = initialState(nextJournal);
+    await writeReconciliationJournal(nextState, { directory, file: nextJournal });
     assert.equal(
-      await claimExecutionLock({ journal: "/tmp/verified-next-close.json", directory, file }),
+      await claimExecutionLock({
+        journal: nextJournal,
+        directory,
+        file,
+        state: nextState,
+        purpose: "CLOSE_PLACE",
+        recoveryNotBefore: deadline,
+      }),
       file,
     );
   } finally {
@@ -986,11 +1032,10 @@ test("locked CLOSE execution rechecks the active wallet, balance, approval, and 
   );
 });
 
-test("CLOSE reconciliation releases only an expired unexecuted card's scoped locks", async () => {
+test("CLOSE reconciliation releases only an expired unconfirmed card's replay lock", async () => {
   const directory = await mkdtemp(join(tmpdir(), "conviction-reconcile-test-"));
   const journal = join(directory, "journey.json");
   const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
-  const executionLock = join(directory, "polymarket-execution.lock.json");
   const replayKey = `0x${"a".repeat(64)}`;
   const paymentTx = `0x${"f".repeat(64)}`;
   try {
@@ -1006,17 +1051,13 @@ test("CLOSE reconciliation releases only an expired unexecuted card's scoped loc
       executionArgvHash: null,
       replayKey,
       replayLockPath: replayLock,
-      executionLockPath: executionLock,
+      executionLockPath: null,
     };
     await Promise.all([
       writeFile(journal, JSON.stringify(state)),
       writeFile(replayLock, JSON.stringify({
         version: "conviction-close-replay-lock-v1",
         replayKey,
-        journalPath: journal,
-      })),
-      writeFile(executionLock, JSON.stringify({
-        version: "conviction-polymarket-execution-lock-v1",
         journalPath: journal,
       })),
     ]);

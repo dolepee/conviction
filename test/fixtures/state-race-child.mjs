@@ -17,6 +17,7 @@ import {
 
 const [command, directory, journal, first, second, third] = process.argv.slice(2);
 const RACE_REPLAY_KEY = `0x${"a7".repeat(32)}`;
+const EXECUTION_RECOVERY_NOT_BEFORE = "2099-01-01T00:00:00.000Z";
 
 async function waitFor(file) {
   for (;;) {
@@ -55,6 +56,8 @@ async function main() {
         directory,
         file: join(directory, "polymarket-execution.lock.json"),
         state,
+        purpose: "OPEN_PLACE",
+        recoveryNotBefore: EXECUTION_RECOVERY_NOT_BEFORE,
         beforePersist,
         transition: (next) => { next.stage = "execution_claimed"; },
       });
@@ -102,10 +105,14 @@ async function main() {
   }
 
   if (command === "claim-unattached-execution") {
+    const state = JSON.parse(await readFile(journal, "utf8"));
     const path = await claimExecutionLock({
       journal,
       directory,
       file: join(directory, "polymarket-execution.lock.json"),
+      state,
+      purpose: "OPEN_PLACE",
+      recoveryNotBefore: EXECUTION_RECOVERY_NOT_BEFORE,
     });
     return { path, lock: JSON.parse(await readFile(path, "utf8")) };
   }

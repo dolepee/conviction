@@ -21,6 +21,7 @@ import {
 
 const CHILD = new URL("./fixtures/state-race-child.mjs", import.meta.url);
 const REPLAY_KEY = `0x${"a7".repeat(32)}`;
+const EXECUTION_RECOVERY_NOT_BEFORE = "2099-01-01T00:00:00.000Z";
 
 async function pathExists(path) {
   try {
@@ -94,6 +95,10 @@ async function fixture(prefix = "conviction-state-race-") {
     replayLockPath: null,
     reservationLockPath: null,
     executionLockPath: null,
+    executionLockGeneration: null,
+    executionLockHash: null,
+    executionLockPurpose: null,
+    executionLockRecoveryNotBefore: null,
     reconciliationRequired: true,
   };
   await writeReconciliationJournal(state, { directory, file: journal });
@@ -168,6 +173,8 @@ test("an ambiguous writer that persisted cannot make any claim delete its attach
               directory: f.directory,
               file: join(f.directory, "polymarket-execution.lock.json"),
               state: f.state,
+              purpose: "OPEN_PLACE",
+              recoveryNotBefore: EXECUTION_RECOVERY_NOT_BEFORE,
               writeState: persistThenThrow,
             });
       await assert.rejects(claim, (error) => error?.code === "lock_attachment_ambiguous");
@@ -193,6 +200,8 @@ test("release, writer, and fresh claimant serialize across real OS processes and
       directory: f.directory,
       file: join(f.directory, "polymarket-execution.lock.json"),
       state: f.state,
+      purpose: "OPEN_PLACE",
+      recoveryNotBefore: EXECUTION_RECOVERY_NOT_BEFORE,
     });
     const firstLock = JSON.parse(await readFile(f.state.executionLockPath, "utf8"));
     const staleState = structuredClone(f.state);
@@ -256,6 +265,8 @@ test("a completed guarded release blocks contenders, then cleans exactly before 
       directory: f.directory,
       file: join(f.directory, "polymarket-execution.lock.json"),
       state: f.state,
+      purpose: "OPEN_PLACE",
+      recoveryNotBefore: EXECUTION_RECOVERY_NOT_BEFORE,
     });
     const first = JSON.parse(await readFile(f.state.executionLockPath, "utf8"));
     const ready = join(f.directory, "target.ready");
@@ -294,6 +305,8 @@ test("a catch-side child cleans an exact completed guard before advancing and ca
       directory: f.directory,
       file: join(f.directory, "polymarket-execution.lock.json"),
       state: f.state,
+      purpose: "OPEN_PLACE",
+      recoveryNotBefore: EXECUTION_RECOVERY_NOT_BEFORE,
     });
     const first = JSON.parse(await readFile(f.state.executionLockPath, "utf8"));
     const staleSnapshot = join(f.directory, "stale-release-source.json");
@@ -360,6 +373,8 @@ test("a source-state guard left by a hard-crashed child rejects writers unchange
       directory: f.directory,
       file: join(f.directory, "polymarket-execution.lock.json"),
       state: f.state,
+      purpose: "OPEN_PLACE",
+      recoveryNotBefore: EXECUTION_RECOVERY_NOT_BEFORE,
     });
     const sourceText = await readFile(f.journal, "utf8");
     const sourceSnapshot = join(f.directory, "source-state.json");
@@ -529,6 +544,8 @@ test("a missing lock is recoverable only with its exact pre-existing release gua
       directory: f.directory,
       file: join(f.directory, "polymarket-execution.lock.json"),
       state: f.state,
+      purpose: "OPEN_PLACE",
+      recoveryNotBefore: EXECUTION_RECOVERY_NOT_BEFORE,
     });
     const before = await readFile(f.journal, "utf8");
     await unlink(f.state.executionLockPath);
@@ -555,6 +572,8 @@ test("a lock disappearing after ownership verification is never treated as a cra
       directory: f.directory,
       file: join(f.directory, "polymarket-execution.lock.json"),
       state: f.state,
+      purpose: "OPEN_PLACE",
+      recoveryNotBefore: EXECUTION_RECOVERY_NOT_BEFORE,
     });
     const before = await readFile(f.journal, "utf8");
     await assert.rejects(
@@ -581,6 +600,8 @@ test("a resolved TP fill crash resumes its guarded evidence even when a later re
       directory: f.directory,
       file: join(f.directory, "polymarket-execution.lock.json"),
       state: f.state,
+      purpose: "TP_PLACE",
+      recoveryNotBefore: EXECUTION_RECOVERY_NOT_BEFORE,
     });
     const firstEvidence = {
       proofHash: `0x${"31".repeat(32)}`,

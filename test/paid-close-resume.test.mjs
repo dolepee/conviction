@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -190,7 +190,7 @@ function adapters(overrides = {}) {
 }
 
 async function fixture({ mutateState, adapterOverrides } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "conviction-paid-close-resume-"));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "conviction-paid-close-resume-")));
   const journal = join(directory, "journey.json");
   const replayKey = closeReplayKey({ request, sellerWallet: SELLER });
   const replayLockPath = await claimCloseReplayLock({ key: replayKey, journal, directory });
@@ -242,6 +242,10 @@ async function fixture({ mutateState, adapterOverrides } = {}) {
     replayKey,
     replayLockPath,
     executionLockPath: null,
+    executionLockGeneration: null,
+    executionLockHash: null,
+    executionLockPurpose: null,
+    executionLockRecoveryNotBefore: null,
     reconciliationRequired: true,
     journalPath: journal,
   };
@@ -533,10 +537,27 @@ test("paid CLOSE resume does not mutate its journal when another execution owns 
   const f = await fixture();
   const executionFile = join(f.directory, "polymarket-execution.lock.json");
   try {
+    const otherJournal = join(f.directory, "other-journey.json");
+    const otherState = {
+      journalRevision: 0,
+      journalPath: otherJournal,
+      stage: "trade_confirmed",
+      executionLockPath: null,
+      executionLockGeneration: null,
+      executionLockHash: null,
+      executionLockPurpose: null,
+      executionLockRecoveryNotBefore: null,
+      reconciliationRequired: true,
+    };
+    await writeReconciliationJournal(otherState, { directory: f.directory, file: otherJournal });
     await claimExecutionLock({
-      journal: join(f.directory, "other-journey.json"),
+      journal: otherJournal,
       directory: f.directory,
       file: executionFile,
+      state: otherState,
+      purpose: "OPEN_PLACE",
+      recoveryNotBefore: validatedCard.expiresAt,
+      now: () => NOW,
     });
     const before = await readFile(f.journal, "utf8");
     await assert.rejects(run(f), (error) => error?.code === "execution_reconciliation_required");

@@ -13,6 +13,7 @@ import {
   persistSuccessfulPaidServiceResponse,
   persistVerifiedPaidServicePayment,
   releaseReconciledLocks,
+  writeReconciliationJournal,
 } from "../scripts/buyer-orchestrator.mjs";
 import {
   recoverPrePassportTakeProfitJournal,
@@ -347,6 +348,11 @@ async function diskFixture({
   const journalPath = join(stateDirectory, "recovery-take-profit.json");
   const issuerRegistry = join(stateDirectory, "trusted-issuers.json");
   journal.journalPath = journalPath;
+  journal.executionLockPath = null;
+  journal.executionLockGeneration = null;
+  journal.executionLockHash = null;
+  journal.executionLockPurpose = null;
+  journal.executionLockRecoveryNotBefore = null;
   journal.reservationLockPath = await claimTakeProfitReservation({
     key: journal.replayKey,
     journal: journalPath,
@@ -356,14 +362,18 @@ async function diskFixture({
   const canonicalJournalPath = await realpath(journalPath);
   journal.journalPath = canonicalJournalPath;
   journal.reservationLockPath = await realpath(journal.reservationLockPath);
-  journal.executionLockPath = withExecutionLock
-    ? await claimExecutionLock({
+  if (withExecutionLock) {
+    await claimExecutionLock({
         journal: canonicalJournalPath,
         directory: stateDirectory,
         file: join(stateDirectory, "polymarket-execution.lock.json"),
-      })
-    : null;
-  await writeTakeProfitState(journal, { directory: stateDirectory, file: canonicalJournalPath });
+        state: journal,
+        purpose: "TP_PLACE",
+        recoveryNotBefore: journal.paidCard.intent.snapshot.expiresAt,
+        now: () => NOW,
+        writeState: writeTakeProfitState,
+      });
+  }
   await chmod(canonicalJournalPath, mode);
   await writeFile(issuerRegistry, `${JSON.stringify({ issuers: trustedIssuers }, null, 2)}\n`, { mode: 0o600 });
   return {
@@ -659,10 +669,27 @@ test("a completed exact release guard is cleaned before the next generation can 
   });
   assert.equal(result.reconciliationRequired, false);
   await assert.rejects(access(guardPath), (error) => error?.code === "ENOENT");
+  const nextJournal = join(fixture.stateDirectory, "next-operation.json");
+  const nextState = {
+    journalRevision: 0,
+    journalPath: nextJournal,
+    stage: "trade_confirmed",
+    executionLockPath: null,
+    executionLockGeneration: null,
+    executionLockHash: null,
+    executionLockPurpose: null,
+    executionLockRecoveryNotBefore: null,
+    reconciliationRequired: true,
+  };
+  await writeReconciliationJournal(nextState, { directory: fixture.stateDirectory, file: nextJournal });
   const nextLock = await claimExecutionLock({
-    journal: join(fixture.stateDirectory, "next-operation.json"),
+    journal: nextJournal,
     directory: fixture.stateDirectory,
     file: fixture.executionLockPath,
+    state: nextState,
+    purpose: "OPEN_PLACE",
+    recoveryNotBefore: VENUE_EXPIRES_AT,
+    now: () => NOW,
   });
   assert.equal(nextLock, fixture.executionLockPath);
   await unlink(nextLock);
@@ -782,10 +809,15 @@ test("a later ambiguous cancel cannot reuse recovered ARMED release authority", 
     fetchExactOrderImpl: async () => orderSnapshot(),
   });
   const journal = JSON.parse(await readFile(fixture.journalPath, "utf8"));
-  journal.executionLockPath = await claimExecutionLock({
+  await claimExecutionLock({
     journal: fixture.journalPath,
     directory: fixture.stateDirectory,
     file: fixture.executionLockPath,
+    state: journal,
+    purpose: "TP_CANCEL",
+    recoveryNotBefore: VENUE_EXPIRES_AT,
+    now: () => NOW,
+    writeState: writeTakeProfitState,
   });
   journal.reconciliationRequired = true;
   journal.cancelConsent = { version: "conviction-take-profit-cancel-consent-v1" };
