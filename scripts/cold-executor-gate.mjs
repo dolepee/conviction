@@ -35,6 +35,17 @@ try {
     throw Object.assign(new Error("Pinned checkout does not contain the expected executor skill"), { code: "executor_skill_mismatch" });
   }
 
+  const decimalProbe = JSON.parse(run(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    'const { formatDecimal } = await import("./src/decimal.mjs"); process.stdout.write(JSON.stringify({ negative: formatDecimal(-405000n, 6) }));',
+  ], { cwd: root }));
+  if (decimalProbe?.negative !== "-0.405") {
+    throw Object.assign(new Error("Pinned executor does not support canonical negative decimals"), {
+      code: "executor_decimal_mismatch",
+    });
+  }
+
   let runtime = null;
   if (install) {
     run("npm", ["ci"], { cwd: root });
@@ -51,6 +62,7 @@ try {
     commit,
     skillPath: EXECUTOR_RELEASE.source.skillPath,
     executorReleaseHash: EXECUTOR_RELEASE_HASH,
+    negativeDecimal: decimalProbe.negative,
     runtimeBinarySha256: runtime?.binarySha256 || null,
   })}\n`);
 } finally {

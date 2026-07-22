@@ -179,8 +179,8 @@ assert.equal(sha256(controlledProof.positionProof), controlledProof.hashes.posit
 assert.ok(Object.values(controlledProof.receiptProof.checks).every(Boolean));
 assert.ok(Object.values(controlledProof.positionProof.checks).every(Boolean));
 assert.equal(liveAcceptance.version, "conviction-live-acceptance-pack-v2");
-assert.equal(liveAcceptance.currentProductionVersion, "0.4.6");
-assert.equal(liveAcceptance.currentProductionReleaseTag, "v0.4.6");
+assert.equal(liveAcceptance.currentProductionVersion, "0.4.7");
+assert.equal(liveAcceptance.currentProductionReleaseTag, "v0.4.7");
 assert.ok(
   liveAcceptance.limitations.some((item) => /nonzero-fee verification path.*unproven/i.test(item)),
   "live acceptance pack must disclose that a nonzero-fee settlement remains unproven",
