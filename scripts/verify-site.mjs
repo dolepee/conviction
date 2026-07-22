@@ -163,7 +163,7 @@ assert.ok(manifest.icons.some((icon) => icon.sizes === "512x512"));
 assert.match(socialImageSvg, /OPEN\. CLOSE\. TAKE PROFIT\. PROVE EACH STATE\./);
 assert.match(socialImageSvg, /a managed position\./);
 assert.match(socialImageSvg, /CONTROLLED HOUSE OPEN PROOF \/ 001/);
-assert.match(socialImageSvg, /6\/6 RECEIPT CHECKS/);
+assert.match(socialImageSvg, /7\/7 RECEIPT CHECKS/);
 assert.doesNotMatch(socialImageSvg, /5\/5 RECEIPT CHECKS/);
 assert.doesNotMatch(socialImageSvg, /a bounded order\./);
 assert.match(css, /--font-sans: ui-sans-serif/);

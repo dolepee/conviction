@@ -220,8 +220,8 @@ Never send Conviction a seed phrase, private key, bearer token, CLOB credential,
 
 ## Status
 
-- Controlled OPEN and CLOSE execution: complete
-- OPEN/CLOSE intent and Polygon receipt verification: complete
+- Controlled OPEN execution: live house proof complete; CLOSE implementation and offline acceptance complete, with a fresh live Gate B still pending
+- OPEN intent and live Polygon receipt verification: complete; CLOSE intent/receipt verification is implemented and offline-tested, with a fresh live proof still pending
 - TAKE_PROFIT source: bounded placement, ARMED proof, exact status/cancel, authenticated trade recovery, and aggregate Polygon fill verification implemented; fresh live Gate C remains consent-gated
 - Public web surface: OPEN preview/manual verifier deployed; managed-position copy is part of this v0.4 release
 - Paid OKX.AI service endpoint: deployed; exact `0.05 USD₮0` payment settled and bounded card delivered with 118 seconds remaining ([X Layer transaction](https://www.oklink.com/xlayer/tx/0xb86bec4537095d4ef771a975fbf73196565f1a6d947ceb953e0d930480ed0eaf))
