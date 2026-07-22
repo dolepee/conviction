@@ -253,6 +253,26 @@ function prePassportJournal() {
   };
 }
 
+function definitivelyRejectedTakeProfitJournal() {
+  const journal = prePassportJournal();
+  journal.executionAttemptedAt = "2026-07-21T02:00:13.000Z";
+  journal.executionArgv = [...journal.paidCard.executionCard.argv];
+  journal.executionArgvHash = sha256(journal.executionArgv);
+  journal.liveResult = {
+    ok: false,
+    error_code: "SELL_FAILED",
+    error: "Order placement failed: expiration is required for GTD orders",
+    suggestion: "See error field for details. Retry the command, or run with --dry-run to inspect parameters.",
+  };
+  journal.orderId = "";
+  journal.lastError = {
+    code: "not_live_result",
+    at: "2026-07-21T02:00:14.000Z",
+    executionAmbiguous: true,
+  };
+  return journal;
+}
+
 test("recovers the exact persisted order into an authenticated ARMED passport without a payment or placement path", () => {
   const original = prePassportJournal();
   const recovered = recoverPrePassportTakeProfitJournal(original, orderSnapshot(), {
@@ -352,6 +372,96 @@ test("recovery accepts a post-submit expired card only for an exact order create
     }),
     (error) => error?.code === "order_outside_signed_window",
   );
+});
+
+test("definitive GTD rejection waits for card expiry then releases only its global lock without an order lookup", async () => {
+  const fixture = await diskFixture({ journal: definitivelyRejectedTakeProfitJournal() });
+  let fetches = 0;
+  try {
+    const waiting = await runTakeProfitReconcileCli({
+      journal: fixture.journalPath,
+      issuerRegistry: fixture.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: fixture.stateDirectory,
+      now: () => Date.parse("2026-07-21T02:04:00.000Z"),
+      fetchExactOrderImpl: async () => { fetches += 1; },
+    });
+    assert.equal(waiting.status, "waiting_for_card_expiry");
+    assert.equal(waiting.executionLockReleased, false);
+    assert.equal(waiting.reservationReleased, false);
+    assert.equal(fetches, 0);
+    await access(fixture.executionLockPath);
+    await access(fixture.reservationLockPath);
+
+    const reconciled = await runTakeProfitReconcileCli({
+      journal: fixture.journalPath,
+      issuerRegistry: fixture.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: fixture.stateDirectory,
+      now: () => Date.parse("2026-07-21T02:05:20.000Z"),
+      fetchExactOrderImpl: async () => { fetches += 1; },
+    });
+    assert.equal(reconciled.status, "rejected_live_result_reconciled");
+    assert.equal(reconciled.executionLockReleased, true);
+    assert.equal(reconciled.reservationReleased, false);
+    assert.equal(reconciled.orderSpawned, false);
+    assert.equal(fetches, 0);
+    await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+    await access(fixture.reservationLockPath);
+    const durable = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+    assert.equal(durable.stage, "rejected_live_result_reconciled");
+    assert.equal(durable.lastError.executionAmbiguous, false);
+
+    const replay = await runTakeProfitReconcileCli({
+      journal: fixture.journalPath,
+      issuerRegistry: fixture.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: fixture.stateDirectory,
+      now: () => Date.parse("2026-07-21T02:05:21.000Z"),
+      fetchExactOrderImpl: async () => { fetches += 1; },
+    });
+    assert.equal(replay.status, "rejected_live_result_reconciled");
+    assert.equal(replay.executionLockReleased, false);
+    assert.equal(replay.reservationReleased, false);
+    assert.equal(fetches, 0);
+  } finally {
+    await rm(fixture.stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("definitive GTD rejection cleanup fails closed on result, order, argv, and lock substitution", async () => {
+  const cases = [
+    (journal) => { journal.liveResult.error = "Order placement failed"; },
+    (journal) => { journal.orderId = ORDER_ID; },
+    (journal) => { journal.executionArgv = [...journal.executionArgv, "--all"]; },
+    (journal) => { journal.executionLockHash = `0x${"7".repeat(64)}`; },
+  ];
+  for (const mutate of cases) {
+    const fixture = await diskFixture({ journal: definitivelyRejectedTakeProfitJournal() });
+    try {
+      const journal = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+      mutate(journal);
+      await writeTakeProfitState(journal, { directory: fixture.stateDirectory, file: fixture.journalPath });
+      await assert.rejects(
+        runTakeProfitReconcileCli({
+          journal: fixture.journalPath,
+          issuerRegistry: fixture.issuerRegistry,
+          json: true,
+        }, {
+          stateDirectory: fixture.stateDirectory,
+          now: () => Date.parse("2026-07-21T02:05:20.000Z"),
+          fetchExactOrderImpl: async () => assert.fail("rejected result must not look up an order"),
+        }),
+      );
+      await access(fixture.executionLockPath);
+      await access(fixture.reservationLockPath);
+    } finally {
+      await rm(fixture.stateDirectory, { recursive: true, force: true });
+    }
+  }
 });
 
 async function diskFixture({

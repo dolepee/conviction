@@ -713,6 +713,92 @@ async function reconcileTakeProfitNonOrderState(context, {
 } = {}) {
   const timestamp = Number(now());
   fail(Number.isFinite(timestamp), "invalid_reconciliation_clock", "TAKE_PROFIT reconciliation clock is invalid");
+  const isRejectedLiveResult = context.journal.stage === "live_result_received" &&
+    context.journal.liveResult?.ok === false;
+  const isReconciledRejectedLiveResult = context.journal.stage === "rejected_live_result_reconciled";
+  if (isRejectedLiveResult || isReconciledRejectedLiveResult) {
+    await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
+    const rejected = validateDefinitiveRejectedTakeProfitCheckpoint(context.journal, {
+      trustedIssuers: context.trustedIssuers,
+      now: timestamp,
+    });
+    const canonicalStateDirectory = await realpath(resolve(stateDirectory));
+    const reservationPath = await validateTakeProfitReservationOwnership(context, rejected, {
+      stateDirectory: canonicalStateDirectory,
+      statImpl,
+    });
+    if (!rejected.active) {
+      return Object.freeze({
+        ok: true,
+        status: "rejected_live_result_reconciled",
+        reconciliationRequired: false,
+        executionLockReleased: false,
+        reservationReleased: false,
+        orderSpawned: false,
+        journalPath: context.journalPath,
+      });
+    }
+    await verifyJournalLockOwnership(rejected.journal, {
+      stateDirectory: canonicalStateDirectory,
+      journal: context.journalPath,
+      fields: ["executionLockPath"],
+      requirePresent: true,
+    });
+    const expiresAtMs = Date.parse(rejected.validated.expiresAt);
+    if (timestamp < expiresAtMs) {
+      return Object.freeze({
+        ok: true,
+        status: "waiting_for_card_expiry",
+        expiresAt: rejected.validated.expiresAt,
+        reconciliationRequired: true,
+        executionLockReleased: false,
+        reservationReleased: false,
+        orderSpawned: false,
+        journalPath: context.journalPath,
+      });
+    }
+    const executionPath = rejected.journal.executionLockPath;
+    const currentText = await readFile(context.journalPath, "utf8");
+    fail(currentText === context.journalText, "reconciliation_journal_changed", "Rejected TAKE_PROFIT journal changed during recovery");
+    const released = await releaseLocks(rejected.journal, {
+      stateDirectory: canonicalStateDirectory,
+      journal: context.journalPath,
+      fields: ["executionLockPath"],
+      expectedLockHashes: { executionLockPath: rejected.journal.executionLockHash },
+      transitionId: "take-profit-definitive-gtd-rejection-v1",
+      writeState,
+      unlinkImpl,
+      now: timestamp,
+      statImpl,
+      transition: (next, { releasedAt }) => {
+        next.reconciliationReason = "definitive_gtd_rejection_after_card_expiry";
+        next.stage = "rejected_live_result_reconciled";
+        next.reconciliationRequired = false;
+        next.reconciledAt = releasedAt;
+        next.lastError = {
+          code: "definitive_gtd_rejection",
+          at: releasedAt,
+          executionAmbiguous: false,
+        };
+      },
+    });
+    const releasedSet = new Set(released);
+    fail(
+      releasedSet.size === 1 && releasedSet.has(executionPath),
+      "execution_lock_release_failed",
+      "Rejected TAKE_PROFIT global lock was not released exactly",
+    );
+    await statImpl(reservationPath);
+    return Object.freeze({
+      ok: true,
+      status: "rejected_live_result_reconciled",
+      reconciliationRequired: false,
+      executionLockReleased: true,
+      reservationReleased: false,
+      orderSpawned: false,
+      journalPath: context.journalPath,
+    });
+  }
   const isAuthorizationOnly = new Set([
     "payment_authorization_starting",
     "payment_authorization_created",
@@ -1131,6 +1217,62 @@ function validatePaidTakeProfitCheckpoint(journalInput, options = {}) {
     paymentTx,
     paymentProof,
   });
+}
+
+const DEFINITIVE_GTD_REJECTION = Object.freeze({
+  error_code: "SELL_FAILED",
+  error: "Order placement failed: expiration is required for GTD orders",
+});
+
+function validateDefinitiveRejectedTakeProfitCheckpoint(journalInput, options = {}) {
+  const journal = record(
+    journalInput,
+    "invalid_rejected_live_result",
+    "Rejected TAKE_PROFIT checkpoint must be an object",
+  );
+  const active = journal.stage === "live_result_received" && journal.reconciliationRequired === true;
+  const reconciled = journal.stage === "rejected_live_result_reconciled" && journal.reconciliationRequired === false;
+  fail(active || reconciled, "invalid_rejected_live_result", "Journal is not a supported rejected TAKE_PROFIT checkpoint");
+  const checkpoint = validatePaidTakeProfitCheckpoint(journal, options);
+  const result = record(journal.liveResult, "invalid_rejected_live_result", "Rejected TAKE_PROFIT result is missing");
+  fail(
+    journal.executionAttempted === true && (() => {
+      const attemptedAt = canonicalIso(
+        journal.executionAttemptedAt,
+        "invalid_rejected_live_result",
+        "Rejected TAKE_PROFIT attempt time is invalid",
+      ).milliseconds;
+      return attemptedAt >= Date.parse(checkpoint.confirmedAt) && attemptedAt < Date.parse(checkpoint.validated.expiresAt);
+    })() &&
+      journal.executionArgvHash === sha256(checkpoint.validated.executionCard.argv) &&
+      sha256(journal.executionArgv) === journal.executionArgvHash &&
+      result.ok === false && result.error_code === DEFINITIVE_GTD_REJECTION.error_code &&
+      result.error === DEFINITIVE_GTD_REJECTION.error &&
+      (journal.orderId == null || journal.orderId === "") &&
+      journal.takeProfitPassport == null && journal.takeProfitPassportHash == null &&
+      journal.restingOrderProofHash == null,
+    "invalid_rejected_live_result",
+    "Rejected TAKE_PROFIT checkpoint is not the exact definitive pre-order GTD rejection",
+  );
+  if (active) {
+    fail(
+      typeof journal.executionLockPath === "string" && typeof journal.reservationLockPath === "string" &&
+        HASH_RE.test(String(journal.executionLockHash || "")) && UUID_RE.test(String(journal.executionLockGeneration || "")) &&
+        journal.executionLockPurpose === "TP_PLACE" &&
+        journal.executionLockRecoveryNotBefore === checkpoint.validated.expiresAt,
+      "lock_ownership_mismatch",
+      "Rejected TAKE_PROFIT checkpoint has no exact execution and reservation lock binding",
+    );
+  } else {
+    fail(
+      journal.executionLockPath == null && typeof journal.reservationLockPath === "string" &&
+        journal.executionLockPurpose == null && journal.executionLockRecoveryNotBefore == null &&
+        journal.reconciliationReason === "definitive_gtd_rejection_after_card_expiry",
+      "invalid_rejected_live_result",
+      "Reconciled TAKE_PROFIT rejection retained a lock or changed its reason",
+    );
+  }
+  return Object.freeze({ ...checkpoint, active });
 }
 
 /**
