@@ -8,6 +8,11 @@ const css = await readFile(new URL("../styles.css", import.meta.url), "utf8");
 const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
 const privacy = await readFile(new URL("../privacy.html", import.meta.url), "utf8");
 const terms = await readFile(new URL("../terms.html", import.meta.url), "utf8");
+const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+const serviceContract = await readFile(new URL("../docs/SERVICE_CONTRACT.md", import.meta.url), "utf8");
+const listingContract = await readFile(new URL("../docs/ASP_LISTING.md", import.meta.url), "utf8");
+const executorSkill = await readFile(new URL("../skills/conviction-executor/SKILL.md", import.meta.url), "utf8");
+const takeProfitCli = await readFile(new URL("./take-profit-orchestrator.mjs", import.meta.url), "utf8");
 const controlledProof = JSON.parse(
   await readFile(new URL("../assets/conviction-review-deliverable.json", import.meta.url), "utf8"),
 );
@@ -133,6 +138,22 @@ assert.match(terms, /ready-to-sign bounded OPEN card/i);
 assert.match(terms, /post-only GTD TAKE_PROFIT card/i);
 assert.match(terms, /paying 0\.05 or 0\.10 USD₮0 never authorizes a trade/i);
 assert.match(terms, /Neither response alone is a fill/i);
+for (const [surface, copy] of [
+  ["README", readme],
+  ["service contract", serviceContract],
+  ["listing contract", listingContract],
+  ["executor skill", executorSkill],
+  ["TAKE_PROFIT CLI", takeProfitCli],
+]) {
+  assert.match(copy, /zero-match [`]*LIVE[`]*[^\n]*ARMED/i, `${surface} omits the zero-match ARMED path`);
+  assert.match(
+    copy,
+    /first(?: authenticated)?[- ]fetch[^\n]*(?:match|state transition)[^\n]*recoverable/i,
+    `${surface} omits the first-fetch recoverable path`,
+  );
+}
+assert.match(readme, /wallet-bound position-card preview/i);
+assert.match(readme, /cancel-tp[^\n]*separately requires the exact cancellation confirmation/i);
 assert.ok(html.includes("/assets/conviction-sample-position-card.json"), "historical position card is not linked");
 assert.ok(html.includes("/assets/conviction-review-deliverable.json"), "controlled proof dossier is not linked");
 assert.equal(samplePositionCard.cardStatus, "historical-expired-do-not-execute");

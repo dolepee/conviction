@@ -31,7 +31,7 @@ The reference intent expired before settlement, so the dossier does not claim th
 
 1. The buyer pastes one Polymarket market. Conviction reads both YES and NO books without requesting a wallet.
 2. The buyer selects the outcome, fee-inclusive pUSD risk budget, and maximum price. A wallet-free preview shows the objective exposure.
-3. Only after reviewing those bounds does the buyer bind their configured deposit wallet and receive a five-minute signed position card plus a secure dry-run prompt.
+3. Only after reviewing those bounds does the buyer bind their configured deposit wallet and receive a five-minute wallet-bound position-card preview plus a secure dry-run prompt. The paid machine route issues the signed card after separate service payment.
 4. The official Polymarket plugin previews the exact request in the buyer's Agentic Wallet and requires a separate live confirmation before any write.
 5. Conviction derives principal, fee, total debit, and shares from Polygon events and binds them to the original intent, wallet, selected token, economic bounds, order ID, exchange, and chain.
 
@@ -49,7 +49,7 @@ A legacy v2/v3 OPEN proof can establish retrospective provenance for CLOSE, but 
 1. The buyer supplies a verified OPEN result, exact whole shares, target price, and a whole-second UTC venue expiry.
 2. Position Manager independently reverifies the OPEN source, seller balance and V2 approval, market tick and minimum size, current best bid, and the complete selected-token SELL reservation set.
 3. After the separate manager payment and one fresh trade confirmation, the buyer runtime waits past the confirmation second, repeats every readiness and dry-run check, and places exactly one post-only GTD SELL.
-4. The initial result is an authenticated `ARMED` CLOB proof, never a false on-chain fill claim. The five-minute signed card controls placement only; the submitted order can remain live until its venue expiry, a fill, or exact-order cancellation.
+4. The initial result is an authenticated order binding, never a false on-chain fill claim. A zero-match `LIVE` order returns `conviction-resting-order-proof-v1` with status `ARMED`; if the first authenticated fetch already shows a match or venue-state transition, Conviction instead returns a recoverable `conviction-submitted-order-proof-v1` pending reconciliation and any required Polygon proof. The five-minute signed card controls placement only; the submitted order can remain live until its venue expiry, a fill, or exact-order cancellation.
 5. `tp-status` recovers the pinned order and associated trades. Any partial or full fill is independently re-derived from Polygon receipts and returned as `conviction-take-profit-fill-proof-v1`. It preserves whether the remainder is active, canceled, or expired, and labels included-but-not-finalized Polygon evidence `PROVISIONAL` until the finalized head covers every settlement. Missing or ambiguous CLOB state remains unresolved rather than being mislabeled canceled.
 6. `cancel-tp` requires the separate exact phrase `confirm cancel take profit`, cancels only the pinned order ID, and then rechecks for a fill/cancel race.
 
@@ -108,7 +108,7 @@ npm run intent:live -- \
 
 The executable skill is repository-backed: clone this release and run or symlink `skills/conviction-executor` from this repository so its pinned helpers retain their `src/` dependencies. Copying the skill directory alone is unsupported.
 
-Prerequisites are Node.js 22, `onchainos`, the official `polymarket-plugin`, an active OKX Agentic Wallet, persisted `deposit-wallet` mode, owner-only local Polymarket CLOB credentials, the pinned production issuer registry, X Layer USD₮0 for the selected service fee, and the required pUSD or outcome shares on Polygon. Conviction never asks the user to type plugin commands during a journey; the runner invokes them and stops only for the distinct payment and trade confirmations.
+Prerequisites are Node.js 22, `onchainos`, the official `polymarket-plugin`, an active OKX Agentic Wallet, persisted `deposit-wallet` mode, owner-only local Polymarket CLOB credentials, the pinned production issuer registry, X Layer USD₮0 for the selected service fee, and the required pUSD or outcome shares on Polygon. Conviction never asks the user to type plugin commands during a journey. The OPEN, CLOSE, and TAKE_PROFIT placement runners invoke them and stop only for the distinct payment and trade confirmations; the later `cancel-tp` action separately requires the exact cancellation confirmation documented below.
 
 OPEN:
 
@@ -202,9 +202,9 @@ The public [privacy](https://conviction-bay.vercel.app/privacy.html) and [terms]
 npm run gate
 ```
 
-The local release gate checks JavaScript and Python syntax, deterministic YES/NO OPEN/CLOSE/TAKE_PROFIT compilation, outcome-specific market resolution, server-computed exposure and proceeds, stale/price/liquidity/rounding refusal paths, source, intent, token, order, trade, and receipt substitution, exact x402 challenges, payment/trade-consent separation, post-only placement, authenticated ARMED proof, lifecycle status, exact cancellation, aggregate Polygon fill verification, launch-surface markers, and A2A secret-refusal behavior. It runs Gates A, B, and C in offline mode, where adversarial mutations must fail with zero orders.
+The local release gate checks JavaScript and Python syntax, deterministic YES/NO OPEN/CLOSE/TAKE_PROFIT compilation, outcome-specific market resolution, server-computed exposure and proceeds, stale/price/liquidity/rounding refusal paths, source, intent, token, order, trade, and receipt substitution, exact x402 challenges, payment/trade-consent separation, post-only placement, authenticated initial order binding, lifecycle status, exact cancellation, aggregate Polygon fill verification, launch-surface markers, and A2A secret-refusal behavior. It runs Gates A, B, and C in offline mode, where adversarial mutations must fail with zero orders.
 
-Offline success is not live acceptance. The tracked runtime reports leave all three live gates explicitly undecided until a fresh buyer authorizes each applicable service payment and trade: exact bounds plus one confirmation, buyer-wallet execution (or authenticated ARMED placement), same-journey proof, and payment-to-proof under two minutes. No local test or dry probe is presented as satisfying those live requirements.
+Offline success is not live acceptance. The tracked runtime reports leave all three live gates explicitly undecided until a fresh buyer authorizes each applicable service payment and trade: exact bounds plus one confirmation, buyer-wallet execution (or authenticated initial TAKE_PROFIT order binding), same-journey proof, and payment-to-proof under two minutes. No local test or dry probe is presented as satisfying those live requirements.
 
 ## Operational boundary
 
@@ -222,7 +222,7 @@ Never send Conviction a seed phrase, private key, bearer token, CLOB credential,
 
 - Controlled OPEN execution: live house proof complete; CLOSE implementation and offline acceptance complete, with a fresh live Gate B still pending
 - OPEN intent and live Polygon receipt verification: complete; CLOSE intent/receipt verification is implemented and offline-tested, with a fresh live proof still pending
-- TAKE_PROFIT source: bounded placement, ARMED proof, exact status/cancel, authenticated trade recovery, and aggregate Polygon fill verification implemented; fresh live Gate C remains consent-gated
+- TAKE_PROFIT source: bounded placement, authenticated initial order binding, exact status/cancel, authenticated trade recovery, and aggregate Polygon fill verification implemented; fresh live Gate C remains consent-gated
 - Public web surface: OPEN preview/manual verifier deployed; managed-position copy is part of this v0.4 release
 - Paid OKX.AI service endpoint: deployed; exact `0.05 USD₮0` payment settled and bounded card delivered with 118 seconds remaining ([X Layer transaction](https://www.oklink.com/xlayer/tx/0xb86bec4537095d4ef771a975fbf73196565f1a6d947ceb953e0d930480ed0eaf))
 - OKX.AI ASP: Conviction `#7034` registered with one `0.05 USDT` service; `Listing under review` was last confirmed 2026-07-21, and external buyer proof remains pending

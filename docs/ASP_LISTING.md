@@ -60,11 +60,11 @@ Endpoint: `https://conviction-bay.vercel.app/api/manage`
 Target description, exactly two lines:
 
 ```text
-Manages a verified Conviction position with one explicit action: close exact whole shares now above your floor, or arm one post-only take-profit at your target and expiry.
+Manages a verified Conviction position with one explicit action: close exact whole shares now above your floor, or submit one post-only take-profit at your target and expiry.
 Provide: action CLOSE or TAKE_PROFIT, market, YES or NO, exact whole shares, price floor or target, buyer wallet, verified OPEN source, and optional rationale.
 ```
 
-`CLOSE` and `TAKE_PROFIT` are action variants of this one paid Position Manager product. Each paid delivery compiles one source-bound manager card; payment never authorizes the Polygon order. CLOSE later uses the free CLOSE receipt verifier. TAKE_PROFIT immediately returns an authenticated `ARMED` CLOB-order proof, while read-only status independently verifies any later partial or full Polygon fills and exact-order cancellation requires separate consent.
+`CLOSE` and `TAKE_PROFIT` are action variants of this one paid Position Manager product. Each paid delivery compiles one source-bound manager card; payment never authorizes the Polygon order. CLOSE later uses the free CLOSE receipt verifier. TAKE_PROFIT immediately returns an authenticated initial CLOB-order binding: a zero-match live order is `ARMED`, while a first-fetch match or venue-state transition returns a recoverable submitted-order binding pending reconciliation and any required Polygon proof. Read-only status independently verifies later partial or full Polygon fills, and exact-order cancellation requires separate consent.
 
 ## Review sample
 

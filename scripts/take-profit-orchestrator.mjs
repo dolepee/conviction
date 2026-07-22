@@ -97,7 +97,8 @@ function usage() {
     "    --issuer-registry <issuers.json> [--json]",
     "",
     "The flow separately requires `confirm payment`, then `confirm live mode`.",
-    "It places one post-only GTD order and returns an authenticated ARMED proof.",
+    "It places one post-only GTD order and returns an authenticated initial order binding.",
+    "Zero-match LIVE returns ARMED; a first-fetch match or state transition returns a recoverable binding pending reconciliation/proof.",
     "`tp-status` automatically proves any matched shares from CLOB trades and Polygon receipts.",
     "`reconcile-tp` can recover only an exact order ID already persisted with a valid live result; it never pays or places again.",
     "It releases a recovered submit lock only after durably authenticating a zero-match ARMED order while retaining its scoped reservation.",
@@ -2414,7 +2415,8 @@ function tradeDisplay(event, latestReadiness) {
     `  Seller wallet: ${bounds.wallet}`,
     `  Source position proof: ${bounds.sourcePositionProofHash}`,
     "  Order type: post-only GTD; partial fills are possible while the remainder rests.",
-    "  ARMED proof is authenticated CLOB evidence, not an on-chain fill claim.",
+    "  Initial result is authenticated CLOB order evidence, not an on-chain fill claim.",
+    "  Zero-match LIVE returns ARMED; a first-fetch match or state transition remains recoverable pending reconciliation/proof.",
     "",
   ].join("\n"));
 }

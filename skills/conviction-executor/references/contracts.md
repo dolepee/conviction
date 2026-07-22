@@ -202,7 +202,7 @@ floor(settlement_timestamp_ms / 1000) > floor(trade_confirmation_ms / 1000)
 
 Same-second evidence fails closed; do not describe it as proof of ordering after confirmation.
 
-For TAKE_PROFIT placement, the authenticated CLOB order's creation time must be strictly later than the confirmation second. The runtime deliberately waits past that second, repeats readiness and dry-run validation, and submits the one signed post-only GTD vector. Its immediate result is `ARMED` and `onChain:false`; do not imply a resting order filled in the same session.
+For TAKE_PROFIT placement, the authenticated CLOB order's creation time must be strictly later than the confirmation second. The runtime deliberately waits past that second, repeats readiness and dry-run validation, and submits the one signed post-only GTD vector. Its immediate result is an authenticated order binding: zero-match `LIVE` is `ARMED` and `onChain:false`; a first-fetch match or venue-state transition is a recoverable submitted-order binding pending reconciliation and any required Polygon proof. Never imply an on-chain fill before independent receipt verification.
 
 ## Reconciliation and fail-closed behavior
 
