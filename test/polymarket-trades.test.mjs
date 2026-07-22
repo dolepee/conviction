@@ -67,7 +67,7 @@ function takerTrade(id = TRADE_ONE, overrides = {}) {
     market: CONDITION_ID,
     asset_id: TOKEN,
     side: "SELL",
-    size: "5250000",
+    size: "5.25",
     fee_rate_bps: "0",
     price: "0.27",
     status: "TRADE_STATUS_CONFIRMED",
@@ -82,7 +82,7 @@ function takerTrade(id = TRADE_ONE, overrides = {}) {
       order_id: OTHER_ORDER_ID,
       owner: "counterparty",
       maker_address: OTHER_WALLET,
-      matched_amount: "5250000",
+      matched_amount: "5.25",
       price: "0.27",
       fee_rate_bps: "0",
       asset_id: TOKEN,
@@ -102,7 +102,7 @@ function makerTrade(id = TRADE_ONE, makerOverrides = {}, overrides = {}) {
     // Top-level side, size, and price describe the taker. The recovered TP
     // contribution must come from the matching nested maker order instead.
     side: "BUY",
-    size: "9000000",
+    size: "9",
     fee_rate_bps: "0",
     price: "0.30",
     status: "CONFIRMED",
@@ -117,7 +117,7 @@ function makerTrade(id = TRADE_ONE, makerOverrides = {}, overrides = {}) {
       order_id: ORDER_ID,
       owner: CREDS.apiKey,
       maker_address: DEPOSIT,
-      matched_amount: "2125000",
+      matched_amount: "2.125",
       price: "0.28",
       fee_rate_bps: "0",
       asset_id: TOKEN,
@@ -154,7 +154,7 @@ test("recovers every exact taker contribution with canonical query auth and no c
         count: 1,
         limit: 100,
         data: [takerTrade(tradeId, {
-          size: tradeId === TRADE_ONE ? "5250000" : "1000000",
+          size: tradeId === TRADE_ONE ? "5.25" : "1.0",
           transaction_hash: TX_ONE,
         })],
         next_cursor: "LTE=",
@@ -195,6 +195,18 @@ test("recovers every exact taker contribution with canonical query auth and no c
   assert.equal(serialized.includes(CREDS.apiKey), false);
   assert.equal(serialized.includes(CREDS.secret), false);
   assert.equal(serialized.includes(CREDS.passphrase), false);
+});
+
+test("normalizes the live V2 five-share trade shape to five million atoms", async () => {
+  const result = await fetchExactAssociatedTradeContributions(argumentsFor({
+    exactOrderSnapshot: snapshot([TRADE_ONE], {
+      order: { originalSize: "5000000", sizeMatched: "5000000" },
+    }),
+    fetchImpl: async () => response([takerTrade(TRADE_ONE, { size: "5" })]),
+  }));
+
+  assert.equal(result.contributions[0].matchedShares, "5");
+  assert.equal(result.contributions[0].matchedSharesRaw, "5000000");
 });
 
 test("extracts only the unique pinned maker contribution", async () => {
@@ -289,9 +301,9 @@ test("rejects top-level trade identity, custody, confirmation, and value substit
     [{ transaction_hash: "0xdead" }, "invalid_trade_identity"],
     [{ side: "BUY" }, "trade_side_mismatch"],
     [{ size: "0" }, "invalid_trade_amount"],
-    [{ size: "5.25" }, "invalid_trade_amount"],
+    [{ size: "5.2500001" }, "invalid_trade_amount"],
     [{ size: 5_250_000 }, "invalid_trade_amount"],
-    [{ size: "05250000" }, "invalid_trade_amount"],
+    [{ size: "05.25" }, "invalid_trade_amount"],
     [{ price: "1.01" }, "invalid_trade_price"],
     [{ trader_side: "MAKER" }, "trade_role_mismatch"],
   ];
@@ -327,7 +339,7 @@ test("rejects missing, ambiguous, or substituted maker attribution", async () =>
     [{ asset_id: "987654321" }, "trade_token_mismatch"],
     [{ side: "BUY" }, "trade_side_mismatch"],
     [{ matched_amount: "0" }, "invalid_trade_amount"],
-    [{ matched_amount: "2.125" }, "invalid_trade_amount"],
+    [{ matched_amount: "2.1250001" }, "invalid_trade_amount"],
     [{ matched_amount: 2_125_000 }, "invalid_trade_amount"],
     [{ price: "1.01" }, "invalid_trade_price"],
   ];

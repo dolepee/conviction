@@ -4,6 +4,7 @@ import { formatDecimal, parseDecimal } from "./decimal.mjs";
 import { ConvictionError, invariant } from "./errors.mjs";
 import { loadDepositWalletCredentials } from "./polymarket-open-orders.mjs";
 import {
+  parsePolymarketClobShares,
   parsePolymarketShareAtoms,
   POLYMARKET_SHARE_DECIMALS,
 } from "./polymarket-quantities.mjs";
@@ -78,8 +79,8 @@ function positiveDecimal(value, label) {
   });
 }
 
-function positiveShareAtoms(value, label) {
-  const raw = parsePolymarketShareAtoms(value, label, {
+function positiveClobShares(value, label) {
+  const raw = parsePolymarketClobShares(value, label, {
     code: "invalid_trade_amount",
     positive: true,
   });
@@ -277,7 +278,7 @@ function extractContribution(body, {
   if (takerMatch) {
     invariant(traderSide === "TAKER", "trade_role_mismatch", "Pinned taker order was not attributed to the authenticated taker");
     canonicalSide(trade.side);
-    size = positiveShareAtoms(trade.size, "Taker matched shares");
+    size = positiveClobShares(trade.size, "Taker matched shares");
     price = canonicalPrice(trade.price);
     orderRole = "TAKER";
   } else {
@@ -300,7 +301,7 @@ function extractContribution(body, {
       "Maker contribution is for another outcome token",
     );
     canonicalSide(maker.side);
-    size = positiveShareAtoms(maker.matched_amount, "Maker matched shares");
+    size = positiveClobShares(maker.matched_amount, "Maker matched shares");
     price = canonicalPrice(maker.price);
     orderRole = "MAKER";
   }

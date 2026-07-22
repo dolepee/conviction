@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { ConvictionError, invariant } from "./errors.mjs";
-import { parsePolymarketShareAtoms } from "./polymarket-quantities.mjs";
+import { parsePolymarketClobShares } from "./polymarket-quantities.mjs";
 
 const CLOB_ORIGIN = "https://clob.polymarket.com";
 const ORDERS_PATH = "/data/orders";
@@ -205,11 +205,11 @@ export async function fetchAllOpenOrders({
         fail("incomplete_open_orders", "Polymarket returned a missing or repeated open-order ID");
       }
       seenOrderIds.add(orderId);
-      const originalSizeRaw = parsePolymarketShareAtoms(order?.original_size, "Open-order original size", {
+      const originalSizeRaw = parsePolymarketClobShares(order?.original_size, "Open-order original size", {
         code: "invalid_open_orders_quantity",
         positive: true,
       });
-      const sizeMatchedRaw = parsePolymarketShareAtoms(order?.size_matched, "Open-order matched size", {
+      const sizeMatchedRaw = parsePolymarketClobShares(order?.size_matched, "Open-order matched size", {
         code: "invalid_open_orders_quantity",
       });
       invariant(
@@ -322,11 +322,11 @@ export async function fetchExactOrder({
   if (!associatedTrades || associatedTrades.some((value) => !value || value !== value.trim())) {
     fail("invalid_order_response", "Polymarket returned invalid associated-trade metadata");
   }
-  const originalSizeRaw = parsePolymarketShareAtoms(body.original_size, "Order original size", {
+  const originalSizeRaw = parsePolymarketClobShares(body.original_size, "Order original size", {
     code: "invalid_order_response",
     positive: true,
   });
-  const sizeMatchedRaw = parsePolymarketShareAtoms(body.size_matched, "Order matched size", {
+  const sizeMatchedRaw = parsePolymarketClobShares(body.size_matched, "Order matched size", {
     code: "invalid_order_response",
   });
   invariant(

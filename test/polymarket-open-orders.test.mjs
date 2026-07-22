@@ -33,7 +33,7 @@ function exactOrder(overrides = {}) {
     market: `0x${"b".repeat(64)}`,
     asset_id: TOKEN,
     side: "SELL",
-    original_size: "10000000",
+    original_size: "10",
     size_matched: "0",
     price: "0.2",
     order_type: "GTD",
@@ -53,13 +53,13 @@ test("complete open-order client follows every opaque cursor and pins the select
     {
       count: 1,
       limit: 500,
-      data: [{ id: "first", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT, original_size: "10000000", size_matched: "0" }],
+      data: [{ id: "first", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT, original_size: "10", size_matched: "0" }],
       next_cursor: "MTAw",
     },
     {
       count: 1,
       limit: 500,
-      data: [{ id: "second", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT, original_size: "10000000", size_matched: "4000000" }],
+      data: [{ id: "second", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT, original_size: "10.0", size_matched: "4.125" }],
       next_cursor: "LTE=",
     },
   ];
@@ -78,6 +78,9 @@ test("complete open-order client follows every opaque cursor and pins the select
   assert.equal(result.complete, true);
   assert.equal(result.pageCount, 2);
   assert.deepEqual(result.orders.map(({ id }) => id), ["first", "second"]);
+  assert.equal(result.orders[0].original_size, "10000000");
+  assert.equal(result.orders[1].original_size, "10000000");
+  assert.equal(result.orders[1].size_matched, "4125000");
   assert.equal(calls[0].url.searchParams.get("asset_id"), TOKEN);
   assert.equal(calls[0].url.searchParams.has("status"), false);
   assert.equal(calls[0].url.searchParams.has("next_cursor"), false);
@@ -164,7 +167,7 @@ test("complete open-order client fails closed on missing, repeated, or invalid p
         return response({
           count: 1,
           limit: 500,
-          data: [{ id: "duplicate", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT, original_size: "10000000", size_matched: "0" }],
+          data: [{ id: "duplicate", status: "ORDER_STATUS_LIVE", asset_id: TOKEN, owner: CREDS.apiKey, maker_address: DEPOSIT, original_size: "10", size_matched: "0" }],
           next_cursor: duplicatePage === 1 ? "MTAw" : "",
         });
       },
@@ -255,16 +258,29 @@ test("exact-order client fails closed on missing or substituted identity", async
   }
 });
 
-test("order clients accept only canonical atomic share quantities", async () => {
+test("order clients normalize canonical CLOB share decimals and reject ambiguous quantities", async () => {
+  const normalized = await fetchExactOrder({
+    signerAddress: SIGNER,
+    depositWallet: DEPOSIT,
+    orderId: ORDER_ID,
+    outcomeTokenId: TOKEN,
+    credentials: CREDS,
+    fetchImpl: async () => response(exactOrder({
+      original_size: "10.0",
+      size_matched: "4.125000",
+    })),
+  });
+  assert.equal(normalized.order.originalSize, "10000000");
+  assert.equal(normalized.order.sizeMatched, "4125000");
+
   for (const mutation of [
-    { original_size: 10_000_000 },
-    { original_size: "10.0" },
-    { original_size: "010000000" },
-    { original_size: " 10000000" },
-    { original_size: "1e7" },
+    { original_size: 10 },
+    { original_size: "010" },
+    { original_size: " 10" },
+    { original_size: "1e1" },
     { original_size: "0" },
-    { size_matched: "10000001" },
-    { size_matched: "0.0" },
+    { size_matched: "10.000001" },
+    { size_matched: "0.0000000" },
   ]) {
     await assert.rejects(
       fetchExactOrder({
@@ -294,7 +310,7 @@ test("order clients accept only canonical atomic share quantities", async () => 
           asset_id: TOKEN,
           owner: CREDS.apiKey,
           maker_address: DEPOSIT,
-          original_size: "10.0",
+          original_size: "10.0000001",
           size_matched: "0",
         }],
         next_cursor: "",
