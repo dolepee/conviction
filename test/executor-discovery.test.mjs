@@ -33,7 +33,7 @@ test("public executor discovery prefers native OKX execution without a Convictio
   assert.equal(output.statusCode, 200);
   assert.deepEqual(output.body, executorDiscoveryDocument());
   assert.equal(output.body.executorReleaseHash, EXECUTOR_RELEASE_HASH);
-  assert.equal(output.body.executor.source.commit, "e41750dfd96361bdb9656eb67ab8f1ee8e23528e");
+  assert.equal(output.body.executor.source.commit, "67ec7939b9182ac2a9f3984632881e8052f1ac0d");
   assert.deepEqual(output.body.executor.requirements.platforms, ["darwin-arm64", "linux-x64"]);
   assert.equal(output.body.executor.safety.serverHoldsKeysOrCredentials, false);
   assert.deepEqual(output.body.preferredExecution, NATIVE_OKX_EXECUTION);
