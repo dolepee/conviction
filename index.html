@@ -327,9 +327,9 @@
         </div>
         <div class="verification-grid">
           <form id="verification-form" class="intent-form">
-            <label for="dossier-input">Intent dossier <span class="optional">Optional after compiling above</span></label>
-            <input id="dossier-input" name="dossier" type="file" accept="application/json,.json" aria-describedby="dossier-help" />
-            <p class="field-help" id="dossier-help">The file is read in this browser; its intent fields, not the file itself, are sent to Conviction for Polygon receipt verification.</p>
+            <label for="dossier-input">Signed v4 intent dossier <span class="required">Required</span></label>
+            <input id="dossier-input" name="dossier" type="file" accept="application/json,.json" aria-describedby="dossier-help" required />
+            <p class="field-help" id="dossier-help">Upload the paid Conviction response. The free preview card is not a verification credential; the file is read in this browser and only its signed intent fields are sent to Conviction.</p>
             <label for="transaction-input">Polygon transaction hash</label>
             <input id="transaction-input" name="transactionHash" placeholder="0x…" autocomplete="off" spellcheck="false" required />
             <label for="order-id-input">Polymarket order ID</label>

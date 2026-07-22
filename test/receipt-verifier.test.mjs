@@ -115,9 +115,9 @@ function feeCompiled() {
   );
 }
 
-function signedCompiled() {
+function signedCompiled(market = LIVE_MARKET_SNAPSHOT) {
   const { privateKey } = generateKeyPairSync("ed25519");
-  const compilation = compileIntent(REQUEST, LIVE_MARKET_SNAPSHOT, {
+  const compilation = compileIntent(REQUEST, market, {
     now: NOW,
     quoteTtlMs: 300_000,
     intentVersion: "conviction-intent-v4",
@@ -505,6 +505,32 @@ test("v4 never downgrades around missing issuance or substituted settlement bloc
   errorCode(
     () => verifyPositionProof({ ...base, ...afterExpiry }),
     "settlement_outside_intent_window",
+  );
+});
+
+test("v4 preserves YES/NO labels when binding CTF condition tokens", () => {
+  const swappedMarket = {
+    ...LIVE_MARKET_SNAPSHOT,
+    yesTokenId: LIVE_MARKET_SNAPSHOT.noTokenId,
+    noTokenId: LIVE_MARKET_SNAPSHOT.yesTokenId,
+    outcomeTokenId: LIVE_MARKET_SNAPSHOT.noTokenId,
+    counterOutcomeTokenId: LIVE_MARKET_SNAPSHOT.yesTokenId,
+  };
+  const { issued, trustedIssuers } = signedCompiled(swappedMarket);
+  const settlement = signedReceiptAndBlock();
+  errorCode(
+    () => verifyPositionProof({
+      chainId: 137,
+      receipt: noReceipt(),
+      ...settlement,
+      intent: issued.intent,
+      intentHash: issued.intentHash,
+      issuance: issued.issuance,
+      trustedIssuers,
+      conditionTokenIds: CONDITION_TOKEN_IDS,
+      orderId: LIVE_EXPECTED_FILL.orderId,
+    }),
+    "condition_token_mapping_mismatch",
   );
 });
 

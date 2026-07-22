@@ -324,17 +324,21 @@ export function verifyPositionProof({
   );
   invariant(CONDITION_ID_RE.test(intent.market?.conditionId || ""), "invalid_intent", "Intent condition ID is invalid");
   if (signedIntent) {
-    const claimedConditionTokens = [
-      String(intent.market?.outcomes?.YES?.tokenId || ""),
-      String(intent.market?.outcomes?.NO?.tokenId || ""),
-    ].sort();
-    const derivedConditionTokens = [String(conditionTokenIds?.YES || ""), String(conditionTokenIds?.NO || "")].sort();
+    const claimedConditionTokens = {
+      YES: String(intent.market?.outcomes?.YES?.tokenId || ""),
+      NO: String(intent.market?.outcomes?.NO?.tokenId || ""),
+    };
+    const derivedConditionTokens = {
+      YES: String(conditionTokenIds?.YES || ""),
+      NO: String(conditionTokenIds?.NO || ""),
+    };
     invariant(
-      derivedConditionTokens.every((tokenId) => TOKEN_ID_RE.test(tokenId)) &&
-        claimedConditionTokens[0] === derivedConditionTokens[0] &&
-        claimedConditionTokens[1] === derivedConditionTokens[1],
+      TOKEN_ID_RE.test(derivedConditionTokens.YES) &&
+        TOKEN_ID_RE.test(derivedConditionTokens.NO) &&
+        claimedConditionTokens.YES === derivedConditionTokens.YES &&
+        claimedConditionTokens.NO === derivedConditionTokens.NO,
       "condition_token_mapping_mismatch",
-      "Signed market outcome-token set does not match the CTF condition on Polygon",
+      "Signed market YES/NO outcome-token mapping does not match the CTF condition on Polygon",
     );
   }
   const maxPriceRaw = parseDecimal(intent.order?.maxPrice, 6, "maxPrice");

@@ -652,17 +652,14 @@ intentForm.addEventListener("submit", async (event) => {
 
 async function artifactForVerification() {
   const file = document.querySelector("#dossier-input").files[0];
-  if (file) {
-    const artifact = JSON.parse(await file.text());
-    if (artifact?.intent?.version !== "conviction-intent-v4" || !artifact?.intentHash || !artifact?.issuance) {
-      throw new Error("Public verification requires a Conviction-issued v4 dossier with its issuance signature");
-    }
-    return artifact;
+  if (!file) {
+    throw new Error("Select a paid Conviction-issued v4 dossier; the free preview card is not a verification credential");
   }
-  if (currentCompilation?.intent?.version !== "conviction-intent-v4" || !currentCompilation?.intentHash || !currentCompilation?.issuance) {
-    throw new Error("Create a signed v4 card above or select its issued intent dossier");
+  const artifact = JSON.parse(await file.text());
+  if (artifact?.intent?.version !== "conviction-intent-v4" || !artifact?.intentHash || !artifact?.issuance) {
+    throw new Error("Public verification requires a paid Conviction-issued v4 dossier with its issuance signature");
   }
-  return currentCompilation;
+  return artifact;
 }
 
 function renderVerification(payload) {
