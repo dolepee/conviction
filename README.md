@@ -59,7 +59,7 @@ The full wire contract is in [`docs/SERVICE_CONTRACT.md`](docs/SERVICE_CONTRACT.
 
 ## Run locally
 
-Requires Node.js 22+ and Python 3.
+Requires Node.js 22.x LTS and Python 3.
 
 ```sh
 npm run gate
@@ -84,7 +84,8 @@ request receives a standard payment challenge. Invalid compile requests are not
 settled, and a successful response is withheld if settlement fails.
 
 Before deploying seller credentials, verify that the key is payment-enabled,
-then verify the deployed challenge:
+then verify the deployed v0.4 health manifest and both exact bare x402
+challenges:
 
 ```sh
 npm run payment:preflight
