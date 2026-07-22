@@ -81,6 +81,7 @@ jobs:
             --repo okx/plugin-store \
             --pattern "polymarket-plugin-x86_64-unknown-linux-musl" \
             --dir "${{ runner.temp }}/native-okx-runtime"
+          chmod 0755 "${{ runner.temp }}/native-okx-runtime/polymarket-plugin-x86_64-unknown-linux-musl"
 
       - name: Verify native OKX runtime identity
         run: |
