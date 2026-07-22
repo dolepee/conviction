@@ -17,6 +17,12 @@ export const POLYMARKET_RUNTIME_ARTIFACTS = Object.freeze({
     rustcVersion: "rustc 1.96.1 (31fca3adb 2026-06-26)",
     cargoVersion: "cargo 1.96.1 (356927216 2026-06-26)",
   }),
+  "linux-x64": Object.freeze({
+    binarySha256: "fe198147c99311c8ff52fa198da9437068543b937d6eca12256d1d41349f6d18",
+    cargoLockSha256: "5edf618dc5870a868ea32c758c64831b1039a486b17e922fe9053878dd771627",
+    rustcVersion: "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    cargoVersion: "cargo 1.96.1 (356927216 2026-06-26)",
+  }),
 });
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

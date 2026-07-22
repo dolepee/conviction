@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   inspectPolymarketRuntime,
+  POLYMARKET_RUNTIME_ARTIFACTS,
   POLYMARKET_RUNTIME_COMMIT,
   POLYMARKET_RUNTIME_REPOSITORY,
   POLYMARKET_RUNTIME_VERSION,
@@ -67,6 +68,15 @@ test("runtime paths bind platform, architecture, commit, and Windows suffix", ()
   assert.match(unix.binary, /linux-x64.*49c952b98037f676b484625a4f389b42071213e7.*polymarket-plugin$/);
   const windows = polymarketRuntimePaths({ repositoryRoot: "C:\\repo", platform: "win32", arch: "x64" });
   assert.match(windows.binary, /polymarket-plugin\.exe$/);
+});
+
+test("release artifacts include the clean hosted Linux x64 runtime", () => {
+  assert.deepEqual(POLYMARKET_RUNTIME_ARTIFACTS["linux-x64"], {
+    binarySha256: "fe198147c99311c8ff52fa198da9437068543b937d6eca12256d1d41349f6d18",
+    cargoLockSha256: "5edf618dc5870a868ea32c758c64831b1039a486b17e922fe9053878dd771627",
+    rustcVersion: "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    cargoVersion: "cargo 1.96.1 (356927216 2026-06-26)",
+  });
 });
 
 test("resolver returns only a release-digest verified absolute binary and ignores PATH", async () => {
