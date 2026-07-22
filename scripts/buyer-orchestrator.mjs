@@ -1947,6 +1947,30 @@ async function postJson(url, body, { headers = {} } = {}) {
   return { response, json, text };
 }
 
+const PROOF_RECEIPT_RETRY_DELAYS_MS = Object.freeze([1_000, 2_000, 4_000, 4_000, 4_000]);
+const RETRYABLE_PROOF_CODES = new Set(["missing_receipt", "missing_settlement_block"]);
+
+export async function readProofWithReceiptIndexingRetry(
+  readProof,
+  {
+    delaysMs = PROOF_RECEIPT_RETRY_DELAYS_MS,
+    sleepImpl = (delayMs) => new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs)),
+  } = {},
+) {
+  if (typeof readProof !== "function" || !Array.isArray(delaysMs) ||
+      delaysMs.some((delayMs) => !Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 10_000)) {
+    throw Object.assign(new Error("Proof retry policy is invalid"), { code: "invalid_retry_policy" });
+  }
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await readProof();
+    } catch (error) {
+      if (!RETRYABLE_PROOF_CODES.has(error?.code) || attempt >= delaysMs.length) throw error;
+      await sleepImpl(delaysMs[attempt]);
+    }
+  }
+}
+
 export function requireExecutionLaunchWindow(card, {
   now = Date.now,
   minimumHeadroomMs = 10_000,
@@ -4758,13 +4782,15 @@ async function main() {
           executionOptions,
         ),
         buildCloseReceiptRequest: (card, liveResult, validationOptions) => buildCloseReceiptRequest(card, liveResult, validationOptions),
-        fetchCloseProof: (receiptRequest) => fetchAndVerifyClose(receiptRequest.transactionHash, {
-          intent: receiptRequest.intent,
-          intentHash: receiptRequest.intentHash,
-          orderId: receiptRequest.orderId,
-          issuance: receiptRequest.issuance,
-          trustedIssuers,
-        }),
+        fetchCloseProof: (receiptRequest) => readProofWithReceiptIndexingRetry(
+          () => fetchAndVerifyClose(receiptRequest.transactionHash, {
+            intent: receiptRequest.intent,
+            intentHash: receiptRequest.intentHash,
+            orderId: receiptRequest.orderId,
+            issuance: receiptRequest.issuance,
+            trustedIssuers,
+          }),
+        ),
         validateCloseProof: (card, proof, validationOptions) => validateCloseProof(card, proof, validationOptions),
       },
     });
@@ -5371,12 +5397,15 @@ async function main() {
     buildReceiptRequest: async (card, result, validationOptions) => buildReceiptRequest(card, result, validationOptions),
     buildCloseReceiptRequest: async (card, result, validationOptions) => buildCloseReceiptRequest(card, result, validationOptions),
     fetchProof: async (body) => {
-      const { response, json } = await postJson(pinnedServiceUrl(POSITION_CARD_SERVICE, "/api/receipt"), body);
-      if (!response.ok || json?.ok !== true) {
-        throw Object.assign(new Error(json?.error?.message || "Receipt proof failed"), {
-          code: json?.error?.code || "receipt_failed",
-        });
-      }
+      const json = await readProofWithReceiptIndexingRetry(async () => {
+        const result = await postJson(pinnedServiceUrl(POSITION_CARD_SERVICE, "/api/receipt"), body);
+        if (!result.response.ok || result.json?.ok !== true) {
+          throw Object.assign(new Error(result.json?.error?.message || "Receipt proof failed"), {
+            code: result.json?.error?.code || "receipt_failed",
+          });
+        }
+        return result.json;
+      });
       checkpoint.stage = "proof_received";
       checkpoint.positionProofHash = json.positionProofHash || null;
       checkpoint.reconciliationRequired = false;
@@ -5385,13 +5414,15 @@ async function main() {
     },
     validateProof: async (card, proof, validationOptions) => validateProof(card, proof, validationOptions),
     fetchCloseProof: async (body) => {
-      const proof = await fetchAndVerifyClose(body.transactionHash, {
-        intent: body.intent,
-        intentHash: body.intentHash,
-        orderId: body.orderId,
-        issuance: body.issuance,
-        trustedIssuers: pinnedRegistry,
-      });
+      const proof = await readProofWithReceiptIndexingRetry(
+        () => fetchAndVerifyClose(body.transactionHash, {
+          intent: body.intent,
+          intentHash: body.intentHash,
+          orderId: body.orderId,
+          issuance: body.issuance,
+          trustedIssuers: pinnedRegistry,
+        }),
+      );
       checkpoint.stage = "close_proof_received";
       checkpoint.closeProofHash = proof.closeProofHash || null;
       checkpoint.closePassportHash = proof.closePassportHash || null;
