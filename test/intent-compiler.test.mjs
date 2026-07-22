@@ -283,6 +283,36 @@ test("includes the conservative V2 fee reserve in total loss", () => {
   assert.equal(result.executionCard.argv[8], "1.12");
 });
 
+test("formats a negative high-price gross profit as a valid signed decimal", () => {
+  const market = {
+    ...FEE_MARKET_SNAPSHOT,
+    bids: [{ price: "0.94", size: "100" }],
+    asks: [{ price: "0.95", size: "100" }],
+  };
+  const request = {
+    market: market.slug,
+    outcome: "no",
+    spend: "10",
+    maxPrice: "0.95",
+  };
+  const preview = compilePreview(request, market, { now: NOW });
+  const signed = compileIntent(
+    {
+      ...request,
+      wallet: REQUEST.wallet,
+      rationale: "I select NO with a ten pUSD total cap for this high-price regression.",
+    },
+    market,
+    { now: NOW },
+  );
+
+  assert.equal(preview.preview.order.fullFillSharesAtCap, "9");
+  assert.equal(preview.preview.order.maximumTotalDebit, "9.405");
+  assert.equal(preview.preview.exposure.grossProfitAtCap, "-0.405");
+  assert.equal(Number.isFinite(Number(preview.preview.exposure.grossProfitAtCap)), true);
+  assert.equal(signed.intent.exposure.grossProfitAtCap, "-0.405");
+});
+
 test("fails before signing when fees leave principal below the marketable BUY floor", () => {
   assert.throws(
     () =>

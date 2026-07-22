@@ -69,10 +69,10 @@
             <a class="button button-primary" href="#try">Try a no-wallet preview</a>
             <a
               class="button button-quiet"
-              href="https://polygonscan.com/tx/0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a"
+              href="https://polygonscan.com/tx/0xf54b4b0deb2f0e53e0c01688eb5a66277177e96af2913d03cbf84d90d7da7313"
               target="_blank"
               rel="noreferrer"
-            >Open verified house fill <span aria-hidden="true">↗</span></a>
+            >Open live acceptance fill <span aria-hidden="true">↗</span></a>
           </div>
           <ul class="trust-strip" aria-label="Product guarantees">
             <li>OPEN or Position Manager</li>
@@ -83,27 +83,27 @@
 
         <article class="fill-ticket" aria-labelledby="ticket-title">
           <div class="ticket-topline">
-            <span>LIVE EXECUTION / 001</span>
-            <span class="verified-mark">Retrospectively verified</span>
+            <span>LIVE ACCEPTANCE / OPEN</span>
+            <span class="verified-mark">Card → fill → proof</span>
           </div>
-          <h2 id="ticket-title">Controlled house fill: retrospectively checked against every bound.</h2>
+          <h2 id="ticket-title">Controlled house run: one paid, bounded journey verified live.</h2>
           <div class="ticket-direction">
             <span class="yes-orb">YES</span>
             <div>
-              <strong>5.000000 shares</strong>
+              <strong>10.000000 shares</strong>
               <small>matched on Polymarket V2</small>
             </div>
           </div>
           <dl class="ticket-grid">
-            <div><dt>Spend</dt><dd>1.35 pUSD</dd></div>
-            <div><dt>Max price</dt><dd>27¢</dd></div>
+            <div><dt>Spend</dt><dd>1.10 pUSD</dd></div>
+            <div><dt>Max price</dt><dd>11¢</dd></div>
             <div><dt>Order</dt><dd>FAK</dd></div>
-            <div><dt>Block</dt><dd>90,598,011</dd></div>
+            <div><dt>Block</dt><dd>90,673,518</dd></div>
           </dl>
           <div class="ticket-proof">
-            <span>Settlement</span>
-            <code>0x25d2…fb8a</code>
-            <span aria-label="All position-proof checks passed">7/7 checks</span>
+            <span>Proof</span>
+            <code>0x7048…ea98</code>
+            <span aria-label="All live acceptance checks passed">8/8 checks</span>
           </div>
         </article>
       </section>
@@ -150,17 +150,24 @@
           <p>
             A paid endpoint returns a signed pre-execution card, not a claimed fill. The buyer-side runner
             validates that card, handles the exact wallet action after fresh consent, and then verifies the result.
-            The controlled
-            proof dossier is a separate retrospective check of one house-confirmed execution; its reference
-            intent expired before settlement and is not presented as the source of that fill.
+            On July 22, a controlled live gate captured a fresh buyer-seat x402 payment, signed bounds, one
+            separately confirmed OPEN, the exact Polygon fill, and the resulting proof in 69 seconds. That run
+            used the repository-backed buyer orchestrator before the v0.4.5 native OKX handoff; it proves the
+            complete pipeline, not a cold external native-path run. The older proof dossier remains available
+            below as an explicitly historical retrospective artifact.
+          </p>
+          <p>
+            Published controlled OPEN settlements recorded zero venue fee. Conviction enforces nonzero fee
+            bounds in deterministic and adversarial tests, but does not claim a live nonzero-fee proof yet.
           </p>
           <div class="proof-links">
             <a
               class="text-link"
-              href="https://polygonscan.com/tx/0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a"
+              href="https://polygonscan.com/tx/0xf54b4b0deb2f0e53e0c01688eb5a66277177e96af2913d03cbf84d90d7da7313"
               target="_blank"
               rel="noreferrer"
-            >Inspect block 90,598,011 <span aria-hidden="true">↗</span></a>
+            >Inspect live OPEN settlement <span aria-hidden="true">↗</span></a>
+            <a class="text-link" href="/assets/conviction-live-acceptance-2026-07-22.json" download>Live acceptance pack (JSON)</a>
             <a class="text-link" href="/assets/conviction-sample-position-card.json" download>Historical v3 position card (JSON)</a>
             <a class="text-link" href="/assets/conviction-review-deliverable.json" download>Controlled proof dossier (JSON)</a>
           </div>
@@ -174,8 +181,8 @@
           <div><span>06</span><strong>Average price within maximum</strong><b>PASS</b></div>
           <div><span>07</span><strong>Receipt settlement matched</strong><b>PASS</b></div>
           <footer>
-            <span>Current v3 receipt hash</span>
-            <code>0x8b51f365e655afe066383c0b405fc4d978a9c08cba76be7680630b34548a13d0</code>
+            <span>Live OPEN proof hash</span>
+            <code>0x7048783191aa7128c283c2acae0f3c2c37b2b34d29e6c31618b2211e1874ea98</code>
           </footer>
         </div>
       </section>

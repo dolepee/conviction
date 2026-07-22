@@ -245,7 +245,7 @@ h1 em { font-style: normal; color: var(--blue); }
 }
 
 @media (max-width: 560px) {
-  .site-header, .site-footer, .hero, .loop, .proof-section, .compiler-section, .verification-section, .safety-section { width: min(100% - 28px, 1240px); }
+  .site-header, .site-footer, .hero, .loop, .proof-section, .compiler-section, .verification-section, .safety-section { width: min(1240px, calc(100% - 28px)); }
   .site-header { min-height: 0; }
   .network-pill { width: 34px; height: 34px; justify-content: center; padding: 0; font-size: 0; }
   .hero { min-height: auto; padding: 50px 0 70px; }
