@@ -244,7 +244,11 @@ test("fails closed on journal, passport, proof, token, wallet, and issuer substi
     [(value) => { value.depositWallet = "0x3333333333333333333333333333333333333333"; }, "take_profit_journal_mismatch"],
     [(value) => { value.takeProfitPassport.restingOrderProof.outcomeTokenId = "42"; }, "take_profit_passport_mismatch"],
     [(value) => { value.takeProfitPassport.restingOrderProof.checks.exactOrderId = false; }, "take_profit_passport_mismatch"],
-    [(value) => { value.takeProfitPassport.issuance.signature = value.takeProfitPassport.issuance.signature.replace(/^./, "A"); }, "take_profit_passport_mismatch"],
+    [(value) => {
+      const bytes = Buffer.from(value.takeProfitPassport.issuance.signature, "base64url");
+      bytes[0] ^= 1;
+      value.takeProfitPassport.issuance.signature = bytes.toString("base64url");
+    }, "take_profit_passport_mismatch"],
   ];
   for (const [mutate, code] of cases) {
     const journal = structuredClone(fixtureJournal());
