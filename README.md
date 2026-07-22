@@ -106,11 +106,15 @@ npm run intent:live -- \
   "<optional 20-500 character note>"
 ```
 
-### Run the public buyer agent/CLI
+### Run through native OKX Agentic Wallet
 
-The executable skill is repository-backed: clone this release and run or symlink `skills/conviction-executor` from this repository so its pinned helpers retain their `src/` dependencies. Copying the skill directory alone is unsupported.
+Native OKX agents are the preferred OPEN and CLOSE path and do **not** install Conviction or clone this repository. The unpaid x402 challenge advertises `GET /api/executor`; each new signed card then points the agent to its exact `executionCard.argv`. An agent with OKX Agentic Wallet and the official OKX Plugin Store `polymarket-plugin` v0.7.0 invokes those arguments itself after the distinct trade confirmation. Signing remains inside the wallet's TEE, no person types a plugin command, and Conviction receives no keys or CLOB credentials.
 
-Prerequisites are Node.js 22, Git, Rust/Cargo, `onchainos`, an active OKX Agentic Wallet, persisted `deposit-wallet` mode, owner-only local Polymarket CLOB credentials, the pinned production issuer registry, X Layer USD₮0 for the selected service fee, and the required pUSD or outcome shares on Polygon. Install Conviction's exact Polymarket runtime once from the public, full-commit-pinned source:
+The native prerequisites are an active OKX Agentic Wallet, official `polymarket-plugin` v0.7.0, persisted `deposit-wallet` mode, X Layer USD₮0 for the selected service fee, and the required pUSD or outcome shares on Polygon. The discovery document publishes the official Plugin Store artifact digests for Apple Silicon and hosted Linux x64; the release gate downloads and verifies the official Linux artifact. TAKE_PROFIT remains on the fallback below because official v0.7.0 transports V2 GTD expiration in a location the live CLOB rejects.
+
+### Optional non-OKX fallback executor
+
+Environments that cannot consume the native OKX action may use the repository-backed fallback. Clone the immutable release and run or symlink `skills/conviction-executor` from this repository so its pinned helpers retain their `src/` dependencies. Copying the skill directory alone is unsupported. Fallback prerequisites additionally include Node.js 22, Git, and Rust/Cargo. Install its exact runtime once:
 
 ```sh
 npm run runtime:install
@@ -118,7 +122,7 @@ npm run runtime:install
 
 The installer fetches only [`dolepee/plugin-store@49c952b98037f676b484625a4f389b42071213e7`](https://github.com/dolepee/plugin-store/tree/49c952b98037f676b484625a4f389b42071213e7/skills/polymarket-plugin), runs its locked full test suite, builds locally, and requires the result to match Conviction's hard-coded release digest. Released runtime targets are Apple Silicon (`darwin-arm64`) and hosted Linux x64 (`linux-x64`); other targets fail closed until their reproducible artifact digests are published. Installation is owner-only and atomically publishes one immutable commit directory. Every executable Conviction path re-hashes the runtime before a plugin subprocess, records the spawn-bound digest before a live order, and never falls back to whichever `polymarket-plugin` appears first on `PATH`. The pinned delta corrects V2 GTD transport serialization so `expiration` is carried inside the JSON `order` object while remaining outside the EIP-712 signed fields.
 
-Cold buyer agents can discover the immutable executor before payment through `GET /api/executor` or the `service-desc` link on either x402 challenge. Every new paid card binds the same executor-release hash into its signed intent and returns an action-specific structured next step. The pinned source remains buyer-local: it never transfers keys or credentials to Conviction and still requires separate trade confirmation.
+Cold buyer agents discover execution before payment through `GET /api/executor` or the `service-desc` link on either x402 challenge. Every new paid card binds the same executor-release hash into its signed intent and returns an action-specific structured next step. OPEN and CLOSE prefer native OKX with `convictionInstallRequired:false`; TAKE_PROFIT explicitly selects the pinned fallback. Both remain buyer-local and require separate trade confirmation.
 
 Conviction never asks the user to type plugin commands during a journey. The OPEN, CLOSE, and TAKE_PROFIT placement runners invoke the verified runtime and stop only for the distinct payment and trade confirmations; the later `cancel-tp` action separately requires the exact cancellation confirmation documented below.
 
@@ -232,7 +236,7 @@ Never send Conviction a seed phrase, private key, bearer token, CLOB credential,
 
 ## Status
 
-- Production runtime: v0.4.3 is the last verified deployment; the v0.4.4 release candidate adds signed cold-agent discovery and a reproducible Linux x64 executor without changing fees, trade bounds, or custody
+- Production runtime: v0.4.3 is the last verified deployment; the v0.4.5 release candidate makes native OKX Agentic Wallet plus the official Plugin Store runtime the no-Conviction-install OPEN/CLOSE path, while TAKE_PROFIT retains the signed, corrected fallback without changing fees, trade bounds, or custody
 - OPEN: fresh buyer-seat `0.05 USD₮0` payment, one confirmed bounded order, exact 10 YES Polygon fill, and independent position proof passed in 42.0 seconds locally / 48.8 seconds independently ([payment](https://www.oklink.com/xlayer/tx/0xccbf4d92a1c80a7697d2f17b2d41129806826a7e28a4325303e3abcaaf17be6c), [fill](https://polygonscan.com/tx/0x716734f1bccb9c7c6c20cc7d0f064c857159b075fd12707ddbedd40c18cb3409))
 - CLOSE: fresh buyer-seat `0.10 USD₮0` payment, one confirmed exact 10 YES FOK sale, and independent close proof passed in 56.7 seconds locally / 61.7 seconds independently ([payment](https://www.oklink.com/xlayer/tx/0x03e05a3fdc18dbbd320e30abb062830b67fecf9d77a3e0c6142dca195c03d279), [fill](https://polygonscan.com/tx/0x7f0bb701c22bdb8aff43a66c259de01330e5b41c45908d36e677a4216dfbfba4))
 - TAKE_PROFIT: fresh buyer-seat `0.10 USD₮0` payment armed exactly one zero-match post-only 9 YES GTD order with an authenticated proof in 38.0 seconds locally / 42.3 seconds independently; exact cancellation then returned `CANCELED`, zero matched, no open orders, and no global execution lock ([payment](https://www.oklink.com/xlayer/tx/0x2f1257db47bba77f45766767a18ededca6b82310c725a08f62e7797e549ba80a))
