@@ -41,6 +41,7 @@ import {
   persistVerifiedPaidServicePayment,
   reconcileUnattachedExecutionLock,
   releaseReconciledLocks,
+  resumePendingStateRelease,
   requireDistinctPaymentPayer,
   resolveFailedLockAttachment,
   settleExecutionLock,
@@ -1259,6 +1260,11 @@ export async function safeTakeProfitJournalPath(value, stateDirectory = STATE_DI
 
 async function loadRawLifecycleContext(options, { stateDirectory = STATE_DIRECTORY } = {}) {
   const journalPath = await safeTakeProfitJournalPath(options.journal, stateDirectory);
+  await resumePendingStateRelease({
+    journal: journalPath,
+    stateDirectory,
+    writeState: writeTakeProfitState,
+  });
   const [journalText, trustedText] = await Promise.all([
     readFile(journalPath, "utf8"),
     readFile(options.issuerRegistry, "utf8"),

@@ -2467,6 +2467,81 @@ export async function releaseReconciledLocks(
   }));
 }
 
+/**
+ * Resume an exact crash-incomplete lock-release transaction without requiring
+ * the restart command to know the original transition label. The durable guard
+ * is the authority: its source/target hashes, field set, lock generations, and
+ * transition identity are all re-authenticated under the owner-local mutex.
+ */
+export async function resumePendingStateRelease({
+  journal,
+  stateDirectory = journalDirectory,
+  writeState = writeReconciliationJournal,
+  statImpl = stat,
+} = {}) {
+  return withStateReleaseMutex(stateDirectory, async (mutexLease) => {
+    const canonicalJournal = safeStatePath(journal, "journal", stateDirectory);
+    const releaseFile = join(stateDirectory, releaseLockBasename);
+    let guardText;
+    try {
+      [guardText] = await Promise.all([
+        readFile(releaseFile, "utf8"),
+        ownerOnlyStateFile(releaseFile, "State-release guard", { statImpl }),
+        ownerOnlyStateFile(canonicalJournal, "Reconciliation journal", { statImpl }),
+      ]);
+    } catch (error) {
+      if (error?.code === "ENOENT") return Object.freeze({ resumed: false, completed: false, released: Object.freeze([]) });
+      throw error;
+    }
+    let guard;
+    try { guard = JSON.parse(guardText); } catch {}
+    if (!validReleaseGuard(guard) || guard.journalPath !== canonicalJournal) {
+      throw Object.assign(new Error("Pending state-release guard does not belong to this journal"), {
+        code: "state_release_guard_mismatch",
+      });
+    }
+    const durable = JSON.parse(await readFile(canonicalJournal, "utf8"));
+    const durableHash = sha256(durable);
+    if (durableHash === guard.targetJournalHash) {
+      await assertNoStateReleaseInProgress({
+        directory: stateDirectory,
+        releaseFile,
+        statImpl,
+        mutexHeld: true,
+        mutexLease,
+      });
+      return Object.freeze({ resumed: true, completed: true, released: Object.freeze([]) });
+    }
+    if (durableHash !== guard.sourceJournalHash) {
+      throw Object.assign(new Error("Pending state-release journal differs from both guarded states"), {
+        code: "reconciliation_journal_changed",
+      });
+    }
+    const legacyV1ExecutionBinding = durable.executionLockGeneration == null &&
+      durable.executionLockHash == null && durable.executionLockPurpose == null &&
+      durable.executionLockRecoveryNotBefore == null;
+    if (
+      guard.fields.includes("executionLockPath") && !legacyV1ExecutionBinding &&
+      durable.executionLockHash !== guard.lockHashes.executionLockPath
+    ) {
+      throw Object.assign(new Error("Pending state-release execution generation differs from its source journal"), {
+        code: "lock_generation_mismatch",
+      });
+    }
+    const released = await releaseReconciledLocksLocked(durable, {
+      stateDirectory,
+      journal: canonicalJournal,
+      fields: guard.fields,
+      expectedLockHashes: guard.lockHashes,
+      writeState,
+      statImpl,
+      mutexLease,
+      stableTransitionIdOverride: guard.transitionId,
+    });
+    return Object.freeze({ resumed: true, completed: true, released: Object.freeze([...released]) });
+  });
+}
+
 async function releaseReconciledLocksLocked(
   state,
   {
@@ -2485,6 +2560,7 @@ async function releaseReconciledLocksLocked(
     durableGuardPublishImpl = writeDurableAtomicFile,
     statImpl = stat,
     mutexLease,
+    stableTransitionIdOverride,
   } = {},
 ) {
   if (typeof mutexLease?.unlinkExact !== "function") {
@@ -2500,15 +2576,22 @@ async function releaseReconciledLocksLocked(
   const source = structuredClone(state);
   const sourceRevision = journalRevision(source);
   const sourceHash = sha256(source);
-  const stableTransitionId = sha256({
-    version: "conviction-state-release-transition-v1",
-    kind: String(transitionId || "release-selected-locks"),
-    fields: selectedFields,
-    sourceVersion: source.version || null,
-    sourceMode: source.mode || null,
-    sourceAction: source.action || null,
-    sourceStage: source.stage || null,
-  });
+  const stableTransitionId = stableTransitionIdOverride === undefined
+    ? sha256({
+      version: "conviction-state-release-transition-v1",
+      kind: String(transitionId || "release-selected-locks"),
+      fields: selectedFields,
+      sourceVersion: source.version || null,
+      sourceMode: source.mode || null,
+      sourceAction: source.action || null,
+      sourceStage: source.stage || null,
+    })
+    : String(stableTransitionIdOverride);
+  if (!HASH_RE.test(stableTransitionId)) {
+    throw Object.assign(new Error("State-release transition identity is invalid"), {
+      code: "state_release_guard_mismatch",
+    });
+  }
   const durableBeforeGuard = JSON.parse(await readFile(canonicalJournal, "utf8"));
   if (sha256(durableBeforeGuard) !== sourceHash) {
     throw Object.assign(new Error("Reconciliation journal changed before lock-release preparation"), {
@@ -2977,6 +3060,7 @@ export async function reconcileOpenJournal({
   stateDirectory = journalDirectory,
 } = {}) {
   const journal = safeStatePath(file, "journal", stateDirectory);
+  await resumePendingStateRelease({ journal, stateDirectory });
   const state = JSON.parse(await readFile(journal, "utf8"));
   if (state?.mode !== "open") {
     throw Object.assign(new Error("Journal is not a Conviction OPEN journey"), {
@@ -3303,6 +3387,7 @@ export async function reconcileCloseJournal({
   stateDirectory = journalDirectory,
 } = {}) {
   const journal = safeStatePath(file, "journal", stateDirectory);
+  await resumePendingStateRelease({ journal, stateDirectory });
   const state = JSON.parse(await readFile(journal, "utf8"));
   if (state?.mode !== "close") {
     throw Object.assign(new Error("Journal is not a Conviction CLOSE journey"), { code: "invalid_reconciliation_journal" });
@@ -3902,6 +3987,7 @@ export async function resumePaidCloseJournal({
   }
 
   const journal = safeStatePath(file, "journal", stateDirectory);
+  await resumePendingStateRelease({ journal, stateDirectory });
   const state = JSON.parse(await readFile(journal, "utf8"));
   requireExactResumeCheckpoint(state, journal);
   requireDistinctPaymentPayer(state.paymentPayer);
