@@ -25,7 +25,11 @@ import {
   writeTakeProfitState,
 } from "../scripts/take-profit-orchestrator.mjs";
 import { POSITION_MANAGER_SERVICE, SERVICE_ASSET, SERVICE_PAYEE } from "../src/service-payment.mjs";
-import { validateTakeProfitJournal } from "../src/take-profit-lifecycle.mjs";
+import {
+  buildTakeProfitCancelRequest,
+  TAKE_PROFIT_CANCEL_CONFIRMATION,
+  validateTakeProfitJournal,
+} from "../src/take-profit-lifecycle.mjs";
 import { fetchAndVerifyX402Payment } from "../src/x402-payment-verifier.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
@@ -384,6 +388,268 @@ async function diskFixture({
     executionLockPath: journal.executionLockPath || join(stateDirectory, "polymarket-execution.lock.json"),
   };
 }
+
+const CANCEL_CONFIRMED_AT = "2026-07-21T02:00:15.000Z";
+
+async function cancelExecutionFixture({ attempted = false } = {}) {
+  const fixture = await diskFixture();
+  await runTakeProfitReconcileCli({
+    journal: fixture.journalPath,
+    issuerRegistry: fixture.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: fixture.stateDirectory,
+    now: () => Date.parse(FETCHED_AT),
+    fetchExactOrderImpl: async () => orderSnapshot(),
+  });
+  const journal = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  const preCancelSnapshot = orderSnapshot();
+  const request = buildTakeProfitCancelRequest({
+    journal,
+    snapshot: preCancelSnapshot,
+    typedConfirmation: TAKE_PROFIT_CANCEL_CONFIRMATION,
+    confirmedAt: CANCEL_CONFIRMED_AT,
+  }, {
+    trustedIssuers,
+    now: () => Date.parse(CANCEL_CONFIRMED_AT),
+  });
+  await claimExecutionLock({
+    journal: fixture.journalPath,
+    directory: fixture.stateDirectory,
+    file: fixture.executionLockPath,
+    state: journal,
+    purpose: "TP_CANCEL",
+    recoveryNotBefore: request.launchExpiresAt,
+    now: () => Date.parse(CANCEL_CONFIRMED_AT),
+    writeState: writeTakeProfitState,
+    transition(next, { lock, lockHash }) {
+      next.cancelConsent = {
+        version: "conviction-take-profit-cancel-consent-v2",
+        orderId: request.orderId,
+        confirmedAt: CANCEL_CONFIRMED_AT,
+        launchExpiresAt: request.launchExpiresAt,
+        preCancelSnapshotHash: request.preCancelSnapshotHash,
+        argvHash: sha256(request.argv),
+      };
+      next.cancelExecution = {
+        version: "conviction-take-profit-cancel-execution-v2",
+        phase: "lock_acquired",
+        orderId: request.orderId,
+        intentHash: request.intentHash,
+        takeProfitPassportHash: request.takeProfitPassportHash,
+        preCancelSnapshot: structuredClone(request.preCancelSnapshot),
+        preCancelSnapshotHash: request.preCancelSnapshotHash,
+        argv: [...request.argv],
+        argvHash: sha256(request.argv),
+        confirmedAt: CANCEL_CONFIRMED_AT,
+        launchExpiresAt: request.launchExpiresAt,
+        lockAcquiredAt: lock.claimedAt,
+        executionLockGeneration: lock.generation,
+        executionLockHash: lockHash,
+        attemptedAt: null,
+      };
+      next.reconciliationRequired = true;
+    },
+  });
+  if (attempted) {
+    const attemptedAt = new Date(Date.parse(request.launchExpiresAt) - 1).toISOString();
+    journal.cancelExecution.phase = "attempted";
+    journal.cancelExecution.attemptedAt = attemptedAt;
+    journal.cancelAttemptedAt = attemptedAt;
+    journal.cancelExecutionArgv = [...request.argv];
+    await writeTakeProfitState(journal, {
+      directory: fixture.stateDirectory,
+      file: fixture.journalPath,
+    });
+  }
+  return { ...fixture, journal, request, preCancelSnapshot };
+}
+
+function cancelSnapshotAt(timestamp, status = "LIVE") {
+  return orderSnapshot({
+    fetchedAt: new Date(timestamp).toISOString(),
+    order: { status },
+  });
+}
+
+async function reconcileCancelFixture(fixture, timestamp, fetchExactOrderImpl) {
+  return runTakeProfitReconcileCli({
+    journal: fixture.journalPath,
+    issuerRegistry: fixture.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: fixture.stateDirectory,
+    now: () => timestamp,
+    fetchExactOrderImpl,
+  });
+}
+
+test("TP_CANCEL A0 waits before its bounded deadline without a CLOB read or lock release", async () => {
+  const fixture = await cancelExecutionFixture();
+  let fetches = 0;
+  try {
+    const result = await reconcileCancelFixture(
+      fixture,
+      Date.parse(fixture.request.launchExpiresAt) - 1,
+      async () => { fetches += 1; throw new Error("A0 wait must not query the venue"); },
+    );
+    assert.equal(result.status, "waiting_for_cancel_launch_expiry");
+    assert.equal(result.executionLockReleased, false);
+    assert.equal(result.reservationReleased, false);
+    assert.equal(fetches, 0);
+    await access(fixture.executionLockPath);
+    await access(fixture.reservationLockPath);
+    assert.equal(JSON.parse(await readFile(fixture.journalPath, "utf8")).cancelExecution.phase, "lock_acquired");
+  } finally {
+    await rm(fixture.stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("TP_CANCEL expiry equality releases only the global A0 lock and replays idempotently", async () => {
+  const fixture = await cancelExecutionFixture();
+  let fetches = 0;
+  const deadline = Date.parse(fixture.request.launchExpiresAt);
+  try {
+    const first = await reconcileCancelFixture(fixture, deadline, async () => {
+      fetches += 1;
+      throw new Error("expired A0 must not query the venue");
+    });
+    assert.equal(first.status, "cancel_expired_unattempted_reconciled");
+    assert.equal(first.executionLockReleased, true);
+    assert.equal(first.reservationReleased, false);
+    assert.equal(fetches, 0);
+    await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+    await access(fixture.reservationLockPath);
+    const durable = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+    assert.equal(durable.cancelExecution.phase, "expired_unattempted");
+    assert.equal(durable.reconciliationRequired, false);
+
+    const replay = await reconcileCancelFixture(fixture, deadline + 1, async () => {
+      fetches += 1;
+      throw new Error("terminal replay must not query the venue");
+    });
+    assert.equal(replay.status, "expired_unattempted");
+    assert.equal(replay.reconciliationRequired, false);
+    assert.equal(fetches, 0);
+    await access(fixture.reservationLockPath);
+  } finally {
+    await rm(fixture.stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("attempted TP_CANCEL never time-releases and requires authenticated terminal venue evidence", async () => {
+  const fixture = await cancelExecutionFixture({ attempted: true });
+  const deadline = Date.parse(fixture.request.launchExpiresAt);
+  let fetches = 0;
+  try {
+    const unresolved = await reconcileCancelFixture(fixture, deadline + 1, async () => {
+      fetches += 1;
+      return cancelSnapshotAt(deadline + 1, "LIVE");
+    });
+    assert.equal(unresolved.reconciliationRequired, true);
+    assert.equal(unresolved.executionLockReleased, false);
+    assert.equal(fetches, 1);
+    await access(fixture.executionLockPath);
+    await access(fixture.reservationLockPath);
+    assert.equal(JSON.parse(await readFile(fixture.journalPath, "utf8")).cancelExecution.phase, "attempted");
+
+    const terminal = await reconcileCancelFixture(fixture, deadline + 2, async () => {
+      fetches += 1;
+      return cancelSnapshotAt(deadline + 2, "CANCELED");
+    });
+    assert.equal(terminal.reconciliationRequired, false);
+    assert.equal(terminal.executionLockReleased, true);
+    assert.equal(fetches, 2);
+    await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+    await access(fixture.reservationLockPath);
+    const durable = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+    assert.equal(durable.cancelExecution.phase, "terminal");
+
+    const replay = await reconcileCancelFixture(fixture, deadline + 3, async () => {
+      fetches += 1;
+      throw new Error("terminal cancel replay must not query the venue");
+    });
+    assert.equal(replay.status, "terminal");
+    assert.equal(replay.reconciliationRequired, false);
+    assert.equal(fetches, 2);
+  } finally {
+    await rm(fixture.stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("TP_CANCEL rejects generation, snapshot, argv, and deadline substitution before any venue read", async () => {
+  const cases = [
+    ["generation", (journal) => { journal.cancelExecution.executionLockGeneration = "12345678-1234-4123-8123-123456789abc"; }],
+    ["snapshot", (journal) => { journal.cancelExecution.preCancelSnapshot.order.price = "0.41"; }],
+    ["argv", (journal) => { journal.cancelExecution.argv.push("--all"); }],
+    ["deadline", (journal) => { journal.cancelExecution.launchExpiresAt = "2026-07-21T02:02:16.000Z"; }],
+  ];
+  for (const [label, mutate] of cases) {
+    const fixture = await cancelExecutionFixture();
+    let fetches = 0;
+    try {
+      mutate(fixture.journal);
+      await writeTakeProfitState(fixture.journal, {
+        directory: fixture.stateDirectory,
+        file: fixture.journalPath,
+      });
+      await assert.rejects(
+        reconcileCancelFixture(
+          fixture,
+          Date.parse(fixture.request.launchExpiresAt) - 1,
+          async () => { fetches += 1; return fixture.preCancelSnapshot; },
+        ),
+        (error) => error?.code === "invalid_cancel_execution_checkpoint",
+        label,
+      );
+      assert.equal(fetches, 0, label);
+      await access(fixture.executionLockPath);
+      await access(fixture.reservationLockPath);
+    } finally {
+      await rm(fixture.stateDirectory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a durable TP_CANCEL pre-spawn terminal replays without venue access and retains the reservation", async () => {
+  const fixture = await cancelExecutionFixture();
+  const failedAt = Date.parse(CANCEL_CONFIRMED_AT) + 1_000;
+  try {
+    await releaseReconciledLocks(fixture.journal, {
+      stateDirectory: fixture.stateDirectory,
+      journal: fixture.journalPath,
+      fields: ["executionLockPath"],
+      expectedLockHashes: { executionLockPath: fixture.journal.cancelExecution.executionLockHash },
+      transitionId: "take-profit-cancel-known-unstarted-v2",
+      writeState: writeTakeProfitState,
+      now: failedAt,
+      transition(next, { releasedAt }) {
+        next.cancelExecution.phase = "pre_spawn_failed";
+        next.cancelExecution.failedAt = releasedAt;
+        next.reconciliationRequired = false;
+        next.cancelError = {
+          code: "simulated_pre_spawn_failure",
+          at: releasedAt,
+          executionAmbiguous: false,
+        };
+      },
+    });
+    let fetches = 0;
+    for (const offset of [1, 2]) {
+      const replay = await reconcileCancelFixture(fixture, failedAt + offset, async () => {
+        fetches += 1;
+        throw new Error("pre-spawn terminal replay must not query the venue");
+      });
+      assert.equal(replay.status, "pre_spawn_failed");
+      assert.equal(replay.reconciliationRequired, false);
+    }
+    assert.equal(fetches, 0);
+    await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+    await access(fixture.reservationLockPath);
+  } finally {
+    await rm(fixture.stateDirectory, { recursive: true, force: true });
+  }
+});
 
 test("reconcile-tp persists exact ARMED recovery before releasing only its owner-verified global lock", async () => {
   const fixture = await diskFixture();

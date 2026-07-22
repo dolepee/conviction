@@ -212,7 +212,7 @@ test("TAKE_PROFIT lifecycle journals reject traversal and symlink escapes", asyn
   );
   await assert.rejects(
     safeTakeProfitJournalPath(link, state),
-    (error) => error?.code === "invalid_state_path",
+    (error) => error?.code === "unsafe_state_symlink",
   );
 });
 
