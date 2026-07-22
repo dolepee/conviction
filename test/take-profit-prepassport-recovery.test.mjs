@@ -579,12 +579,12 @@ test("attempted TP_CANCEL never time-releases and requires authenticated termina
 
 test("TP_CANCEL rejects generation, snapshot, argv, and deadline substitution before any venue read", async () => {
   const cases = [
-    ["generation", (journal) => { journal.cancelExecution.executionLockGeneration = "12345678-1234-4123-8123-123456789abc"; }],
-    ["snapshot", (journal) => { journal.cancelExecution.preCancelSnapshot.order.price = "0.41"; }],
-    ["argv", (journal) => { journal.cancelExecution.argv.push("--all"); }],
-    ["deadline", (journal) => { journal.cancelExecution.launchExpiresAt = "2026-07-21T02:02:16.000Z"; }],
+    ["generation", (journal) => { journal.cancelExecution.executionLockGeneration = "12345678-1234-4123-8123-123456789abc"; }, "invalid_cancel_execution_checkpoint"],
+    ["snapshot", (journal) => { journal.cancelExecution.preCancelSnapshot.order.price = "0.41"; }, "order_price_mismatch"],
+    ["argv", (journal) => { journal.cancelExecution.argv.push("--all"); }, "invalid_cancel_execution_checkpoint"],
+    ["deadline", (journal) => { journal.cancelExecution.launchExpiresAt = "2026-07-21T02:02:16.000Z"; }, "invalid_cancel_execution_checkpoint"],
   ];
-  for (const [label, mutate] of cases) {
+  for (const [label, mutate, expectedCode] of cases) {
     const fixture = await cancelExecutionFixture();
     let fetches = 0;
     try {
@@ -599,7 +599,7 @@ test("TP_CANCEL rejects generation, snapshot, argv, and deadline substitution be
           Date.parse(fixture.request.launchExpiresAt) - 1,
           async () => { fetches += 1; return fixture.preCancelSnapshot; },
         ),
-        (error) => error?.code === "invalid_cancel_execution_checkpoint",
+        (error) => error?.code === expectedCode,
         label,
       );
       assert.equal(fetches, 0, label);
