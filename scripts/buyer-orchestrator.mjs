@@ -24,6 +24,10 @@ import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchPositionSnapshot } from "../src/position-client.mjs";
 import { fetchAllOpenOrders, fetchExactOrder } from "../src/polymarket-open-orders.mjs";
 import { parsePolymarketShareAtoms } from "../src/polymarket-quantities.mjs";
+import {
+  polymarketRuntimeEvidenceFromInspection,
+  resolvePolymarketRuntime,
+} from "../src/polymarket-runtime.mjs";
 import { fetchAndVerifyPosition } from "../src/receipt-verifier.mjs";
 import { verifySourcePosition } from "../src/source-position.mjs";
 import {
@@ -54,6 +58,7 @@ import {
 } from "../skills/conviction-executor/scripts/conviction-exit-card.mjs";
 
 const execFileAsync = promisify(execFile);
+const polymarketPluginCommand = () => resolvePolymarketRuntime().binary;
 const PAYMENT_SIGNATURE_HEADER = "PAYMENT-SIGNATURE";
 let executionAttempted = false;
 const journalDirectory = join(homedir(), ".local", "state", "conviction", "reconciliation");
@@ -97,6 +102,7 @@ const checkpoint = {
   tradeConsent: null,
   executionArgv: null,
   executionArgvHash: null,
+  executionRuntime: null,
   replayKey: null,
   replayLockPath: null,
   replayLockReleasedAt: null,
@@ -4710,9 +4716,9 @@ async function main() {
     let selectedTradingMode = "";
     const loadResumeReadiness = async ({ paymentPayer, sellerWallet }) => {
       const [access, addresses, quickstart] = await Promise.all([
-        commandJson("polymarket-plugin", ["check-access"], "Polymarket access check"),
+        commandJson(polymarketPluginCommand(), ["check-access"], "Polymarket access check"),
         commandJson("onchainos", ["wallet", "addresses"], "Agentic Wallet addresses"),
-        commandJson("polymarket-plugin", ["quickstart"], "Polymarket readiness"),
+        commandJson(polymarketPluginCommand(), ["quickstart"], "Polymarket readiness"),
       ]);
       const depositWallet = depositWalletFromQuickstart(quickstart);
       const pUsdBalanceRaw = depositWallet ? await polygonPusdBalanceRaw(depositWallet) : "0";
@@ -4739,7 +4745,7 @@ async function main() {
         validateCloseCard: (card, validationOptions) => validateCloseCard(card, validationOptions),
         ensureTradingMode: async () => {
           const switched = await commandJson(
-            "polymarket-plugin",
+            polymarketPluginCommand(),
             ["switch-mode", "--mode", "deposit-wallet"],
             "Polymarket trading-mode selection",
           );
@@ -4775,14 +4781,14 @@ async function main() {
           };
         },
         dryRun: (executionArgv, executionOptions) => commandJson(
-          "polymarket-plugin",
+          polymarketPluginCommand(),
           [...executionArgv, "--dry-run"],
           "Resumed Polymarket dry run",
           executionOptions,
         ),
         validateCloseDryRun: (card, dryRun, validationOptions) => validateClosePluginPreview(card, dryRun, validationOptions),
         execute: (executionArgv, executionOptions) => commandJson(
-          "polymarket-plugin",
+          polymarketPluginCommand(),
           executionArgv,
           "Resumed Polymarket live order",
           executionOptions,
@@ -4981,9 +4987,9 @@ async function main() {
 
   const loadReadiness = async () => {
     const [access, addresses, quickstart] = await Promise.all([
-      commandJson("polymarket-plugin", ["check-access"], "Polymarket access check"),
+      commandJson(polymarketPluginCommand(), ["check-access"], "Polymarket access check"),
       commandJson("onchainos", ["wallet", "addresses"], "Agentic Wallet addresses"),
-      commandJson("polymarket-plugin", ["quickstart"], "Polymarket readiness"),
+      commandJson(polymarketPluginCommand(), ["quickstart"], "Polymarket readiness"),
     ]);
     const depositWallet = depositWalletFromQuickstart(quickstart);
     const pUsdBalanceRaw = depositWallet ? await polygonPusdBalanceRaw(depositWallet) : "0";
@@ -5012,7 +5018,7 @@ async function main() {
   const adapters = {
     ensureTradingMode: async () => {
       const switched = await commandJson(
-        "polymarket-plugin",
+        polymarketPluginCommand(),
         ["switch-mode", "--mode", "deposit-wallet"],
         "Polymarket trading-mode selection",
       );
@@ -5193,7 +5199,7 @@ async function main() {
     },
     validateCard: async (card, validationOptions) => validateCard(card, validationOptions),
     validateCloseCard: async (card, validationOptions) => validateCloseCard(card, validationOptions),
-    dryRun: async (argv) => commandJson("polymarket-plugin", [...argv, "--dry-run"], "Polymarket dry run"),
+    dryRun: async (argv) => commandJson(polymarketPluginCommand(), [...argv, "--dry-run"], "Polymarket dry run"),
     validateDryRun: async (card, dryRun, validationOptions) => validatePluginPreview(card, dryRun, validationOptions),
     validateCloseDryRun: async (card, dryRun, validationOptions) => validateClosePluginPreview(card, dryRun, validationOptions),
     execute: async (argv) => {
@@ -5218,7 +5224,7 @@ async function main() {
         // boundary deterministic without authorizing any additional action.
         await waitForStrictlyPostConfirmationSecond(checkpoint.tradeConfirmedAt);
         const reasserted = await commandJson(
-          "polymarket-plugin",
+          polymarketPluginCommand(),
           ["switch-mode", "--mode", "deposit-wallet"],
           "Final Polymarket trading-mode selection",
         );
@@ -5246,7 +5252,7 @@ async function main() {
           });
           const preDryRunWindow = requireExecutionLaunchWindow(lockedCard);
           const lockedDryRun = await commandJson(
-            "polymarket-plugin",
+            polymarketPluginCommand(),
             [...argv, "--dry-run"],
             "Locked final Polymarket dry run",
             { deadlineEpochMs: preDryRunWindow.deadlineEpochMs },
@@ -5285,7 +5291,7 @@ async function main() {
           });
           const preDryRunWindow = requireExecutionLaunchWindow(lockedCard);
           const lockedDryRun = await commandJson(
-            "polymarket-plugin",
+            polymarketPluginCommand(),
             [...argv, "--dry-run"],
             "Locked final Polymarket OPEN dry run",
             { deadlineEpochMs: preDryRunWindow.deadlineEpochMs },
@@ -5329,7 +5335,17 @@ async function main() {
               code: "trade_consent_mismatch",
             });
           }
-          result = await commandJson("polymarket-plugin", argv, "Polymarket live order", {
+          const persistedRuntime = resolvePolymarketRuntime();
+          checkpoint.executionRuntime = polymarketRuntimeEvidenceFromInspection(persistedRuntime);
+          await writeReconciliationJournal(checkpoint);
+          const launchRuntime = resolvePolymarketRuntime();
+          const launchEvidence = polymarketRuntimeEvidenceFromInspection(launchRuntime);
+          if (JSON.stringify(launchEvidence) !== JSON.stringify(checkpoint.executionRuntime)) {
+            throw Object.assign(new Error("Pinned Polymarket runtime changed before live execution"), {
+              code: "runtime_changed_before_execution",
+            });
+          }
+          result = await commandJson(launchRuntime.binary, argv, "Polymarket live order", {
             deadlineEpochMs: launchWindow.deadlineEpochMs,
             onStart: () => { executionAttempted = true; },
           });
@@ -5468,7 +5484,7 @@ async function main() {
         next.reconciliationRequired = false;
       },
     });
-    stdout.write(`${JSON.stringify(result)}\n`);
+    stdout.write(`${JSON.stringify({ ...result, executionRuntime: checkpoint.executionRuntime, journalPath })}\n`);
   } finally {
     readline.close();
   }

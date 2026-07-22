@@ -17,6 +17,7 @@ import { parseDecimal } from "../src/decimal.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchExactOrder } from "../src/polymarket-open-orders.mjs";
 import { parsePolymarketShareAtoms } from "../src/polymarket-quantities.mjs";
+import { polymarketRuntimeEvidence } from "../src/polymarket-runtime.mjs";
 import { verifySourcePosition } from "../src/source-position.mjs";
 import {
   POSITION_MANAGER_SERVICE,
@@ -48,6 +49,7 @@ const orchestratorPath = path.join(HERE, "take-profit-orchestrator.mjs");
 const productionRegistryPath = path.join(HERE, "..", "config", "trusted-issuer.production.json");
 const results = [];
 let reconciliation;
+let executionRuntime = polymarketRuntimeEvidence({ verified: false });
 
 function record(id, name, status, detail = "") {
   results.push({ id, name, status, detail });
@@ -373,9 +375,14 @@ if (mode === "live") {
   if (journey.code !== 0 || journey.report?.ok !== true) {
     reconciliation = { journalPath: journey.report?.journalPath, reconciliationRequired: journey.report?.reconciliationRequired === true };
     const detail = journey.report?.code || `orchestrator exit ${journey.code}`;
+    record("7", "Executed plugin is bound to the released runtime digest", "FAIL", "journey did not return spawn-bound runtime evidence");
     for (const [id, name] of pendingNames) record(id, name, "FAIL", detail);
   } else {
     const report = journey.report;
+    const installedRuntime = polymarketRuntimeEvidence({ verified: true });
+    const runtimeBound = JSON.stringify(report.executionRuntime || null) === JSON.stringify(installedRuntime);
+    executionRuntime = report.executionRuntime || null;
+    record("7", "Executed plugin is bound to the released runtime digest", runtimeBound ? "PASS" : "FAIL", report.executionRuntime?.binarySha256 || "missing");
     let payment;
     try {
       payment = await fetchAndVerifyX402Payment({
@@ -502,5 +509,5 @@ const verdict = mode === "live"
   ? failed.length === 0 && pending.length === 0 ? "GATE C: PASS" : "GATE C: FAIL"
   : failed.length === 0 ? `NO FAILURES (${pending.length} pending; Gate C undecided)` : "FAILURES PRESENT";
 process.stdout.write(`\n${verdict}\n`);
-writeFileSync(reportPath, `${JSON.stringify({ mode, origin, at: new Date().toISOString(), verdict, results, ...(reconciliation ? { reconciliation } : {}) }, null, 2)}\n`);
+writeFileSync(reportPath, `${JSON.stringify({ mode, origin, at: new Date().toISOString(), verdict, executionRuntime, results, ...(reconciliation ? { reconciliation } : {}) }, null, 2)}\n`);
 process.exitCode = failed.length || (mode === "live" && pending.length) ? 1 : 0;

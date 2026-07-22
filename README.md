@@ -32,7 +32,7 @@ The reference intent expired before settlement, so the dossier does not claim th
 1. The buyer pastes one Polymarket market. Conviction reads both YES and NO books without requesting a wallet.
 2. The buyer selects the outcome, fee-inclusive pUSD risk budget, and maximum price. A wallet-free preview shows the objective exposure.
 3. Only after reviewing those bounds does the buyer bind their configured deposit wallet and receive a five-minute wallet-bound position-card preview plus a secure dry-run prompt. The paid machine route issues the signed card after separate service payment.
-4. The official Polymarket plugin previews the exact request in the buyer's Agentic Wallet and requires a separate live confirmation before any write.
+4. Conviction's source-pinned Polymarket runtime previews the exact request in the buyer's Agentic Wallet and requires a separate live confirmation before any write.
 5. Conviction derives principal, fee, total debit, and shares from Polygon events and binds them to the original intent, wallet, selected token, economic bounds, order ID, exchange, and chain.
 
 ### CLOSE
@@ -110,7 +110,15 @@ npm run intent:live -- \
 
 The executable skill is repository-backed: clone this release and run or symlink `skills/conviction-executor` from this repository so its pinned helpers retain their `src/` dependencies. Copying the skill directory alone is unsupported.
 
-Prerequisites are Node.js 22, `onchainos`, the official `polymarket-plugin`, an active OKX Agentic Wallet, persisted `deposit-wallet` mode, owner-only local Polymarket CLOB credentials, the pinned production issuer registry, X Layer USD₮0 for the selected service fee, and the required pUSD or outcome shares on Polygon. Conviction never asks the user to type plugin commands during a journey. The OPEN, CLOSE, and TAKE_PROFIT placement runners invoke them and stop only for the distinct payment and trade confirmations; the later `cancel-tp` action separately requires the exact cancellation confirmation documented below.
+Prerequisites are Node.js 22, Git, Rust/Cargo, `onchainos`, an active OKX Agentic Wallet, persisted `deposit-wallet` mode, owner-only local Polymarket CLOB credentials, the pinned production issuer registry, X Layer USD₮0 for the selected service fee, and the required pUSD or outcome shares on Polygon. Install Conviction's exact Polymarket runtime once from the public, full-commit-pinned source:
+
+```sh
+npm run runtime:install
+```
+
+The installer fetches only [`dolepee/plugin-store@49c952b98037f676b484625a4f389b42071213e7`](https://github.com/dolepee/plugin-store/tree/49c952b98037f676b484625a4f389b42071213e7/skills/polymarket-plugin), runs its locked full test suite, builds locally, and requires the result to match Conviction's hard-coded release digest. The current released runtime target is Apple Silicon (`darwin-arm64`); other targets fail closed until their reproducible artifact digests are published. Installation is owner-only and atomically publishes one immutable commit directory. Every executable Conviction path re-hashes the runtime before a plugin subprocess, records the spawn-bound digest before a live order, and never falls back to whichever `polymarket-plugin` appears first on `PATH`. The pinned delta corrects V2 GTD transport serialization so `expiration` is carried inside the JSON `order` object while remaining outside the EIP-712 signed fields.
+
+Conviction never asks the user to type plugin commands during a journey. The OPEN, CLOSE, and TAKE_PROFIT placement runners invoke the verified runtime and stop only for the distinct payment and trade confirmations; the later `cancel-tp` action separately requires the exact cancellation confirmation documented below.
 
 OPEN:
 
@@ -206,7 +214,7 @@ npm run gate
 
 The local release gate checks JavaScript and Python syntax, deterministic YES/NO OPEN/CLOSE/TAKE_PROFIT compilation, outcome-specific market resolution, server-computed exposure and proceeds, stale/price/liquidity/rounding refusal paths, source, intent, token, order, trade, and receipt substitution, exact x402 challenges, payment/trade-consent separation, post-only placement, authenticated initial order binding, lifecycle status, exact cancellation, aggregate Polygon fill verification, launch-surface markers, and A2A secret-refusal behavior. It runs Gates A, B, and C in offline mode, where adversarial mutations must fail with zero orders.
 
-Offline success is not live acceptance. The tracked runtime reports leave all three live gates explicitly undecided until a fresh buyer authorizes each applicable service payment and trade: exact bounds plus one confirmation, buyer-wallet execution (or authenticated initial TAKE_PROFIT order binding), same-journey proof, and payment-to-proof under two minutes. No local test or dry probe is presented as satisfying those live requirements.
+Offline success is not live acceptance. On 2026-07-22, controlled house runs separately passed all three fresh live gates against production: OPEN paid `0.05 USD₮0`, filled exactly 10 YES in the buyer wallet, and returned the Polygon proof; CLOSE paid `0.10 USD₮0`, sold those exact 10 YES, and returned the Polygon proof; TAKE_PROFIT paid `0.10 USD₮0`, armed one exact zero-fill post-only GTD SELL with an authenticated order proof, and then canceled that exact order with no fill/cancel race. Each payment-to-proof path completed in under two minutes. These are acceptance proofs, not external traction or financial-performance claims.
 
 ## Operational boundary
 
@@ -222,9 +230,9 @@ Never send Conviction a seed phrase, private key, bearer token, CLOB credential,
 
 ## Status
 
-- Controlled OPEN execution: live house proof complete; CLOSE implementation and offline acceptance complete, with a fresh live Gate B still pending
-- OPEN intent and live Polygon receipt verification: complete; CLOSE intent/receipt verification is implemented and offline-tested, with a fresh live proof still pending
-- TAKE_PROFIT source: bounded placement, authenticated initial order binding, exact status/cancel, authenticated trade recovery, and aggregate Polygon fill verification implemented; fresh live Gate C remains consent-gated
+- Controlled house functionality: fresh live OPEN, CLOSE, and TAKE_PROFIT placement/cancel paths passed on 2026-07-22; these runs predate v0.4.2's spawn-bound release-digest evidence and therefore do not certify that new distribution path
+- OPEN and CLOSE intent/Polygon receipt verification: live functional proofs complete; one final v0.4.2 live re-attestation remains before the release is described as production-verified
+- TAKE_PROFIT source: bounded placement, authenticated initial order binding, exact status/cancel, authenticated trade recovery, and aggregate Polygon fill verification implemented and functionally exercised live; v0.4.2 runtime-bound re-attestation remains consent-gated
 - Public web surface: OPEN preview/manual verifier deployed; managed-position copy is part of this v0.4 release
 - Paid OKX.AI service endpoint: deployed; exact `0.05 USD₮0` payment settled and bounded card delivered with 118 seconds remaining ([X Layer transaction](https://www.oklink.com/xlayer/tx/0xb86bec4537095d4ef771a975fbf73196565f1a6d947ceb953e0d930480ed0eaf))
 - OKX.AI ASP: Conviction `#7034` registered with one `0.05 USDT` service; `Listing under review` was last confirmed 2026-07-21, and external buyer proof remains pending

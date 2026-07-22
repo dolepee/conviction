@@ -16,6 +16,7 @@ import {
 } from "../src/acceptance-timing.mjs";
 import { runOpenJourney } from "../src/buyer-orchestrator.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
+import { polymarketRuntimeEvidence } from "../src/polymarket-runtime.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import {
   evaluateOpenConsentAcceptance,
@@ -49,6 +50,7 @@ const productionRegistryPath = path.join(HERE, "..", "config", "trusted-issuer.p
 const productionOrigin = new URL(SERVICE_RESOURCE).origin;
 const results = [];
 let reconciliation = null;
+let executionRuntime = polymarketRuntimeEvidence({ verified: false });
 
 function record(id, name, status, detail = "") {
   results.push({ id, name, status, detail });
@@ -221,8 +223,13 @@ if (mode === "live") {
       ["4", "Verified position proof returns in the same journey"],
       ["6", "Payment-to-proof journey finishes under two minutes"],
     ]) record(id, name, "FAIL", detail);
+    record("7", "Executed plugin is bound to the released runtime digest", "FAIL", "journey did not return spawn-bound runtime evidence");
   } else {
     const r = journey.report;
+    const installedRuntime = polymarketRuntimeEvidence({ verified: true });
+    const runtimeBound = JSON.stringify(r.executionRuntime || null) === JSON.stringify(installedRuntime);
+    executionRuntime = r.executionRuntime || null;
+    record("7", "Executed plugin is bound to the released runtime digest", runtimeBound ? "PASS" : "FAIL", r.executionRuntime?.binarySha256 || "missing");
     let payment;
     try {
       payment = await fetchAndVerifyX402Payment({
@@ -328,6 +335,7 @@ writeFileSync(reportPath, `${JSON.stringify({
   origin,
   at: new Date().toISOString(),
   verdict,
+  executionRuntime,
   results,
   ...(reconciliation ? { reconciliation } : {}),
 }, null, 2)}\n`);

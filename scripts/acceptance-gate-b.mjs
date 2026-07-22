@@ -20,6 +20,7 @@ import { runCloseJourney } from "../src/buyer-orchestrator.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
 import { fetchAndVerifyClose } from "../src/exit-receipt-verifier.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
+import { polymarketRuntimeEvidence } from "../src/polymarket-runtime.mjs";
 import { verifySourcePosition } from "../src/source-position.mjs";
 import {
   POSITION_MANAGER_SERVICE,
@@ -52,6 +53,7 @@ const productionRegistryPath = path.join(HERE, "..", "config", "trusted-issuer.p
 const productionOrigin = new URL(POSITION_MANAGER_SERVICE.resource).origin;
 const results = [];
 let reconciliation = null;
+let executionRuntime = polymarketRuntimeEvidence({ verified: false });
 
 function record(id, name, status, detail = "") {
   results.push({ id, name, status, detail });
@@ -488,9 +490,14 @@ if (mode === "live") {
   if (journey.code !== 0 || journey.report?.ok !== true) {
     reconciliation = sanitizedCheckpoint(journey.report);
     const detail = journey.report?.code || `orchestrator exit ${journey.code}`;
+    record("7", "Executed plugin is bound to the released runtime digest", "FAIL", "journey did not return spawn-bound runtime evidence");
     for (const [id, name] of pendingNames) record(id, name, "FAIL", detail);
   } else {
     const report = journey.report;
+    const installedRuntime = polymarketRuntimeEvidence({ verified: true });
+    const runtimeBound = JSON.stringify(report.executionRuntime || null) === JSON.stringify(installedRuntime);
+    executionRuntime = report.executionRuntime || null;
+    record("7", "Executed plugin is bound to the released runtime digest", runtimeBound ? "PASS" : "FAIL", report.executionRuntime?.binarySha256 || "missing");
     let payment;
     try {
       payment = await fetchAndVerifyX402Payment({
@@ -647,6 +654,7 @@ writeFileSync(reportPath, `${JSON.stringify({
   origin,
   at: new Date().toISOString(),
   verdict,
+  executionRuntime,
   results,
   ...(reconciliation ? { reconciliation } : {}),
 }, null, 2)}\n`);

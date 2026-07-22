@@ -16,6 +16,10 @@ import { formatDecimal, parseDecimal } from "../src/decimal.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchPositionSnapshot } from "../src/position-client.mjs";
 import { fetchAllOpenOrders, fetchExactOrder } from "../src/polymarket-open-orders.mjs";
+import {
+  polymarketRuntimeEvidenceFromInspection,
+  resolvePolymarketRuntime,
+} from "../src/polymarket-runtime.mjs";
 import { fetchExactAssociatedTradeContributions } from "../src/polymarket-trades.mjs";
 import { verifySourcePosition } from "../src/source-position.mjs";
 import {
@@ -68,6 +72,7 @@ import {
 } from "../src/take-profit-lifecycle.mjs";
 
 const execFileAsync = promisify(execFile);
+const polymarketPluginCommand = () => resolvePolymarketRuntime().binary;
 const PAYMENT_SIGNATURE_HEADER = "PAYMENT-SIGNATURE";
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 const HASH_RE = /^0x[0-9a-f]{64}$/;
@@ -2308,6 +2313,7 @@ export async function runTakeProfitCancelCli(options, {
   claimExecutionLockImpl = claimExecutionLock,
   markCancelAttemptedImpl = markTakeProfitCancelAttempted,
   commandJsonImpl = commandJson,
+  pluginCommand = undefined,
   settleExecutionLockImpl = settleExecutionLock,
   readConfirmationImpl = undefined,
 } = {}) {
@@ -2377,6 +2383,7 @@ export async function runTakeProfitCancelCli(options, {
           executionLockGeneration: lock.generation,
           executionLockHash: lockHash,
           attemptedAt: null,
+          executionRuntime: null,
         };
         next.reconciliationRequired = true;
       },
@@ -2400,7 +2407,19 @@ export async function runTakeProfitCancelCli(options, {
       stateDirectory,
       writeState: writeTakeProfitState,
     });
-    const cancelResult = await commandJsonImpl("polymarket-plugin", attempt.argv, "Exact TAKE_PROFIT cancellation", {
+    const persistedRuntime = pluginCommand ? null : resolvePolymarketRuntime();
+    if (persistedRuntime) {
+      context.journal.cancelExecution.executionRuntime = polymarketRuntimeEvidenceFromInspection(persistedRuntime);
+      await writeTakeProfitState(context.journal, { directory: stateDirectory, file: context.journalPath });
+    }
+    const launchRuntime = pluginCommand ? null : resolvePolymarketRuntime();
+    if (launchRuntime && JSON.stringify(polymarketRuntimeEvidenceFromInspection(launchRuntime)) !==
+      JSON.stringify(context.journal.cancelExecution.executionRuntime)) {
+      throw Object.assign(new Error("Pinned Polymarket runtime changed before cancellation"), {
+        code: "runtime_changed_before_execution",
+      });
+    }
+    const cancelResult = await commandJsonImpl(pluginCommand || launchRuntime.binary, attempt.argv, "Exact TAKE_PROFIT cancellation", {
       deadlineEpochMs: Date.parse(cancelRequest.launchExpiresAt),
       clock: now,
       onStart: () => { executionAttempted = true; },
@@ -2657,6 +2676,7 @@ export async function runTakeProfitCli(options, {
     executionLockRecoveryNotBefore: null,
     executionAttempted: false,
     liveResult: null,
+    executionRuntime: null,
     orderId: null,
     takeProfitPassport: null,
     takeProfitPassportHash: null,
@@ -2711,7 +2731,7 @@ export async function runTakeProfitCli(options, {
 
   const ensureTradingMode = async () => {
     const switched = await commandJson(
-      "polymarket-plugin",
+      polymarketPluginCommand(),
       ["switch-mode", "--mode", "deposit-wallet"],
       "Polymarket trading-mode selection",
     );
@@ -2722,9 +2742,9 @@ export async function runTakeProfitCli(options, {
   };
   const loadReadiness = async () => {
     const [access, addresses, quickstart] = await Promise.all([
-      commandJson("polymarket-plugin", ["check-access"], "Polymarket access check"),
+      commandJson(polymarketPluginCommand(), ["check-access"], "Polymarket access check"),
       commandJson("onchainos", ["wallet", "addresses"], "Agentic Wallet addresses"),
-      commandJson("polymarket-plugin", ["quickstart"], "Polymarket readiness"),
+      commandJson(polymarketPluginCommand(), ["quickstart"], "Polymarket readiness"),
     ]);
     latestReadiness = normalizePluginReadiness({
       access,
@@ -2889,7 +2909,7 @@ export async function runTakeProfitCli(options, {
       });
     },
     validateTakeProfitCard: (card, validationOptions) => validateTakeProfitCard(card, validationOptions),
-    dryRun: (argv) => commandJson("polymarket-plugin", [...argv, "--dry-run"], "Polymarket TAKE_PROFIT dry run"),
+    dryRun: (argv) => commandJson(polymarketPluginCommand(), [...argv, "--dry-run"], "Polymarket TAKE_PROFIT dry run"),
     validateTakeProfitDryRun: (card, result, validationOptions) => validateTakeProfitPluginPreview(card, result, validationOptions),
     waitUntil: sleepUntil,
     execute: async (argv) => {
@@ -2933,7 +2953,7 @@ export async function runTakeProfitCli(options, {
         let lockedCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
         const preDryRunWindow = requireTakeProfitLaunchWindow(lockedCard, { now });
         const lockedDryRun = await commandJson(
-          "polymarket-plugin",
+          polymarketPluginCommand(),
           [...argv, "--dry-run"],
           "Locked TAKE_PROFIT dry run",
           { deadlineEpochMs: preDryRunWindow.placementDeadlineMs, clock: now },
@@ -2955,7 +2975,16 @@ export async function runTakeProfitCli(options, {
         const launchCard = validateTakeProfitCard(state.paidCard, { trustedIssuers, now: now() });
         const launchWindow = requireTakeProfitLaunchWindow(launchCard, { now });
         fail(sha256(launchCard.executionCard.argv) === state.tradeConsent.executionArgvHash, "trade_consent_mismatch", "Live TAKE_PROFIT differs from the confirmed order");
-        const result = await commandJson("polymarket-plugin", argv, "Polymarket TAKE_PROFIT live order", {
+        const persistedRuntime = resolvePolymarketRuntime();
+        state.executionRuntime = polymarketRuntimeEvidenceFromInspection(persistedRuntime);
+        await persist();
+        const launchRuntime = resolvePolymarketRuntime();
+        if (JSON.stringify(polymarketRuntimeEvidenceFromInspection(launchRuntime)) !== JSON.stringify(state.executionRuntime)) {
+          throw Object.assign(new Error("Pinned Polymarket runtime changed before TAKE_PROFIT execution"), {
+            code: "runtime_changed_before_execution",
+          });
+        }
+        const result = await commandJson(launchRuntime.binary, argv, "Polymarket TAKE_PROFIT live order", {
           deadlineEpochMs: launchWindow.placementDeadlineMs,
           clock: now,
           onStart: () => { executionAttempted = true; },
@@ -3031,7 +3060,12 @@ export async function runTakeProfitCli(options, {
         },
       });
     }
-    return { ...result, journalPath: journal, reservationLockPath: state.reservationLockPath };
+    return {
+      ...result,
+      executionRuntime: state.executionRuntime,
+      journalPath: journal,
+      reservationLockPath: state.reservationLockPath,
+    };
   } catch (error) {
     if (error?.releaseGuardRetained !== true && error?.preserveSourceJournal !== true) {
       state.reconciliationRequired = Boolean(
