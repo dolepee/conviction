@@ -16,7 +16,9 @@ description: >-
 
 Complete the prepared user's `OPEN`, `CLOSE`, or `TAKE_PROFIT` path inside one conversation. Call the services and official wallet/trading tools yourself; never ask the user to copy commands, paste execution cards, visit Polymarket, or expose wallet credentials.
 
-This skill is repository-backed. It must run from an authenticated Conviction release clone because its deterministic helpers import pinned modules from the repository's `src/` tree; copying only this skill directory is unsupported. Read [references/contracts.md](references/contracts.md) before starting. Use the selected bundled deterministic helper at every card, plugin-preview, order, trade, receipt, and proof boundary. Follow the current official OKX payment and Polymarket instructions for payment, wallet, approval, signature, and trade operations. Those instructions override this wrapper whenever they become stricter.
+Prefer the paid card's signed `native-okx-agentic-wallet` next step when the buyer agent already has OKX Agentic Wallet and the official OKX Plugin Store `polymarket-plugin` v0.7.0. That path requires no Conviction installation or repository checkout: invoke the exact `executionCard.argv` through the official tool after separate trade confirmation. Never type or ask the user to type the command.
+
+This repository-backed skill is the fallback and high-assurance operator path. It must run from an authenticated Conviction release clone because its deterministic helpers import pinned modules from the repository's `src/` tree; copying only this skill directory is unsupported. Read [references/contracts.md](references/contracts.md) before starting. Use the selected bundled deterministic helper at every card, plugin-preview, order, trade, receipt, and proof boundary. Follow the current official OKX payment and Polymarket instructions for payment, wallet, approval, signature, and trade operations. Those instructions override this wrapper whenever they become stricter.
 
 ## Hard boundaries
 

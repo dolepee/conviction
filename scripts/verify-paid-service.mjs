@@ -16,7 +16,7 @@ assert.equal(healthResponse.headers.get("cache-control"), "no-store");
 const health = await healthResponse.json();
 assert.equal(health.ok, true);
 assert.equal(health.product, "Conviction");
-assert.equal(health.version, "0.4.4");
+assert.equal(health.version, "0.4.5");
 assert.deepEqual(health.products, [
   { name: "OPEN", price: POSITION_CARD_SERVICE.priceDisplay, path: POSITION_CARD_SERVICE.path },
   {
