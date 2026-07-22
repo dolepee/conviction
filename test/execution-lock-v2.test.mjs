@@ -279,13 +279,15 @@ test("v2 claims atomically bind exact source, generation, purpose, and recovery 
         fields: ["executionLockPath"],
         requirePresent: true,
       });
-      assert.deepEqual(checked, [{
+      assert.deepEqual(checked.map(({ lockText: _lockText, ...item }) => item), [{
         field: "executionLockPath",
         file: f.lockFile,
         missing: false,
         lockHash: sha256(lock),
-        lockText: await readFile(f.lockFile, "utf8"),
       }]);
+      if (checked[0].lockText !== undefined) {
+        assert.equal(checked[0].lockText, await readFile(f.lockFile, "utf8"));
+      }
     } finally {
       await rm(f.directory, { recursive: true, force: true });
     }

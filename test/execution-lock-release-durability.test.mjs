@@ -96,27 +96,24 @@ test("release-guard publication failure is nondestructive before publish and res
             });
           },
       });
-      if (phase === "before-publish") {
-        await assert.rejects(
-          release,
-          (error) => error?.code === "state_release_guard_ambiguous" && error?.releaseGuardRetained === true,
-        );
-        assert.equal(await readFile(f.journal, "utf8"), sourceJournal);
-        assert.equal(await readFile(f.lockFile, "utf8"), sourceLock);
-        assert.equal(await exists(f.releaseFile), false);
-      } else {
-        assert.deepEqual(await release, [f.lockFile]);
-      }
+      await assert.rejects(
+        release,
+        (error) => error?.code === `simulated_${phase.replace("-", "_")}` &&
+          (phase === "before-publish"
+            ? error?.releaseGuardRetained !== true
+            : error?.releaseGuardRetained === true),
+      );
+      assert.equal(await readFile(f.journal, "utf8"), sourceJournal);
+      assert.equal(await readFile(f.lockFile, "utf8"), sourceLock);
+      assert.equal(await exists(f.releaseFile), phase === "after-publish");
 
-      const released = phase === "before-publish"
-        ? await releaseReconciledLocks(f.state, {
-            stateDirectory: f.directory,
-            journal: f.journal,
-            fields: ["executionLockPath"],
-            transitionId: "test-release-guard-publication-v1",
-            transition(next) { next.stage = "released"; },
-          })
-        : [f.lockFile];
+      const released = await releaseReconciledLocks(f.state, {
+        stateDirectory: f.directory,
+        journal: f.journal,
+        fields: ["executionLockPath"],
+        transitionId: "test-release-guard-publication-v1",
+        transition(next) { next.stage = "released"; },
+      });
       assert.deepEqual(released, [f.lockFile]);
       assert.equal(await exists(f.lockFile), false);
       assert.equal(await exists(f.releaseFile), false);

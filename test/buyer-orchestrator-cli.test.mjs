@@ -6,6 +6,7 @@ import test from "node:test";
 
 const writeFile = (file, data, options = {}) => fsWriteFile(file, data, { ...options, mode: 0o600 });
 
+import { sha256 } from "../src/canonical.mjs";
 import {
   claimCloseReplayLock,
   claimExecutionLock,
