@@ -64,6 +64,24 @@ function runChild(args) {
   });
 }
 
+function startRawChild(args) {
+  const child = spawn(process.execPath, [CHILD.pathname, ...args], {
+    cwd: new URL("..", import.meta.url).pathname,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const completion = new Promise((resolvePromise, rejectPromise) => {
+    child.once("error", rejectPromise);
+    child.once("exit", (exitCode, signal) => resolvePromise({ exitCode, signal, stdout, stderr }));
+  });
+  return { child, completion };
+}
+
 async function fixture(prefix = "conviction-state-race-") {
   const directory = await realpath(await mkdtemp(join(tmpdir(), prefix)));
   await chmod(directory, 0o700);
@@ -268,6 +286,132 @@ test("a completed guarded release blocks contenders, then cleans exactly before 
   }
 });
 
+test("a catch-side child cleans an exact completed guard before advancing and cannot expose a fresh generation to stale release", async () => {
+  const f = await fixture("conviction-completed-guard-writer-");
+  try {
+    await claimExecutionLock({
+      journal: f.journal,
+      directory: f.directory,
+      file: join(f.directory, "polymarket-execution.lock.json"),
+      state: f.state,
+    });
+    const first = JSON.parse(await readFile(f.state.executionLockPath, "utf8"));
+    const staleSnapshot = join(f.directory, "stale-release-source.json");
+    await writeFile(staleSnapshot, `${JSON.stringify(f.state, null, 2)}\n`, { mode: 0o600 });
+    const ready = join(f.directory, "completed-target.ready");
+    const release = runChild([
+      "release",
+      f.directory,
+      f.journal,
+      "executionLockPath",
+      "pause-crash-after-target",
+      ready,
+    ]);
+    await waitForPath(ready);
+    const target = JSON.parse(await readFile(f.journal, "utf8"));
+    const targetSnapshot = join(f.directory, "completed-target.json");
+    await writeFile(targetSnapshot, `${JSON.stringify(target, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(`${ready}.go`, "go\n", { mode: 0o600 });
+    const interrupted = await release;
+    assert.equal(interrupted.ok, false);
+    assert.equal(interrupted.error.code, "simulated_after_target_crash");
+    const guard = join(f.directory, "polymarket-execution.release.lock.json");
+    assert.equal(await pathExists(guard), true);
+
+    const catchWriter = await runChild([
+      "write",
+      f.directory,
+      f.journal,
+      targetSnapshot,
+      "catch-side-write",
+    ]);
+    assert.equal(catchWriter.ok, true, catchWriter.stderr);
+    assert.equal(await pathExists(guard), false);
+    const advanced = JSON.parse(await readFile(f.journal, "utf8"));
+    assert.equal(advanced.journalRevision, target.journalRevision + 1);
+    assert.equal(advanced.writerMarker, "catch-side-write");
+
+    const fresh = await runChild(["claim", f.directory, f.journal, "execution"]);
+    assert.equal(fresh.ok, true, fresh.stderr);
+    const freshLockText = await readFile(fresh.result.path, "utf8");
+    const freshLock = JSON.parse(freshLockText);
+    assert.notEqual(freshLock.generation, first.generation);
+
+    const staleRelease = await runChild([
+      "release-snapshot",
+      f.directory,
+      f.journal,
+      staleSnapshot,
+      "executionLockPath",
+    ]);
+    assert.equal(staleRelease.ok, false);
+    assert.equal(staleRelease.error.code, "reconciliation_journal_changed");
+    assert.equal(await readFile(fresh.result.path, "utf8"), freshLockText);
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("a source-state guard left by a hard-crashed child rejects writers unchanged and resumes exactly", async () => {
+  const f = await fixture("conviction-source-guard-writer-");
+  try {
+    await claimExecutionLock({
+      journal: f.journal,
+      directory: f.directory,
+      file: join(f.directory, "polymarket-execution.lock.json"),
+      state: f.state,
+    });
+    const sourceText = await readFile(f.journal, "utf8");
+    const sourceSnapshot = join(f.directory, "source-state.json");
+    await writeFile(sourceSnapshot, sourceText, { mode: 0o600 });
+    const ready = join(f.directory, "source-guard.ready");
+    const crashing = startRawChild([
+      "release",
+      f.directory,
+      f.journal,
+      "executionLockPath",
+      "pause-hard-crash-before-unlink",
+      ready,
+    ]);
+    await waitForPath(ready);
+    await writeFile(`${ready}.go`, "go\n", { mode: 0o600 });
+    const crashed = await crashing.completion;
+    assert.equal(crashed.signal, "SIGKILL");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+    const guard = join(f.directory, "polymarket-execution.release.lock.json");
+    assert.equal(await pathExists(guard), true);
+    assert.equal(await pathExists(f.state.executionLockPath), true);
+
+    const writer = await runChild([
+      "write",
+      f.directory,
+      f.journal,
+      sourceSnapshot,
+      "must-not-persist",
+    ]);
+    assert.equal(writer.ok, false);
+    assert.equal(writer.error.code, "execution_release_in_progress");
+    assert.equal(await readFile(f.journal, "utf8"), sourceText);
+
+    const resumed = await runChild([
+      "release",
+      f.directory,
+      f.journal,
+      "executionLockPath",
+      "normal",
+    ]);
+    assert.equal(resumed.ok, true, resumed.stderr);
+    assert.equal(await pathExists(guard), false);
+    assert.equal(await pathExists(f.state.executionLockPath), false);
+    const durable = JSON.parse(await readFile(f.journal, "utf8"));
+    assert.equal(durable.executionLockPath, null);
+    assert.equal(durable.stage, "released");
+    assert.equal(durable.writerMarker, undefined);
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("an unavailable mutex helper fails before callback or filesystem mutation", async () => {
   const parent = await mkdtemp(join(tmpdir(), "conviction-helper-unavailable-"));
   const directory = join(parent, "state-that-must-not-be-created");
@@ -304,6 +448,74 @@ test("journal revision CAS rejects two stale copies even without a lock transiti
     assert.equal(durable.marker, "first");
     assert.equal(durable.journalRevision, 2);
     assert.equal(sha256(durable), sha256(first));
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("standalone journal writes reject invalid guards and forged release capabilities without mutation", async () => {
+  const f = await fixture("conviction-invalid-guard-writer-");
+  try {
+    const sourceText = await readFile(f.journal, "utf8");
+    const snapshot = join(f.directory, "source-state.json");
+    await writeFile(snapshot, sourceText, { mode: 0o600 });
+    const guard = join(f.directory, "polymarket-execution.release.lock.json");
+    await writeFile(guard, "{\"version\":\"invalid-guard\"}\n", { mode: 0o600 });
+    const invalidGuardWriter = await runChild([
+      "write",
+      f.directory,
+      f.journal,
+      snapshot,
+      "must-not-persist",
+    ]);
+    assert.equal(invalidGuardWriter.ok, false);
+    assert.equal(invalidGuardWriter.error.code, "execution_release_in_progress");
+    assert.equal(await readFile(f.journal, "utf8"), sourceText);
+    await unlink(guard);
+
+    const source = JSON.parse(sourceText);
+    const unrelatedTarget = {
+      ...source,
+      journalRevision: source.journalRevision + 1,
+      writerMarker: "unrelated-release-target",
+    };
+    const mismatchedGuardText = `${JSON.stringify({
+      version: "conviction-state-release-guard-v1",
+      journalPath: f.journal,
+      sourceJournalHash: `0x${"1".repeat(64)}`,
+      targetJournalHash: sha256(unrelatedTarget),
+      targetState: unrelatedTarget,
+      transitionId: `0x${"2".repeat(64)}`,
+      fields: ["executionLockPath"],
+      lockHashes: { executionLockPath: null },
+      pid: process.pid,
+      claimedAt: new Date().toISOString(),
+    }, null, 2)}\n`;
+    await writeFile(guard, mismatchedGuardText, { mode: 0o600 });
+    const mismatchedGuardWriter = await runChild([
+      "write",
+      f.directory,
+      f.journal,
+      snapshot,
+      "must-not-persist-either",
+    ]);
+    assert.equal(mismatchedGuardWriter.ok, false);
+    assert.equal(mismatchedGuardWriter.error.code, "execution_release_in_progress");
+    assert.equal(await readFile(f.journal, "utf8"), sourceText);
+    assert.equal(await readFile(guard, "utf8"), mismatchedGuardText);
+    await unlink(guard);
+
+    const forged = JSON.parse(sourceText);
+    forged.writerMarker = "forged-capability";
+    await assert.rejects(
+      writeReconciliationJournal(forged, {
+        directory: f.directory,
+        file: f.journal,
+        releaseCapability: Object.freeze({}),
+      }),
+      (error) => error?.code === "state_release_guard_mismatch",
+    );
+    assert.equal(await readFile(f.journal, "utf8"), sourceText);
   } finally {
     await rm(f.directory, { recursive: true, force: true });
   }

@@ -261,6 +261,7 @@ export async function writeTakeProfitState(value, {
   mutexLease,
   expectedRevision,
   targetRevision,
+  releaseCapability,
 } = {}) {
   fail(typeof file === "string" && file.startsWith(`${directory}/`) && basename(file).endsWith(".json"), "invalid_state_path", "TAKE_PROFIT journal path is invalid");
   return writeReconciliationJournal(value, {
@@ -270,6 +271,7 @@ export async function writeTakeProfitState(value, {
     mutexLease,
     expectedRevision,
     targetRevision,
+    releaseCapability,
   });
 }
 

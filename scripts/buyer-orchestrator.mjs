@@ -60,6 +60,7 @@ const journalDirectory = join(homedir(), ".local", "state", "conviction", "recon
 const executionLockFile = join(journalDirectory, "polymarket-execution.lock.json");
 const releaseLockBasename = "polymarket-execution.release.lock.json";
 const releaseMutexHelper = join(dirname(fileURLToPath(import.meta.url)), "state-release-mutex.py");
+const releaseJournalWriteCapabilities = new WeakSet();
 const journalPath = join(
   journalDirectory,
   `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}.json`,
@@ -167,6 +168,7 @@ export async function writeReconciliationJournal(value, {
   mutexLease,
   expectedRevision,
   targetRevision,
+  releaseCapability,
 } = {}) {
   if (!mutexHeld) {
     return withStateReleaseMutex(directory, (lease) => writeReconciliationJournal(value, {
@@ -176,6 +178,7 @@ export async function writeReconciliationJournal(value, {
       mutexLease: lease,
       expectedRevision,
       targetRevision,
+      releaseCapability,
     }));
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -197,6 +200,15 @@ export async function writeReconciliationJournal(value, {
       code: "invalid_journal_revision",
     });
   }
+  await authorizeJournalWriteAgainstReleaseGuard({
+    directory,
+    file,
+    value,
+    expectedRevision: expected,
+    targetRevision: target,
+    releaseCapability,
+    mutexLease,
+  });
   let durableRevision = 0;
   let durableExists = true;
   try {
@@ -737,10 +749,22 @@ async function claimStateReleaseMutex({
 
 export async function withStateReleaseMutex(directory, callback, { helper = releaseMutexHelper } = {}) {
   const lease = await claimStateReleaseMutex({ directory, helper });
+  let callbackError;
   try {
     return await callback(lease);
+  } catch (error) {
+    callbackError = error;
+    throw error;
   } finally {
-    await lease.release();
+    try {
+      await lease.release();
+    } catch (releaseError) {
+      if (callbackError && typeof callbackError === "object") {
+        callbackError.mutexReleaseError = releaseError?.code || "state_release_mutex_failed";
+      } else {
+        throw releaseError;
+      }
+    }
   }
 }
 
@@ -788,6 +812,83 @@ export async function assertNoStateReleaseInProgress({
     new Error("A Conviction state-lock release is in progress; retry only after reconciliation finishes"),
     { code: "execution_release_in_progress", details: { executionReleaseLockPath: releaseFile } },
   );
+}
+
+async function authorizeJournalWriteAgainstReleaseGuard({
+  directory,
+  file,
+  value,
+  expectedRevision,
+  targetRevision,
+  releaseCapability,
+  mutexLease,
+  statImpl = stat,
+} = {}) {
+  mutexLease?.assertAlive();
+  if (releaseCapability === undefined) {
+    await assertNoStateReleaseInProgress({ directory, mutexHeld: true, statImpl });
+    mutexLease?.assertAlive();
+    return;
+  }
+  if (
+    !releaseCapability || typeof releaseCapability !== "object" ||
+    !releaseJournalWriteCapabilities.has(releaseCapability)
+  ) {
+    throw Object.assign(new Error("Journal write has no valid internal release capability"), {
+      code: "state_release_guard_mismatch",
+    });
+  }
+  const releaseFile = join(directory, releaseLockBasename);
+  let guardText;
+  try {
+    [guardText] = await Promise.all([
+      readFile(releaseFile, "utf8"),
+      ownerOnlyStateFile(releaseFile, "State-release guard", { statImpl }),
+    ]);
+  } catch (error) {
+    throw Object.assign(new Error("Guarded journal write cannot authenticate its release guard"), {
+      code: "state_release_guard_mismatch",
+      cause: error,
+    });
+  }
+  let guard;
+  try { guard = JSON.parse(guardText); } catch {}
+  const projected = structuredClone(value);
+  projected.journalRevision = targetRevision;
+  const canonicalFields = Array.isArray(guard?.fields) ? [...new Set(guard.fields)].sort() : [];
+  const exactCapability =
+    releaseCapability.releaseFile === releaseFile &&
+    releaseCapability.guardText === guardText &&
+    releaseCapability.journalPath === file &&
+    releaseCapability.sourceJournalHash === guard?.sourceJournalHash &&
+    releaseCapability.targetJournalHash === guard?.targetJournalHash &&
+    releaseCapability.transitionId === guard?.transitionId &&
+    releaseCapability.fieldsHash === sha256(canonicalFields) &&
+    releaseCapability.lockHashesHash === sha256(guard?.lockHashes) &&
+    releaseCapability.targetStateHash === sha256(guard?.targetState);
+  if (
+    !validReleaseGuard(guard) || !exactCapability || guard.journalPath !== file ||
+    sha256(guard.fields) !== sha256(canonicalFields) ||
+    sha256(projected) !== guard.targetJournalHash ||
+    sha256(projected) !== sha256(guard.targetState) ||
+    journalRevision(guard.targetState) !== targetRevision
+  ) {
+    throw Object.assign(new Error("Guarded journal write differs from its exact release transaction"), {
+      code: "state_release_guard_mismatch",
+    });
+  }
+  const durable = JSON.parse(await readFile(file, "utf8"));
+  await ownerOnlyStateFile(file, "Reconciliation journal", { statImpl });
+  if (
+    sha256(durable) !== guard.sourceJournalHash ||
+    journalRevision(durable) !== expectedRevision || targetRevision !== expectedRevision + 1
+  ) {
+    throw Object.assign(new Error("Guarded journal source differs from its exact release transaction"), {
+      code: "reconciliation_journal_changed",
+    });
+  }
+  mutexLease?.assertAlive();
+  releaseJournalWriteCapabilities.delete(releaseCapability);
 }
 
 async function claimStateReleaseGuard({
@@ -883,21 +984,36 @@ async function claimStateReleaseGuard({
       await unlink(releaseFile);
     }
   }
-  return async () => {
-    let currentText;
-    try { currentText = await readFile(releaseFile, "utf8"); } catch {
-      throw Object.assign(new Error("State-release guard disappeared before durable completion"), {
-        code: "state_release_guard_mismatch",
-      });
-    }
-    if (currentText !== guardText) {
-      throw Object.assign(new Error("State-release guard generation changed before completion"), {
-        code: "state_release_guard_mismatch",
-      });
-    }
-    assertMutexAlive();
-    await unlink(releaseFile);
-  };
+  const writeCapability = Object.freeze({
+    releaseFile,
+    guardText,
+    journalPath: journal,
+    sourceJournalHash,
+    targetJournalHash,
+    targetStateHash: sha256(targetState),
+    transitionId,
+    fieldsHash: sha256(canonicalFields),
+    lockHashesHash: sha256(lockHashes),
+  });
+  releaseJournalWriteCapabilities.add(writeCapability);
+  return Object.freeze({
+    writeCapability,
+    release: async () => {
+      let currentText;
+      try { currentText = await readFile(releaseFile, "utf8"); } catch {
+        throw Object.assign(new Error("State-release guard disappeared before durable completion"), {
+          code: "state_release_guard_mismatch",
+        });
+      }
+      if (currentText !== guardText) {
+        throw Object.assign(new Error("State-release guard generation changed before completion"), {
+          code: "state_release_guard_mismatch",
+        });
+      }
+      assertMutexAlive();
+      await unlink(releaseFile);
+    },
+  });
 }
 
 async function claimReplayLock({
@@ -1805,7 +1921,9 @@ async function releaseReconciledLocksLocked(
       mutexLease,
       expectedRevision: sourceRevision,
       targetRevision: sourceRevision + 1,
+      releaseCapability: releaseGuard.writeCapability,
     });
+    releaseJournalWriteCapabilities.delete(releaseGuard.writeCapability);
     mutexLease?.assertAlive();
     const durableAfterRelease = JSON.parse(await readFile(canonicalJournal, "utf8"));
     if (sha256(durableAfterRelease) !== targetHash) {
@@ -1820,14 +1938,15 @@ async function releaseReconciledLocksLocked(
       released: Object.freeze([...released]),
     }));
     mutexLease?.assertAlive();
-    await releaseGuard();
+    await releaseGuard.release();
     return released;
   } catch (error) {
     if (!destructive) {
-      try { await releaseGuard(); } catch (guardError) {
+      try { await releaseGuard.release(); } catch (guardError) {
         error.releaseGuardError = guardError?.code || "state_release_guard_mismatch";
       }
     }
+    releaseJournalWriteCapabilities.delete(releaseGuard.writeCapability);
     error.releaseGuardRetained = destructive;
     throw error;
   }

@@ -567,6 +567,32 @@ async function leaveExactArmedReleaseGuard(fixture) {
   return { guardPath, guard: JSON.parse(await readFile(guardPath, "utf8")) };
 }
 
+async function leaveCompletedArmedReleaseGuard(fixture) {
+  await assert.rejects(
+    runTakeProfitReconcileCli({
+      journal: fixture.journalPath,
+      issuerRegistry: fixture.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: fixture.stateDirectory,
+      now: () => Date.parse(FETCHED_AT),
+      fetchExactOrderImpl: async () => orderSnapshot(),
+      releaseLocks: (journal, options) => releaseReconciledLocks(journal, {
+        ...options,
+        beforeGuardRelease: () => {
+          throw Object.assign(new Error("simulated interruption after completed release"), {
+            code: "simulated_completed_guard_crash",
+          });
+        },
+      }),
+    }),
+    (error) => error?.code === "simulated_completed_guard_crash" && error?.releaseGuardRetained === true,
+  );
+  const guardPath = join(fixture.stateDirectory, "polymarket-execution.release.lock.json");
+  await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+  return { guardPath, guard: JSON.parse(await readFile(guardPath, "utf8")) };
+}
+
 test("reconcile resumes only an exact source, target, field set, and lock generation", async () => {
   for (const mutation of ["exact", "source", "target", "fields", "generation"]) {
     const fixture = await diskFixture();
@@ -612,15 +638,8 @@ test("reconcile resumes only an exact source, target, field set, and lock genera
 
 test("a completed exact release guard is cleaned before the next generation can claim", async () => {
   const fixture = await diskFixture();
-  const { guardPath, guard } = await leaveExactArmedReleaseGuard(fixture);
-  const durable = JSON.parse(await readFile(fixture.journalPath, "utf8"));
-  const target = structuredClone(guard.targetState);
-  await writeTakeProfitState(target, {
-    directory: fixture.stateDirectory,
-    file: fixture.journalPath,
-    expectedRevision: durable.journalRevision,
-    targetRevision: target.journalRevision,
-  });
+  const { guardPath, guard } = await leaveCompletedArmedReleaseGuard(fixture);
+  assert.equal(sha256(JSON.parse(await readFile(fixture.journalPath, "utf8"))), guard.targetJournalHash);
 
   const result = await runTakeProfitReconcileCli({
     journal: fixture.journalPath,

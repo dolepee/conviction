@@ -110,9 +110,11 @@ async function main() {
     return { path, lock: JSON.parse(await readFile(path, "utf8")) };
   }
 
-  if (command === "release") {
-    const [fieldsText, mode, ready] = [first, second, third];
-    const state = JSON.parse(await readFile(journal, "utf8"));
+  if (command === "release" || command === "release-snapshot") {
+    const [fieldsText, mode, ready] = command === "release"
+      ? [first, second, third]
+      : [second, "normal", null];
+    const state = JSON.parse(await readFile(command === "release" ? journal : first, "utf8"));
     const fields = fieldsText.split(",").filter(Boolean);
     const proceed = ready ? `${ready}.go` : null;
     const options = {
@@ -127,6 +129,13 @@ async function main() {
     };
     if (mode === "pause-before-unlink") {
       options.beforeUnlink = () => pause(ready, proceed);
+    }
+    if (mode === "pause-hard-crash-before-unlink") {
+      options.beforeUnlink = async () => {
+        await pause(ready, proceed);
+        process.kill(process.pid, "SIGKILL");
+        await new Promise(() => {});
+      };
     }
     if (mode === "crash-after-target" || mode === "pause-crash-after-target") {
       options.beforeGuardRelease = async () => {
