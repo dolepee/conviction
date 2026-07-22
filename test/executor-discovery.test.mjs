@@ -162,4 +162,9 @@ test("native OKX next steps bind action-specific proof handling without local co
     nextStep: takeProfitSubstitution,
   };
   assert.equal(executorDiscoveryMatches(forgedTakeProfitCard, "TAKE_PROFIT"), false);
+
+  const contradictoryTakeProfit = structuredClone(takeProfit);
+  contradictoryTakeProfit.nativeOkx.program = "polymarket-plugin";
+  forgedTakeProfitCard.nextStep = contradictoryTakeProfit;
+  assert.equal(executorDiscoveryMatches(forgedTakeProfitCard, "TAKE_PROFIT"), false);
 });

@@ -164,6 +164,27 @@ function nativeProofFor(action) {
   });
 }
 
+function nativeNextStepFor(action) {
+  if (NATIVE_OKX_EXECUTION.supportedActions.includes(action)) {
+    return {
+      available: true,
+      executionHash: NATIVE_OKX_EXECUTION_HASH,
+      program: NATIVE_OKX_EXECUTION.tradingTool.program,
+      version: NATIVE_OKX_EXECUTION.tradingTool.version,
+      argvPointer: NATIVE_OKX_EXECUTION.invocation.argvPointer,
+      agentInvokesTool: true,
+      convictionInstallRequired: false,
+      proof: nativeProofFor(action),
+    };
+  }
+  return {
+    available: false,
+    executionHash: NATIVE_OKX_EXECUTION_HASH,
+    reason: "official_v0.7.0_gtd_transport_not_accepted",
+    requiredMode: EXECUTOR_RELEASE.fallbackMode,
+  };
+}
+
 export function executorNextStep(action) {
   const expectedAction = String(action || "").toUpperCase();
   const nativeSupported = NATIVE_OKX_EXECUTION.supportedActions.includes(expectedAction);
@@ -173,23 +194,7 @@ export function executorNextStep(action) {
     descriptorUrl: EXECUTOR_DISCOVERY_URL,
     executorReleaseHash: EXECUTOR_RELEASE_HASH,
     preferredMode: nativeSupported ? NATIVE_OKX_EXECUTION.mode : EXECUTOR_RELEASE.fallbackMode,
-    nativeOkx: nativeSupported
-      ? {
-        available: true,
-        executionHash: NATIVE_OKX_EXECUTION_HASH,
-        program: NATIVE_OKX_EXECUTION.tradingTool.program,
-        version: NATIVE_OKX_EXECUTION.tradingTool.version,
-        argvPointer: NATIVE_OKX_EXECUTION.invocation.argvPointer,
-        agentInvokesTool: true,
-        convictionInstallRequired: false,
-        proof: nativeProofFor(expectedAction),
-      }
-      : {
-        available: false,
-        executionHash: NATIVE_OKX_EXECUTION_HASH,
-        reason: "official_v0.7.0_gtd_transport_not_accepted",
-        requiredMode: EXECUTOR_RELEASE.fallbackMode,
-      },
+    nativeOkx: nativeNextStepFor(expectedAction),
     fallback: {
       mode: EXECUTOR_RELEASE.fallbackMode,
       source: EXECUTOR_RELEASE.source,
@@ -220,19 +225,7 @@ export function executorDiscoveryMatches(card, action) {
     nextStep?.descriptorUrl === EXECUTOR_DISCOVERY_URL &&
     nextStep?.executorReleaseHash === EXECUTOR_RELEASE_HASH &&
     nextStep?.preferredMode === (nativeSupported ? NATIVE_OKX_EXECUTION.mode : EXECUTOR_RELEASE.fallbackMode) &&
-    nextStep?.nativeOkx?.available === nativeSupported &&
-    nextStep?.nativeOkx?.executionHash === NATIVE_OKX_EXECUTION_HASH &&
-    (nativeSupported ? (
-      nextStep?.nativeOkx?.program === NATIVE_OKX_EXECUTION.tradingTool.program &&
-      nextStep?.nativeOkx?.version === NATIVE_OKX_EXECUTION.tradingTool.version &&
-      nextStep?.nativeOkx?.argvPointer === NATIVE_OKX_EXECUTION.invocation.argvPointer &&
-      nextStep?.nativeOkx?.agentInvokesTool === true &&
-      nextStep?.nativeOkx?.convictionInstallRequired === false &&
-      sha256(nextStep?.nativeOkx?.proof) === sha256(nativeProofFor(expectedAction))
-    ) : (
-      nextStep?.nativeOkx?.reason === "official_v0.7.0_gtd_transport_not_accepted" &&
-      nextStep?.nativeOkx?.requiredMode === EXECUTOR_RELEASE.fallbackMode
-    )) &&
+    sha256(nextStep?.nativeOkx) === sha256(nativeNextStepFor(expectedAction)) &&
     nextStep?.fallback?.mode === EXECUTOR_RELEASE.fallbackMode &&
     sha256(nextStep?.fallback?.source) === sha256(EXECUTOR_RELEASE.source) &&
     sha256(nextStep?.fallback?.entrypoint) === sha256(EXECUTOR_RELEASE.entrypoints[expectedAction]) &&
