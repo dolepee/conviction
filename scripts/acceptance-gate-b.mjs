@@ -70,6 +70,7 @@ function loadSourcePosition(file) {
     direct?.intent,
     root.canonicalIntent,
     root.intent,
+    root.paidCard?.intent,
     root.positionPassport?.intent,
   );
   const positionProof = firstObject(
@@ -91,6 +92,7 @@ function loadSourcePosition(file) {
       positionProof?.transactionHash,
       receiptProof?.transactionHash,
       root.transactionHash,
+      root.settlementTx,
     ),
     orderId: firstValue(
       direct?.orderId,
@@ -111,7 +113,7 @@ function loadSourcePosition(file) {
       root.verifiedPositionProof?.positionProofHash,
     ),
     intent,
-    issuance: firstObject(direct?.issuance, root.issuance, root.positionPassport?.issuance),
+    issuance: firstObject(direct?.issuance, root.issuance, root.paidCard?.issuance, root.positionPassport?.issuance),
   };
   for (const field of ["transactionHash", "orderId", "intentHash", "positionProofHash"]) {
     if (!HASH_RE.test(String(source[field] || ""))) {

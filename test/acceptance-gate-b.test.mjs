@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -75,4 +75,39 @@ test("Gate B does not kill a paid checkpoint on a pre-payment wall-clock timer",
   assert.doesNotMatch(source, /child\.kill\(["']SIGKILL["']\)/);
   assert.match(source, /evaluateFilledOrderAcceptanceTiming/);
   assert.doesNotMatch(source, /journey\.wallMs < 120_000/);
+});
+
+test("Gate B accepts a completed OPEN journey journal as its canonical source", () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "conviction-gate-b-journal-"));
+  const sourcePath = path.join(directory, "open-journey.json");
+  const reportPath = path.join(directory, "report.json");
+  const hash = (byte) => `0x${byte.repeat(64)}`;
+  const source = {
+    stage: "complete",
+    settlementTx: hash("1"),
+    orderId: hash("2"),
+    intentHash: hash("3"),
+    positionProofHash: hash("4"),
+    paidCard: {
+      intent: { version: "conviction-intent-v4", market: { conditionId: hash("5") } },
+      issuance: { version: "conviction-issuance-v1", signature: "fixture" },
+    },
+  };
+  try {
+    writeFileSync(sourcePath, JSON.stringify(source));
+    const result = spawnSync(process.execPath, [
+      "scripts/acceptance-gate-b.mjs", "--offline",
+      "--source-proof", sourcePath,
+      "--report", reportPath,
+    ], {
+      cwd: path.resolve(import.meta.dirname, ".."),
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(readFileSync(reportPath, "utf8"));
+    assert.equal(report.results.some((entry) => entry.id === "S1" && entry.status === "PASS"), true);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

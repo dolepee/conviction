@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -18,4 +19,14 @@ test("Gate C offline mode stays network-free and fail-closed", () => {
   assert.match(result.stdout, /5\.7\s+An OPEN-priced x402 challenge cannot authorize TAKE_PROFIT/);
   assert.match(result.stdout, /NO FAILURES \(6 pending; Gate C undecided\)/);
   assert.doesNotMatch(result.stdout, /FAIL\s/);
+});
+
+test("Gate C recognizes completed OPEN journal source fields", () => {
+  const source = readFileSync(
+    path.resolve(import.meta.dirname, "..", "scripts", "acceptance-gate-c.mjs"),
+    "utf8",
+  );
+  assert.match(source, /root\.paidCard\?\.intent/);
+  assert.match(source, /root\.paidCard\?\.issuance/);
+  assert.match(source, /root\.settlementTx/);
 });

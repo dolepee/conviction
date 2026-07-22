@@ -62,19 +62,19 @@ function loadSourcePosition(file) {
   const document = JSON.parse(readFileSync(file, "utf8"));
   const root = firstObject(document.response, document.result, document) || document;
   const direct = firstObject(root.sourcePosition, root.open?.sourcePosition);
-  const intent = firstObject(direct?.intent, root.canonicalIntent, root.intent, root.positionPassport?.intent);
+  const intent = firstObject(direct?.intent, root.canonicalIntent, root.intent, root.paidCard?.intent, root.positionPassport?.intent);
   const positionProof = firstObject(root.positionProof, root.positionPassport?.positionProof, root.verifiedPositionProof);
   const receiptProof = firstObject(root.receiptProof, root.positionPassport?.receiptProof);
   const hashes = firstObject(root.hashes) || {};
   if (!intent) throw Object.assign(new Error("Source proof file has no canonical sourcePosition envelope"), { code: "invalid_source_proof_file" });
   const firstValue = (...values) => values.find((value) => value !== undefined && value !== null && value !== "");
   const source = {
-    transactionHash: firstValue(direct?.transactionHash, positionProof?.transactionHash, receiptProof?.transactionHash, root.transactionHash),
+    transactionHash: firstValue(direct?.transactionHash, positionProof?.transactionHash, receiptProof?.transactionHash, root.transactionHash, root.settlementTx),
     orderId: firstValue(direct?.orderId, positionProof?.orderId, receiptProof?.orderId, root.orderId),
     intentHash: firstValue(direct?.intentHash, positionProof?.intentHash, hashes.intentHash, root.intentHash),
     positionProofHash: firstValue(direct?.positionProofHash, root.positionProofHash, hashes.positionProofHash, root.verifiedPositionProof?.positionProofHash),
     intent,
-    issuance: firstObject(direct?.issuance, root.issuance, root.positionPassport?.issuance),
+    issuance: firstObject(direct?.issuance, root.issuance, root.paidCard?.issuance, root.positionPassport?.issuance),
   };
   for (const field of ["transactionHash", "orderId", "intentHash", "positionProofHash"]) {
     if (!HASH_RE.test(String(source[field] || ""))) {
