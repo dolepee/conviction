@@ -1,6 +1,7 @@
 import { sha256 } from "../../../src/canonical.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID } from "../../../src/constants.mjs";
 import { formatDecimal, parseDecimal } from "../../../src/decimal.mjs";
+import { executorDiscoveryMatches } from "../../../src/executor-discovery.mjs";
 import {
   trustedIssuerRegistry,
   verifyIntentIssuance,
@@ -112,6 +113,11 @@ export function validateCloseCard(input, {
   const snapshot = record(intent.snapshot, "intent.snapshot");
   const proceeds = record(intent.proceeds, "intent.proceeds");
   const executionCard = record(card.executionCard, "executionCard");
+  fail(
+    executorDiscoveryMatches(card, "CLOSE"),
+    "executor_discovery_mismatch",
+    "CLOSE card executor discovery is missing or substituted",
+  );
 
   fail(intent.version === "conviction-exit-intent-v1", "invalid_close_card", "A Conviction exit intent v1 is required");
   fail(intent.action === "CLOSE", "invalid_close_card", "Exit intent action must be CLOSE");

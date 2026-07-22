@@ -2,6 +2,7 @@ import express from "express";
 
 import { createIntentHandler } from "./intent.js";
 import { createEnvironmentIntentIssuer } from "../src/intent-issuer.mjs";
+import { EXECUTOR_DISCOVERY_LINK } from "../src/executor-discovery.mjs";
 import { createPaymentGate, SERVICE_PATH } from "../src/service-payment.mjs";
 
 export const PAID_SERVICE_QUOTE_TTL_MS = 300_000;
@@ -81,6 +82,7 @@ export function createServiceApp(
     response.vary("Accept");
     response.vary("PAYMENT-SIGNATURE");
     response.vary("X-PAYMENT");
+    response.setHeader("link", EXECUTOR_DISCOVERY_LINK);
     next();
   }
 

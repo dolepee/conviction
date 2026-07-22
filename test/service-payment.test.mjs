@@ -385,6 +385,7 @@ test("bare marketplace probes receive a challenge before method validation", asy
     for (const method of ["GET", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
       const response = await fetch(`${origin}/api/service`, { method });
       assert.equal(response.status, 402);
+      assert.equal(response.headers.get("link"), '<https://conviction-bay.vercel.app/api/executor>; rel="service-desc"; type="application/json"');
       const challenge = decodePaymentRequired(response.headers.get("payment-required"));
       assert.equal(challenge.accepts[0].amount, SERVICE_PRICE_ATOMIC);
     }

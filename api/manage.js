@@ -3,6 +3,7 @@ import express from "express";
 import { compileCloseIntent } from "../src/exit-intent-compiler.mjs";
 import { compileTakeProfitIntent } from "../src/take-profit-intent-compiler.mjs";
 import { ConvictionError } from "../src/errors.mjs";
+import { EXECUTOR_DISCOVERY_LINK } from "../src/executor-discovery.mjs";
 import {
   createEnvironmentIntentIssuer,
   trustedIssuerRegistryFromEnvironment,
@@ -163,6 +164,7 @@ export function createManageApp(
     response.vary("Accept");
     response.vary("PAYMENT-SIGNATURE");
     response.vary("X-PAYMENT");
+    response.setHeader("link", EXECUTOR_DISCOVERY_LINK);
     next();
   }
 
