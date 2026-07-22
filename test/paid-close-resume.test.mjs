@@ -36,6 +36,13 @@ const CLOSE_ORDER = `0x${"38".repeat(32)}`;
 const CLOSE_PROOF = `0x${"39".repeat(32)}`;
 const CLOSE_PASSPORT = `0x${"40".repeat(32)}`;
 const NOW = 1_100_000;
+const RUNTIME_BINARY = "/verified/conviction/polymarket-plugin";
+const RUNTIME_EVIDENCE = Object.freeze({
+  version: "conviction-polymarket-runtime-evidence-v2",
+  verification: "release-digest",
+  sourceCommit: "49c952b98037f676b484625a4f389b42071213e7",
+  binarySha256: "49".repeat(32),
+});
 
 const sourcePosition = {
   intentHash: SOURCE_INTENT,
@@ -134,6 +141,7 @@ function adapters(overrides = {}) {
     sourceVerifications: 0,
     executions: 0,
     dryRuns: 0,
+    runtimeResolutions: 0,
   };
   return {
     calls,
@@ -166,7 +174,12 @@ function adapters(overrides = {}) {
         return { ok: true, dry_run: true };
       },
       validateCloseDryRun: async () => ({ ok: true }),
-      execute: async (_argv, executionOptions = {}) => {
+      resolveExecutionRuntime: async () => {
+        calls.runtimeResolutions += 1;
+        return { binary: RUNTIME_BINARY, evidence: structuredClone(RUNTIME_EVIDENCE) };
+      },
+      execute: async (_argv, executionOptions = {}, runtimeBinary) => {
+        assert.equal(runtimeBinary, RUNTIME_BINARY);
         executionOptions.onStart?.();
         calls.executions += 1;
         return { ok: true, data: { order_id: CLOSE_ORDER, tx_hashes: [CLOSE_TX] } };
@@ -287,6 +300,8 @@ test("paid CLOSE resume reverifies everything, never pays again, and executes ex
     assert.equal(f.calls.sourceVerifications, 1);
     assert.equal(f.calls.dryRuns, 1);
     assert.equal(f.calls.executions, 1);
+    assert.equal(f.calls.runtimeResolutions, 2);
+    assert.deepEqual(result.executionRuntime, RUNTIME_EVIDENCE);
     assert.equal("payAndRequestCard" in f.value, false);
     assert.deepEqual((await readdir(f.directory)).sort(), [
       "journey.json",
@@ -299,6 +314,37 @@ test("paid CLOSE resume reverifies everything, never pays again, and executes ex
     assert.equal(completed.executionLockPath, null);
     assert.equal(completed.executionArgvHash, sha256(executionArgv));
     assert.equal(completed.settlementTx, CLOSE_TX);
+    assert.deepEqual(completed.executionRuntime, RUNTIME_EVIDENCE);
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("paid CLOSE resume persists one runtime digest and refuses a substituted launch runtime", async () => {
+  let resolutions = 0;
+  const f = await fixture({
+    adapterOverrides: {
+      resolveExecutionRuntime: async () => {
+        resolutions += 1;
+        return {
+          binary: RUNTIME_BINARY,
+          evidence: {
+            ...structuredClone(RUNTIME_EVIDENCE),
+            ...(resolutions === 2 ? { binarySha256: "50".repeat(32) } : {}),
+          },
+        };
+      },
+    },
+  });
+  try {
+    await assert.rejects(run(f), (error) => error?.code === "runtime_changed_before_execution");
+    assert.equal(resolutions, 2);
+    assert.equal(f.calls.executions, 0);
+    const durable = JSON.parse(await readFile(f.journal, "utf8"));
+    assert.deepEqual(durable.executionRuntime, RUNTIME_EVIDENCE);
+    assert.equal(durable.stage, "trade_confirmed");
+    assert.equal(durable.executionLockPath, null);
+    assert.equal(durable.replayLockPath, f.replayLockPath);
   } finally {
     await rm(f.directory, { recursive: true, force: true });
   }
