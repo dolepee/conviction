@@ -2,9 +2,63 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  evaluateFilledOrderAcceptanceTiming,
   evaluateTakeProfitAcceptanceTiming,
   strictlyPostdatesConfirmationSecond,
 } from "../src/acceptance-timing.mjs";
+
+test("OPEN acceptance excludes pre-payment consent delay and binds both observed intervals", () => {
+  const result = evaluateFilledOrderAcceptanceTiming({
+    paymentBlockTimestamp: "1893456000",
+    settledAt: "2030-01-01T00:01:09.000Z",
+    proofObservedAt: "2030-01-01T00:01:10.000Z",
+    localPaidAt: Date.parse("2030-01-01T00:00:05.000Z"),
+    localProvedAt: Date.parse("2030-01-01T00:01:11.257Z"),
+    recordedLocalPaymentToProofMs: 66_257,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.chainPaymentToProofMs, 70_000);
+  assert.equal(result.localPaymentToProofMs, 66_257);
+});
+
+test("OPEN acceptance rejects either interval at 120 seconds and false local duration claims", () => {
+  const baseOpen = {
+    paymentBlockTimestamp: "1893456000",
+    settledAt: "2030-01-01T00:01:00.000Z",
+    proofObservedAt: "2030-01-01T00:01:01.000Z",
+    localPaidAt: Date.parse("2030-01-01T00:00:00.000Z"),
+    localProvedAt: Date.parse("2030-01-01T00:01:00.000Z"),
+    recordedLocalPaymentToProofMs: 60_000,
+  };
+  assert.equal(evaluateFilledOrderAcceptanceTiming({
+    ...baseOpen,
+    proofObservedAt: "2030-01-01T00:02:00.000Z",
+  }).ok, false);
+  assert.equal(evaluateFilledOrderAcceptanceTiming({
+    ...baseOpen,
+    localProvedAt: Date.parse("2030-01-01T00:02:00.000Z"),
+    recordedLocalPaymentToProofMs: 120_000,
+  }).ok, false);
+  assert.equal(evaluateFilledOrderAcceptanceTiming({
+    ...baseOpen,
+    recordedLocalPaymentToProofMs: 59_999,
+  }).ok, false);
+});
+
+test("OPEN acceptance rejects composed intervals that hide a greater-than-two-minute payment-to-proof path", () => {
+  const result = evaluateFilledOrderAcceptanceTiming({
+    paymentBlockTimestamp: "1893456000",
+    settledAt: "2030-01-01T00:01:59.000Z",
+    proofObservedAt: "2030-01-01T00:03:57.000Z",
+    localPaidAt: Date.parse("2030-01-01T00:01:58.000Z"),
+    localProvedAt: Date.parse("2030-01-01T00:03:57.000Z"),
+    recordedLocalPaymentToProofMs: 119_000,
+  });
+  assert.equal(result.localTimingBound, true);
+  assert.equal(result.chainTimingBound, false);
+  assert.equal(result.chainPaymentToProofMs, 237_000);
+  assert.equal(result.ok, false);
+});
 
 const base = Object.freeze({
   paymentBlockTimestamp: "1893456009",
