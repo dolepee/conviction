@@ -440,15 +440,34 @@ async function sleepUntil(targetEpochMs) {
   }
 }
 
-async function fetchExactOrderWithPropagation(argumentsObject) {
+function snapshotPredatesOrderCreation(snapshot) {
+  const createdAt = String(snapshot?.order?.createdAt ?? "");
+  const fetchedAt = Date.parse(String(snapshot?.fetchedAt ?? ""));
+  if (!UINT_RE.test(createdAt) || !Number.isFinite(fetchedAt)) return false;
+  return BigInt(Math.floor(fetchedAt / 1_000)) < BigInt(createdAt);
+}
+
+export async function fetchExactOrderWithPropagation(argumentsObject, {
+  fetchExactOrderImpl = fetchExactOrder,
+  sleep = (milliseconds) => new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)),
+} = {}) {
   let lastError;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      return await fetchExactOrder(argumentsObject);
+      const snapshot = await fetchExactOrderImpl(argumentsObject);
+      // The authenticated CLOB timestamp has one-second precision and can be
+      // one tick ahead of the caller's local clock. Re-fetch the exact order;
+      // never re-submit it. The proof builder still rejects a snapshot that
+      // remains chronologically impossible after this bounded propagation.
+      if (snapshotPredatesOrderCreation(snapshot) && attempt < 4) {
+        await sleep(200 * (attempt + 1));
+        continue;
+      }
+      return snapshot;
     } catch (error) {
       lastError = error;
       if (error?.code !== "order_not_found" || attempt === 4) throw error;
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 200 * (attempt + 1)));
+      await sleep(200 * (attempt + 1));
     }
   }
   throw lastError;
