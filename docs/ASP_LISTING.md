@@ -1,6 +1,6 @@
 # Conviction ASP Listing and Target Catalog
 
-Status: Conviction ASP `#7034` submitted its final two-service catalog on 2026-07-22. The update transaction is `0x861be48333c6ec751ea615b4122816509cfe0679b92b555ffa5815824055cf60`; marketplace approval remains pending. Production v0.4.3 passed fresh controlled house OPEN, CLOSE, and TAKE_PROFIT gates. The v0.4.5 release candidate makes native OKX Agentic Wallet plus the official Plugin Store runtime the preferred no-Conviction-install delivery path; the two submitted services, prices, endpoints, inputs, and descriptions do not change, so no additional marketplace edit is required.
+Status: Conviction ASP `#7034` submitted its final two-service catalog on 2026-07-22. The update transaction is `0x861be48333c6ec751ea615b4122816509cfe0679b92b555ffa5815824055cf60`; marketplace approval remains pending. Production v0.4.3 passed fresh controlled house OPEN, CLOSE, and TAKE_PROFIT gates. The v0.4.5 release candidate makes native OKX Agentic Wallet plus the official Plugin Store runtime the preferred no-Conviction-install OPEN/CLOSE path; TAKE_PROFIT retains the corrected, digest-pinned fallback. The two submitted services, prices, endpoints, inputs, and descriptions do not change, so no additional marketplace edit is required.
 
 Registration transaction: `0x29fa8a07669fd30b3953e02c148dbb17827b179cd55058f2214bad0df4e78fa6`
 

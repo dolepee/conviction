@@ -38,7 +38,13 @@ test("public executor discovery prefers native OKX execution without a Convictio
   assert.equal(output.body.executor.safety.serverHoldsKeysOrCredentials, false);
   assert.deepEqual(output.body.preferredExecution, NATIVE_OKX_EXECUTION);
   assert.equal(output.body.preferredExecutionHash, NATIVE_OKX_EXECUTION_HASH);
-  assert.equal(output.body.executor.preferredMode, "native-okx-agentic-wallet");
+  assert.deepEqual(output.body.executor.preferredModeByAction, {
+    OPEN: "native-okx-agentic-wallet",
+    CLOSE: "native-okx-agentic-wallet",
+    TAKE_PROFIT: "pinned-conviction-executor",
+  });
+  assert.deepEqual(output.body.nativeOkxSupportedActions, ["OPEN", "CLOSE"]);
+  assert.deepEqual(output.body.fallbackRequiredActions, ["TAKE_PROFIT"]);
   assert.equal(output.body.preferredExecution.convictionInstallRequired, false);
   assert.equal(output.body.preferredExecution.repositoryCheckoutRequired, false);
   assert.equal(output.body.preferredExecution.wallet.signing, "TEE");
@@ -48,7 +54,11 @@ test("public executor discovery prefers native OKX execution without a Convictio
   assert.equal(output.body.preferredExecution.tradingTool.release.tag, "plugins/polymarket-plugin@0.7.0");
   assert.equal(
     output.body.preferredExecution.tradingTool.artifactSha256["darwin-arm64"],
-    "490ba1a4698c96d2a79c4de5b94d3982b73d578488ce84e0a30167405ae8f9c1",
+    "313197d4a5eb8c17b5f471febcbb13651e468f66ff77ec9eae15e856d9957cc0",
+  );
+  assert.equal(
+    output.body.preferredExecution.tradingTool.artifactSha256["linux-x64"],
+    "5f3a89aea4995b5f43a3cfe6cced29a2b218c539ffa031ac1e4defd635040441",
   );
   assert.equal(output.body.preferredExecution.invocation.humanTypesPluginCommand, false);
   assert.equal(EXECUTOR_DISCOVERY_LINK, `<${EXECUTOR_DISCOVERY_URL}>; rel="service-desc"; type="application/json"`);
@@ -101,8 +111,12 @@ test("native OKX next steps bind action-specific proof handling without local co
   const close = executorNextStep("CLOSE");
   const takeProfit = executorNextStep("TAKE_PROFIT");
   assert.equal(close.nativeOkx.proof.endpoint, "https://conviction-bay.vercel.app/api/close-receipt");
-  assert.equal(takeProfit.nativeOkx.proof.statusTool, "polymarket-plugin orders");
-  assert.match(takeProfit.nativeOkx.proof.cancelTool, /--order-id/);
+  assert.equal(takeProfit.preferredMode, "pinned-conviction-executor");
+  assert.equal(takeProfit.nativeOkx.available, false);
+  assert.equal(takeProfit.nativeOkx.reason, "official_v0.7.0_gtd_transport_not_accepted");
+  assert.equal(takeProfit.nativeOkx.requiredMode, "pinned-conviction-executor");
+  assert.equal(takeProfit.fallback.entrypoint.program, "node");
+  assert.equal(takeProfit.fallback.entrypoint.argv[0], "scripts/take-profit-orchestrator.mjs");
 
   const openCard = compileIntent({
     market: LIVE_MARKET_SNAPSHOT.slug,
@@ -119,4 +133,14 @@ test("native OKX next steps bind action-specific proof handling without local co
   const nativeSubstitution = structuredClone(openCard);
   nativeSubstitution.intent.executor.nativeOkx.tradingTool.version = "latest";
   assert.equal(executorDiscoveryMatches(nativeSubstitution, "OPEN"), false);
+
+  const takeProfitSubstitution = structuredClone(takeProfit);
+  takeProfitSubstitution.nativeOkx.available = true;
+  const forgedTakeProfitCard = {
+    intent: { executor: EXECUTOR_RELEASE },
+    executor: EXECUTOR_RELEASE,
+    executionCard: { executorReleaseHash: EXECUTOR_RELEASE_HASH },
+    nextStep: takeProfitSubstitution,
+  };
+  assert.equal(executorDiscoveryMatches(forgedTakeProfitCard, "TAKE_PROFIT"), false);
 });

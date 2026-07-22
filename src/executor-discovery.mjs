@@ -1,11 +1,19 @@
 import { sha256 } from "./canonical.mjs";
 import {
-  POLYMARKET_RUNTIME_ARTIFACTS,
   POLYMARKET_RUNTIME_COMMIT,
 } from "./polymarket-runtime.mjs";
 
 export const EXECUTOR_DISCOVERY_URL = "https://conviction-bay.vercel.app/api/executor";
 export const EXECUTOR_DISCOVERY_LINK = `<${EXECUTOR_DISCOVERY_URL}>; rel="service-desc"; type="application/json"`;
+
+export const NATIVE_OKX_RUNTIME_ARTIFACTS = deepFreeze({
+  "darwin-arm64": {
+    binarySha256: "313197d4a5eb8c17b5f471febcbb13651e468f66ff77ec9eae15e856d9957cc0",
+  },
+  "linux-x64": {
+    binarySha256: "5f3a89aea4995b5f43a3cfe6cced29a2b218c539ffa031ac1e4defd635040441",
+  },
+});
 
 function deepFreeze(value) {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
@@ -17,6 +25,8 @@ export const NATIVE_OKX_EXECUTION = deepFreeze({
   version: "conviction-native-okx-execution-v1",
   mode: "native-okx-agentic-wallet",
   preferred: true,
+  supportedActions: ["OPEN", "CLOSE"],
+  fallbackRequiredActions: ["TAKE_PROFIT"],
   convictionInstallRequired: false,
   repositoryCheckoutRequired: false,
   wallet: {
@@ -35,11 +45,11 @@ export const NATIVE_OKX_EXECUTION = deepFreeze({
       repository: "https://github.com/okx/plugin-store",
       tag: "plugins/polymarket-plugin@0.7.0",
     },
-    compatibleRuntimeSourceCommit: POLYMARKET_RUNTIME_COMMIT,
+    takeProfitFallbackFixCommit: POLYMARKET_RUNTIME_COMMIT,
     tradingMode: "deposit-wallet",
     artifactSha256: {
-      "darwin-arm64": POLYMARKET_RUNTIME_ARTIFACTS["darwin-arm64"].binarySha256,
-      "linux-x64": POLYMARKET_RUNTIME_ARTIFACTS["linux-x64"].binarySha256,
+      "darwin-arm64": NATIVE_OKX_RUNTIME_ARTIFACTS["darwin-arm64"].binarySha256,
+      "linux-x64": NATIVE_OKX_RUNTIME_ARTIFACTS["linux-x64"].binarySha256,
     },
   },
   invocation: {
@@ -61,9 +71,13 @@ export const NATIVE_OKX_EXECUTION_HASH = sha256(NATIVE_OKX_EXECUTION);
 // digest-pinned darwin-arm64 and linux-x64 Polymarket runtimes. Discovery code
 // lives in the later merchant release, avoiding a self-referential source pin.
 export const EXECUTOR_RELEASE = deepFreeze({
-  version: "conviction-executor-release-v2",
+  version: "conviction-executor-release-v3",
   custody: "buyer-wallet-local",
-  preferredMode: NATIVE_OKX_EXECUTION.mode,
+  preferredModeByAction: {
+    OPEN: NATIVE_OKX_EXECUTION.mode,
+    CLOSE: NATIVE_OKX_EXECUTION.mode,
+    TAKE_PROFIT: "pinned-conviction-executor",
+  },
   nativeOkx: NATIVE_OKX_EXECUTION,
   fallbackMode: "pinned-conviction-executor",
   source: {
@@ -110,30 +124,37 @@ function nativeProofFor(action) {
   if (action === "CLOSE") {
     return { endpoint: "https://conviction-bay.vercel.app/api/close-receipt", kind: "verified-close-proof" };
   }
-  return {
-    kind: "authenticated-resting-order-proof",
-    statusTool: "polymarket-plugin orders",
-    cancelTool: "polymarket-plugin cancel --order-id <exact-order-id>",
-  };
+  throw Object.assign(new Error("Native OKX proof is unavailable for this action"), {
+    code: "native_okx_action_unsupported",
+  });
 }
 
 export function executorNextStep(action) {
   const expectedAction = String(action || "").toUpperCase();
+  const nativeSupported = NATIVE_OKX_EXECUTION.supportedActions.includes(expectedAction);
   return deepFreeze({
     version: "conviction-executor-next-step-v2",
     action: expectedAction,
     descriptorUrl: EXECUTOR_DISCOVERY_URL,
     executorReleaseHash: EXECUTOR_RELEASE_HASH,
-    preferredMode: NATIVE_OKX_EXECUTION.mode,
-    nativeOkx: {
-      executionHash: NATIVE_OKX_EXECUTION_HASH,
-      program: NATIVE_OKX_EXECUTION.tradingTool.program,
-      version: NATIVE_OKX_EXECUTION.tradingTool.version,
-      argvPointer: NATIVE_OKX_EXECUTION.invocation.argvPointer,
-      agentInvokesTool: true,
-      convictionInstallRequired: false,
-      proof: nativeProofFor(expectedAction),
-    },
+    preferredMode: nativeSupported ? NATIVE_OKX_EXECUTION.mode : EXECUTOR_RELEASE.fallbackMode,
+    nativeOkx: nativeSupported
+      ? {
+        available: true,
+        executionHash: NATIVE_OKX_EXECUTION_HASH,
+        program: NATIVE_OKX_EXECUTION.tradingTool.program,
+        version: NATIVE_OKX_EXECUTION.tradingTool.version,
+        argvPointer: NATIVE_OKX_EXECUTION.invocation.argvPointer,
+        agentInvokesTool: true,
+        convictionInstallRequired: false,
+        proof: nativeProofFor(expectedAction),
+      }
+      : {
+        available: false,
+        executionHash: NATIVE_OKX_EXECUTION_HASH,
+        reason: "official_v0.7.0_gtd_transport_not_accepted",
+        requiredMode: EXECUTOR_RELEASE.fallbackMode,
+      },
     fallback: {
       mode: EXECUTOR_RELEASE.fallbackMode,
       source: EXECUTOR_RELEASE.source,
@@ -146,6 +167,7 @@ export function executorNextStep(action) {
 
 export function executorDiscoveryMatches(card, action) {
   const expectedAction = String(action || "").toUpperCase();
+  const nativeSupported = NATIVE_OKX_EXECUTION.supportedActions.includes(expectedAction);
   const intentExecutor = card?.intent?.executor;
   const topLevelExecutor = card?.executor;
   const nextStep = card?.nextStep;
@@ -162,14 +184,20 @@ export function executorDiscoveryMatches(card, action) {
     nextStep?.action === expectedAction &&
     nextStep?.descriptorUrl === EXECUTOR_DISCOVERY_URL &&
     nextStep?.executorReleaseHash === EXECUTOR_RELEASE_HASH &&
-    nextStep?.preferredMode === NATIVE_OKX_EXECUTION.mode &&
+    nextStep?.preferredMode === (nativeSupported ? NATIVE_OKX_EXECUTION.mode : EXECUTOR_RELEASE.fallbackMode) &&
+    nextStep?.nativeOkx?.available === nativeSupported &&
     nextStep?.nativeOkx?.executionHash === NATIVE_OKX_EXECUTION_HASH &&
-    nextStep?.nativeOkx?.program === NATIVE_OKX_EXECUTION.tradingTool.program &&
-    nextStep?.nativeOkx?.version === NATIVE_OKX_EXECUTION.tradingTool.version &&
-    nextStep?.nativeOkx?.argvPointer === NATIVE_OKX_EXECUTION.invocation.argvPointer &&
-    nextStep?.nativeOkx?.agentInvokesTool === true &&
-    nextStep?.nativeOkx?.convictionInstallRequired === false &&
-    sha256(nextStep?.nativeOkx?.proof) === sha256(nativeProofFor(expectedAction)) &&
+    (nativeSupported ? (
+      nextStep?.nativeOkx?.program === NATIVE_OKX_EXECUTION.tradingTool.program &&
+      nextStep?.nativeOkx?.version === NATIVE_OKX_EXECUTION.tradingTool.version &&
+      nextStep?.nativeOkx?.argvPointer === NATIVE_OKX_EXECUTION.invocation.argvPointer &&
+      nextStep?.nativeOkx?.agentInvokesTool === true &&
+      nextStep?.nativeOkx?.convictionInstallRequired === false &&
+      sha256(nextStep?.nativeOkx?.proof) === sha256(nativeProofFor(expectedAction))
+    ) : (
+      nextStep?.nativeOkx?.reason === "official_v0.7.0_gtd_transport_not_accepted" &&
+      nextStep?.nativeOkx?.requiredMode === EXECUTOR_RELEASE.fallbackMode
+    )) &&
     nextStep?.fallback?.mode === EXECUTOR_RELEASE.fallbackMode &&
     sha256(nextStep?.fallback?.source) === sha256(EXECUTOR_RELEASE.source) &&
     sha256(nextStep?.fallback?.entrypoint) === sha256(EXECUTOR_RELEASE.entrypoints[expectedAction]) &&
@@ -186,5 +214,7 @@ export function executorDiscoveryDocument() {
     preferredExecution: NATIVE_OKX_EXECUTION,
     preferredExecutionHash: NATIVE_OKX_EXECUTION_HASH,
     supportedActions: ["OPEN", "CLOSE", "TAKE_PROFIT"],
+    nativeOkxSupportedActions: NATIVE_OKX_EXECUTION.supportedActions,
+    fallbackRequiredActions: NATIVE_OKX_EXECUTION.fallbackRequiredActions,
   });
 }

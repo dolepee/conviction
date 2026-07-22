@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-import { POLYMARKET_RUNTIME_ARTIFACTS } from "../src/polymarket-runtime.mjs";
+import { NATIVE_OKX_RUNTIME_ARTIFACTS } from "../src/executor-discovery.mjs";
 
 const [binary, releasePlatform] = process.argv.slice(2);
 if (!binary || !releasePlatform || process.argv.length !== 4) {
@@ -13,15 +13,15 @@ if (!binary || !releasePlatform || process.argv.length !== 4) {
   });
 }
 
-const expected = POLYMARKET_RUNTIME_ARTIFACTS[releasePlatform];
+const expected = NATIVE_OKX_RUNTIME_ARTIFACTS[releasePlatform];
 if (!expected) {
   throw Object.assign(new Error("Unsupported native OKX runtime platform"), { code: "unsupported_platform" });
 }
 
 const binarySha256 = createHash("sha256").update(readFileSync(binary)).digest("hex");
 if (binarySha256 !== expected.binarySha256) {
-  throw Object.assign(new Error("Official Plugin Store runtime differs from Conviction's released digest"), {
-    code: "native_runtime_digest_mismatch",
+  throw Object.assign(new Error("Official Plugin Store runtime differs from its pinned release digest"), {
+    code: "official_native_runtime_digest_mismatch",
   });
 }
 
