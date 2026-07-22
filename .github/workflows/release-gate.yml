@@ -67,3 +67,5 @@ jobs:
           binary_sha=$(sha256sum "$crate/target/release/polymarket-plugin" | awk '{print $1}')
           echo "LINUX_X64_CARGO_LOCK_SHA256=$lock_sha"
           echo "LINUX_X64_BINARY_SHA256=$binary_sha"
+          test "$lock_sha" = "5edf618dc5870a868ea32c758c64831b1039a486b17e922fe9053878dd771627"
+          test "$binary_sha" = "fe198147c99311c8ff52fa198da9437068543b937d6eca12256d1d41349f6d18"
