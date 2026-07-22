@@ -27,6 +27,6 @@
     <text x="180" y="285" font-family="Menlo,Consolas,monospace" font-size="13" fill="#65716b">MAX PRICE</text>
     <text x="180" y="317" font-family="Arial,Helvetica,sans-serif" font-size="25" font-weight="800" fill="#16211e">27¢</text>
     <line x1="30" y1="350" x2="290" y2="350" stroke="#cbc3ae"/>
-    <text x="30" y="389" font-family="Menlo,Consolas,monospace" font-size="13" fill="#16734b">✓ 7/7 RECEIPT CHECKS</text>
+    <text x="30" y="389" font-family="Menlo,Consolas,monospace" font-size="13" fill="#16734b">✓ 11/11 SIGNED PROOF CHECKS</text>
   </g>
 </svg>
