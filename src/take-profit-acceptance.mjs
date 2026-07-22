@@ -44,7 +44,8 @@ export function evaluateTakeProfitConsentBinding({
       Number.isFinite(cardIssuedAt) && Number.isFinite(cardExpiresAt) &&
       consentAt >= paymentBlockAt && consentAt >= cardIssuedAt && consentAt < cardExpiresAt;
     const cardBound = journal?.version === "conviction-take-profit-journey-v1" &&
-      journal?.action === "TAKE_PROFIT" && sha256(journal.paidCard) === sha256(reportCard) &&
+      journal?.action === "TAKE_PROFIT" && consent?.version === "conviction-take-profit-consent-v1" &&
+      sha256(journal.paidCard) === sha256(reportCard) &&
       journal?.intentHash === validatedCard?.intentHash && consent?.intentHash === validatedCard?.intentHash &&
       consent?.executionArgvHash === sha256(validatedCard?.executionCard?.argv) &&
       HASH_RE.test(String(journal?.replayKey || "")) && consent?.replayKey === journal.replayKey &&

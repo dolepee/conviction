@@ -87,6 +87,10 @@ test("Gate C consent binding rejects a one-millisecond journal or event substitu
 });
 
 test("Gate C consent binding rejects card, execution-vector, and payment substitution", () => {
+  const consentVersionMismatch = fixture();
+  consentVersionMismatch.journal.tradeConsent.version = "conviction-take-profit-consent-v0";
+  assert.equal(evaluateTakeProfitConsentBinding(consentVersionMismatch).cardBound, false);
+
   const cardMismatch = fixture();
   cardMismatch.journal.paidCard.executionCard.fixture = false;
   assert.equal(evaluateTakeProfitConsentBinding(cardMismatch).cardBound, false);
