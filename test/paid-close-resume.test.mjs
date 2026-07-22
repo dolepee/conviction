@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   claimCloseReplayLock,
   claimExecutionLock,
+  claimVerifiedPaymentTransaction,
   closeReplayKey,
   resumePaidCloseJournal,
   writeReconciliationJournal,
@@ -14,6 +15,7 @@ import {
 import { sha256 } from "../src/canonical.mjs";
 import {
   MANAGE_SERVICE_PRICE_ATOMIC,
+  POSITION_MANAGER_SERVICE,
   SERVICE_ASSET,
   SERVICE_NETWORK,
   SERVICE_PAYEE,
@@ -251,6 +253,15 @@ async function fixture({ mutateState, adapterOverrides } = {}) {
   };
   if (mutateState) mutateState(state);
   await writeReconciliationJournal(state, { directory, file: journal });
+  const claimed = await claimVerifiedPaymentTransaction({
+    state,
+    paymentProof: state.paymentProof,
+    service: POSITION_MANAGER_SERVICE,
+    directory,
+  });
+  state.paymentClaimPath = claimed.file;
+  state.paymentClaimHash = claimed.claimHash;
+  await writeReconciliationJournal(state, { directory, file: journal });
   const configured = adapters(adapterOverrides);
   return { directory, journal, replayLockPath, state, ...configured };
 }
@@ -277,7 +288,10 @@ test("paid CLOSE resume reverifies everything, never pays again, and executes ex
     assert.equal(f.calls.dryRuns, 1);
     assert.equal(f.calls.executions, 1);
     assert.equal("payAndRequestCard" in f.value, false);
-    assert.deepEqual(await readdir(f.directory), ["journey.json"]);
+    assert.deepEqual((await readdir(f.directory)).sort(), [
+      "journey.json",
+      `payment-${PAYMENT_TX.slice(2)}.lock.json`,
+    ]);
     const completed = JSON.parse(await readFile(f.journal, "utf8"));
     assert.equal(completed.stage, "complete_resumed");
     assert.equal(completed.reconciliationRequired, false);
@@ -285,6 +299,27 @@ test("paid CLOSE resume reverifies everything, never pays again, and executes ex
     assert.equal(completed.executionLockPath, null);
     assert.equal(completed.executionArgvHash, sha256(executionArgv));
     assert.equal(completed.settlementTx, CLOSE_TX);
+  } finally {
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("claimless paid CLOSE resume fails before every adapter and retains replay authority", async () => {
+  const f = await fixture();
+  try {
+    await unlink(f.state.paymentClaimPath);
+    await assert.rejects(
+      run(f),
+      (error) => error?.code === "payment_claim_missing_or_mismatched",
+    );
+    assert.equal(f.calls.paymentVerifications, 0);
+    assert.equal(f.calls.sourceVerifications, 0);
+    assert.equal(f.calls.dryRuns, 0);
+    assert.equal(f.calls.executions, 0);
+    await access(f.replayLockPath);
+    const unchanged = JSON.parse(await readFile(f.journal, "utf8"));
+    assert.equal(unchanged.stage, "trade_confirmed");
+    assert.equal(unchanged.reconciliationRequired, true);
   } finally {
     await rm(f.directory, { recursive: true, force: true });
   }
@@ -315,6 +350,7 @@ test("paid CLOSE resume retains both locks when settlement shares the confirmati
     assert.deepEqual((await readdir(f.directory)).sort(), [
       `close-${ambiguous.replayKey.slice(2)}.lock.json`,
       "journey.json",
+      `payment-${PAYMENT_TX.slice(2)}.lock.json`,
       "polymarket-execution.lock.json",
     ]);
   } finally {
@@ -358,7 +394,7 @@ test("paid CLOSE resume retains both locks and fails closed after an ambiguous l
     assert.equal(ambiguous.reconciliationRequired, true);
     assert.equal(ambiguous.resumeError.executionAmbiguous, true);
     assert.equal(ambiguous.executionArgvHash, sha256(executionArgv));
-    assert.equal((await readdir(f.directory)).length, 3);
+    assert.equal((await readdir(f.directory)).length, 4);
     await assert.rejects(run(f), (error) => error?.code === "invalid_resume_checkpoint" || error?.code === "ambiguous_execution");
     assert.equal(f.calls.executions, 1);
   } finally {
@@ -384,6 +420,7 @@ test("paid CLOSE resume releases only its execution lock when a locked dry run f
     assert.deepEqual((await readdir(f.directory)).sort(), [
       `close-${retryable.replayKey.slice(2)}.lock.json`,
       "journey.json",
+      `payment-${PAYMENT_TX.slice(2)}.lock.json`,
     ]);
   } finally {
     await rm(f.directory, { recursive: true, force: true });

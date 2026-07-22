@@ -1954,6 +1954,54 @@ test("paid authority requires the exact owner-only payment claim at every later 
   }
 });
 
+for (const mode of ["open", "close"]) {
+  test(`${mode.toUpperCase()} claimless paid reconciliation stays manual and retains its replay lock`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), `conviction-${mode}-claimless-paid-`));
+    const journal = join(directory, "journey.json");
+    const fixture = paidResponseFixture({ mode, journal });
+    const paymentTx = `0x${"f".repeat(64)}`;
+    const response = new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "payment-response": Buffer.from(JSON.stringify({ transaction: paymentTx })).toString("base64") },
+    });
+    try {
+      await Promise.all([
+        writeFile(journal, `${JSON.stringify(fixture.state, null, 2)}\n`),
+        writeFile(fixture.replayLockPath, `${JSON.stringify(fixture.lock, null, 2)}\n`),
+      ]);
+      const paid = await persistSuccessfulPaidServiceResponse({
+        state: fixture.state,
+        response,
+        json: { ok: true, intentHash: `0x${"d".repeat(64)}` },
+        paymentResponseRaw: response.headers.get("payment-response"),
+        writeState: (next) => writeReconciliationJournal(next, { directory, file: journal }),
+      });
+      await persistVerifiedPaidServicePayment({
+        state: fixture.state,
+        paid,
+        paymentProof: exactServicePaymentProof({ paymentTx, amountAtomic: fixture.service.priceAtomic }),
+        service: fixture.service,
+        writeState: (next) => writeReconciliationJournal(next, { directory, file: journal }),
+      });
+      await unlink(fixture.state.paymentClaimPath);
+      fixture.state.paymentClaimPath = null;
+      fixture.state.paymentClaimHash = null;
+      await writeReconciliationJournal(fixture.state, { directory, file: journal });
+      const result = await fixture.reconcile({
+        file: journal,
+        trustedIssuers: new Map(),
+        stateDirectory: directory,
+        validateCardImpl: () => assert.fail("claimless paid card must never be trusted"),
+      });
+      assert.equal(result.status, "manual_reconciliation_required");
+      assert.equal(result.reason, "payment_verification_missing_or_mismatched");
+      await access(fixture.replayLockPath);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
 test("OPEN keeps every ambiguous EIP-3009 payment reserved until finalized expiry proves it unused", async () => {
   for (const stage of [
     "payment_authorization_created",

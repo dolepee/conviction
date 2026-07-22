@@ -8,10 +8,18 @@ const writeFile = (file, data, options = {}) => fsWriteFile(file, data, { ...opt
 
 import { sha256 } from "../src/canonical.mjs";
 import {
+  claimVerifiedPaymentTransaction,
   closeReplayKey,
   reconcileCloseJournal,
   reconcileOpenJournal,
 } from "../scripts/buyer-orchestrator.mjs";
+import {
+  POSITION_CARD_SERVICE,
+  POSITION_MANAGER_SERVICE,
+  SERVICE_ASSET,
+  SERVICE_NETWORK,
+  SERVICE_PAYEE,
+} from "../src/service-payment.mjs";
 
 const NOW = Date.parse("2026-07-22T02:00:10.000Z");
 const SIGNER = "0x1111111111111111111111111111111111111111";
@@ -23,6 +31,10 @@ const SETTLEMENT = `0x${"66".repeat(32)}`;
 const POSITION_PROOF = `0x${"77".repeat(32)}`;
 const TOKEN = "123456789";
 const OPEN_REPLAY = `0x${"99".repeat(32)}`;
+const PAYMENT_TX = `0x${"11".repeat(32)}`;
+const PAYMENT_NONCE = `0x${"12".repeat(32)}`;
+const PAYMENT_BLOCK_TIMESTAMP = String(Date.parse("2026-07-22T02:00:00.000Z") / 1_000);
+const PAYMENT_CLAIM_FILE = `payment-${PAYMENT_TX.slice(2)}.lock.json`;
 
 const OPEN_ARGV = [
   "buy", "--market-id", CONDITION, "--token-id", TOKEN,
@@ -92,6 +104,52 @@ function exactSnapshot(action = "OPEN", overrides = {}) {
   };
 }
 
+function paymentService(mode) {
+  return mode === "open" ? POSITION_CARD_SERVICE : POSITION_MANAGER_SERVICE;
+}
+
+function exactPaymentProof(mode) {
+  const service = paymentService(mode);
+  return {
+    version: "conviction-x402-payment-v1",
+    chainId: 196,
+    transactionHash: PAYMENT_TX,
+    blockNumber: "65800000",
+    blockHash: `0x${"13".repeat(32)}`,
+    blockTimestamp: PAYMENT_BLOCK_TIMESTAMP,
+    asset: SERVICE_ASSET,
+    payer: SIGNER,
+    payee: SERVICE_PAYEE,
+    amountAtomic: service.priceAtomic,
+    logIndex: "0x1",
+    checks: {
+      transactionSucceeded: true,
+      receiptBoundToBlock: true,
+      freshPayment: true,
+      exactAsset: true,
+      exactPayer: true,
+      exactPayee: true,
+      exactAmount: true,
+    },
+  };
+}
+
+function exactPaymentAuthorization(mode) {
+  const service = paymentService(mode);
+  return {
+    version: "conviction-x402-authorization-v1",
+    scheme: "exact-eip3009",
+    network: SERVICE_NETWORK,
+    asset: SERVICE_ASSET,
+    from: SIGNER,
+    to: SERVICE_PAYEE,
+    value: service.priceAtomic,
+    validAfter: String(BigInt(PAYMENT_BLOCK_TIMESTAMP) - 1n),
+    validBefore: String(BigInt(PAYMENT_BLOCK_TIMESTAMP) + 299n),
+    nonce: PAYMENT_NONCE,
+  };
+}
+
 function baseLiveState({ mode, journal, executionLock, executionArgv }) {
   return {
     mode,
@@ -100,11 +158,12 @@ function baseLiveState({ mode, journal, executionLock, executionArgv }) {
     reconciliationRequired: true,
     paymentPayer: SIGNER,
     buyerWallet: WALLET,
-    paymentTx: `0x${"11".repeat(32)}`,
-    paymentProof: {
-      transactionHash: `0x${"11".repeat(32)}`,
-      blockTimestamp: String(Date.parse("2026-07-22T02:00:00.000Z") / 1_000),
-    },
+    paymentTx: PAYMENT_TX,
+    paymentProof: exactPaymentProof(mode),
+    paymentAuthorization: exactPaymentAuthorization(mode),
+    paidServiceResponse: { status: 200, paymentResponsePresent: true },
+    paymentClaimPath: null,
+    paymentClaimHash: null,
     paidCard: { fixture: mode },
     intentHash: INTENT,
     tradeConfirmedAt: "2026-07-22T02:00:08.000Z",
@@ -128,6 +187,20 @@ async function writeExecutionLock(executionLock, journal) {
   }));
 }
 
+async function writePaidJournalWithClaim(state, directory) {
+  await writeFile(state.journalPath, JSON.stringify(state));
+  const claimed = await claimVerifiedPaymentTransaction({
+    state,
+    paymentProof: state.paymentProof,
+    service: paymentService(state.mode),
+    directory,
+  });
+  state.paymentClaimPath = claimed.file;
+  state.paymentClaimHash = claimed.claimHash;
+  await writeFile(state.journalPath, JSON.stringify(state));
+  return claimed;
+}
+
 async function writeOpenReplayLock(state) {
   await writeFile(state.replayLockPath, JSON.stringify({
     version: "conviction-open-replay-lock-v1",
@@ -146,8 +219,8 @@ test("OPEN reconciliation independently verifies a persisted settlement and rele
     settlementTx: SETTLEMENT,
   };
   try {
+    await writePaidJournalWithClaim(state, directory);
     await Promise.all([
-      writeFile(journal, JSON.stringify(state)),
       writeExecutionLock(executionLock, journal),
       writeOpenReplayLock(state),
     ]);
@@ -184,7 +257,7 @@ test("OPEN reconciliation independently verifies a persisted settlement and rele
     assert.equal(proofReads, 1);
     assert.equal(result.status, "complete_reconciled");
     assert.equal(result.positionProofHash, POSITION_PROOF);
-    assert.deepEqual(await readdir(directory), ["journey.json"]);
+    assert.deepEqual((await readdir(directory)).sort(), ["journey.json", PAYMENT_CLAIM_FILE].sort());
     const persisted = JSON.parse(await readFile(journal, "utf8"));
     assert.equal(persisted.executionLockPath, null);
     assert.equal(persisted.reconciliationRequired, false);
@@ -203,8 +276,8 @@ test("OPEN reconciliation rejects a valid signed settlement that predates live-t
     settlementTx: SETTLEMENT,
   };
   try {
+    await writePaidJournalWithClaim(state, directory);
     await Promise.all([
-      writeFile(journal, JSON.stringify(state)),
       writeExecutionLock(executionLock, journal),
       writeOpenReplayLock(state),
     ]);
@@ -231,6 +304,7 @@ test("OPEN reconciliation rejects a valid signed settlement that predates live-t
     assert.deepEqual((await readdir(directory)).sort(), [
       `open-${OPEN_REPLAY.slice(2)}.lock.json`,
       "journey.json",
+      PAYMENT_CLAIM_FILE,
       "polymarket-execution.lock.json",
     ].sort());
   } finally {
@@ -249,25 +323,19 @@ test("CLOSE settlement reconciliation requires a strictly later settlement secon
     const replayKey = `0x${"aa".repeat(32)}`;
     const replayLock = join(directory, `close-${replayKey.slice(2)}.lock.json`);
     const state = {
-      mode: "close",
-      stage: "live_result_received",
-      journalPath: journal,
-      reconciliationRequired: true,
+      ...baseLiveState({ mode: "close", journal, executionLock, executionArgv: CLOSE_ARGV }),
       paidCard: {
         intent: { version: "conviction-exit-intent-v1" },
         intentHash: INTENT,
         issuance: { version: "fixture" },
       },
-      orderId: ORDER,
       settlementTx: SETTLEMENT,
-      tradeConfirmedAt: "2026-07-22T02:00:08.000Z",
       replayKey,
       replayLockPath: replayLock,
-      executionLockPath: executionLock,
     };
     try {
+      await writePaidJournalWithClaim(state, directory);
       await Promise.all([
-        writeFile(journal, JSON.stringify(state)),
         writeExecutionLock(executionLock, journal),
         writeFile(replayLock, JSON.stringify({
           version: "conviction-close-replay-lock-v1",
@@ -291,14 +359,15 @@ test("CLOSE settlement reconciliation requires a strictly later settlement secon
         assert.deepEqual((await readdir(directory)).sort(), [
           `close-${replayKey.slice(2)}.lock.json`,
           "journey.json",
+          PAYMENT_CLAIM_FILE,
           "polymarket-execution.lock.json",
-        ]);
+        ].sort());
         continue;
       }
       const result = await reconcile;
       assert.equal(result.status, "complete_reconciled");
       assert.equal(result.transactionHash, SETTLEMENT);
-      assert.deepEqual(await readdir(directory), ["journey.json"]);
+      assert.deepEqual((await readdir(directory)).sort(), ["journey.json", PAYMENT_CLAIM_FILE].sort());
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -312,8 +381,8 @@ test("OPEN terminal zero-fill reconciliation requires exact owner-bound CLOB pro
   const card = validated("OPEN");
   const state = baseLiveState({ mode: "open", journal, executionLock, executionArgv: OPEN_ARGV });
   try {
+    await writePaidJournalWithClaim(state, directory);
     await Promise.all([
-      writeFile(journal, JSON.stringify(state)),
       writeExecutionLock(executionLock, journal),
       writeOpenReplayLock(state),
     ]);
@@ -339,7 +408,7 @@ test("OPEN terminal zero-fill reconciliation requires exact owner-bound CLOB pro
     assert.equal(exactReads, 1);
     assert.equal(result.status, "terminal_zero_fill_reconciled");
     assert.equal(result.matchedSharesRaw, "0");
-    assert.deepEqual(await readdir(directory), ["journey.json"]);
+    assert.deepEqual((await readdir(directory)).sort(), ["journey.json", PAYMENT_CLAIM_FILE].sort());
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -356,8 +425,8 @@ test("OPEN reconciliation retains its lock when terminal evidence is active or t
     const card = validated("OPEN");
     const state = baseLiveState({ mode: "open", journal, executionLock, executionArgv: OPEN_ARGV });
     try {
+      await writePaidJournalWithClaim(state, directory);
       await Promise.all([
-        writeFile(journal, JSON.stringify(state)),
         writeExecutionLock(executionLock, journal),
         writeOpenReplayLock(state),
       ]);
@@ -375,6 +444,7 @@ test("OPEN reconciliation retains its lock when terminal evidence is active or t
         [
           "journey.json",
           `open-${OPEN_REPLAY.slice(2)}.lock.json`,
+          PAYMENT_CLAIM_FILE,
           "polymarket-execution.lock.json",
         ].sort(),
       );
@@ -427,8 +497,8 @@ test("CLOSE terminal zero-fill reconciliation releases only its owner-bound repl
     replayLockPath: replayLock,
   };
   try {
+    await writePaidJournalWithClaim(state, directory);
     await Promise.all([
-      writeFile(journal, JSON.stringify(state)),
       writeExecutionLock(executionLock, journal),
       writeFile(replayLock, JSON.stringify({
         version: "conviction-close-replay-lock-v1",
@@ -447,7 +517,7 @@ test("CLOSE terminal zero-fill reconciliation releases only its owner-bound repl
     });
     assert.equal(result.status, "terminal_zero_fill_reconciled");
     assert.equal(result.matchedSharesRaw, "0");
-    assert.deepEqual(await readdir(directory), ["journey.json"]);
+    assert.deepEqual((await readdir(directory)).sort(), ["journey.json", PAYMENT_CLAIM_FILE].sort());
     const persisted = JSON.parse(await readFile(journal, "utf8"));
     assert.equal(persisted.replayLockPath, null);
     assert.equal(persisted.executionLockPath, null);

@@ -6,6 +6,8 @@ The OPEN routes are free `POST /api/preview`, paid `POST /api/service` at `0.05 
 
 For every paid action, the buyer runtime keeps the merchant body and `PAYMENT-RESPONSE` authorization-only until it independently verifies the exact X Layer receipt. Before promoting the card, it atomically creates an owner-only permanent claim keyed by the payment transaction and bound to the journal, replay key, EIP-3009 nonce, service, payer, amount, and proof hash. An already-claimed transaction fails closed and cannot promote a second journey; claim files are replay records and are never released as execution locks.
 
+Upgrade boundary: a paid journal created before transaction claims existed has no resumable execution authority. It fails closed for manual reconciliation instead of being migrated implicitly, because two legacy journals could otherwise compete to claim the same settlement.
+
 ## OPEN request
 
 Send JSON:

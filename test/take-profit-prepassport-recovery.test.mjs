@@ -434,6 +434,41 @@ async function armedTakeProfitFixture() {
   };
 }
 
+test("claimless paid TAKE_PROFIT lifecycle fails before CLOB reads or lock mutation", async () => {
+  const fixture = await diskFixture();
+  try {
+    const before = await readFile(fixture.journalPath, "utf8");
+    const paid = JSON.parse(before);
+    await unlink(paid.paymentClaimPath);
+    let fetches = 0;
+    await assert.rejects(
+      runTakeProfitReconcileCli({
+        journal: fixture.journalPath,
+        issuerRegistry: fixture.issuerRegistry,
+        json: true,
+      }, {
+        stateDirectory: fixture.stateDirectory,
+        now: () => Date.parse(FETCHED_AT),
+        fetchExactOrderImpl: async () => {
+          fetches += 1;
+          return orderSnapshot();
+        },
+      }),
+      (error) => error?.code === "payment_claim_missing_or_mismatched",
+    );
+    assert.equal(fetches, 0);
+    await access(fixture.reservationLockPath);
+    await access(fixture.executionLockPath);
+    const after = await readFile(fixture.journalPath, "utf8");
+    assert.equal(after, before);
+    const unchanged = JSON.parse(after);
+    assert.equal(unchanged.stage, "live_result_received");
+    assert.equal(unchanged.reconciliationRequired, true);
+  } finally {
+    await rm(fixture.stateDirectory, { recursive: true, force: true });
+  }
+});
+
 async function cancelExecutionFixture({ attempted = false } = {}) {
   const fixture = await armedTakeProfitFixture();
   const { journal } = fixture;
