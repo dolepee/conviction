@@ -83,6 +83,7 @@ jobs:
             --dir "${{ runner.temp }}/native-okx-runtime"
 
       - name: Verify native OKX runtime identity
-        run: node scripts/verify-native-okx-runtime.mjs \
-          "${{ runner.temp }}/native-okx-runtime/polymarket-plugin-x86_64-unknown-linux-musl" \
-          linux-x64
+        run: |
+          node scripts/verify-native-okx-runtime.mjs \
+            "${{ runner.temp }}/native-okx-runtime/polymarket-plugin-x86_64-unknown-linux-musl" \
+            linux-x64
