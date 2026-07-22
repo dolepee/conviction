@@ -54,5 +54,13 @@ try {
     runtimeBinarySha256: runtime?.binarySha256 || null,
   })}\n`);
 } finally {
+  // The pinned runtime installer deliberately makes its release directory and
+  // binary read-only. Restore owner write permission only inside this isolated
+  // temporary checkout so cleanup works consistently on Linux and macOS.
+  try {
+    run("chmod", ["-R", "u+w", root]);
+  } catch {
+    // Preserve the original gate result; rm below remains the cleanup authority.
+  }
   await rm(root, { recursive: true, force: true });
 }
