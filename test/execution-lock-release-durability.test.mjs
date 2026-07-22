@@ -208,6 +208,10 @@ test("a delayed helper keeps contenders out and refuses to unlink a fresh genera
     const delayed = withStateReleaseMutex(directory, (lease) => lease.unlinkExact(lockFile, oldText), {
       helper: ADVERSARY_HELPER,
     });
+    const delayedRejection = assert.rejects(
+      delayed,
+      (error) => error?.code === "exact_unlink_mismatch",
+    );
     await waitFor(ready);
 
     await assert.rejects(
@@ -220,7 +224,7 @@ test("a delayed helper keeps contenders out and refuses to unlink a fresh genera
     await unlink(lockFile);
     await writeFile(lockFile, freshText, { mode: 0o600 });
     await writeFile(proceed, "go\n", { mode: 0o600 });
-    await assert.rejects(delayed, (error) => error?.code === "exact_unlink_mismatch");
+    await delayedRejection;
     assert.equal(await readFile(lockFile, "utf8"), freshText);
 
     await unlink(join(directory, "mutex-helper-mode.txt"));

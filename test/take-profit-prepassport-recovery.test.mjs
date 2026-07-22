@@ -411,7 +411,7 @@ async function cancelExecutionFixture({ attempted = false } = {}) {
     confirmedAt: CANCEL_CONFIRMED_AT,
   }, {
     trustedIssuers,
-    now: () => Date.parse(CANCEL_CONFIRMED_AT),
+    now: Date.parse(CANCEL_CONFIRMED_AT),
   });
   await claimExecutionLock({
     journal: fixture.journalPath,
