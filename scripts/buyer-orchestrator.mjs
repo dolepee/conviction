@@ -545,6 +545,8 @@ export function normalizeSourcePosition(document) {
     input.canonicalIntent,
     input.intent,
     input.positionPassport?.intent,
+    root.paidCard?.intent,
+    input.paidCard?.intent,
   );
   const positionProof = firstObject(
     root.positionProof,
@@ -567,6 +569,8 @@ export function normalizeSourcePosition(document) {
     root.positionPassport?.issuance,
     input.issuance,
     input.positionPassport?.issuance,
+    root.paidCard?.issuance,
+    input.paidCard?.issuance,
   );
   const normalized = {
     transactionHash: String(firstValue(
@@ -575,6 +579,8 @@ export function normalizeSourcePosition(document) {
       receiptProof?.transactionHash,
       root.transactionHash,
       input.transactionHash,
+      root.settlementTx,
+      input.settlementTx,
     ) || "").toLowerCase(),
     orderId: String(firstValue(
       direct?.orderId,

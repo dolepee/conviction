@@ -575,7 +575,7 @@ test("buyer CLI does not infer V2 readiness without the selected deposit-wallet 
   assert.equal(readiness.currentMode, "");
 });
 
-test("buyer CLI normalizes native OPEN output and the historical proof artifact", () => {
+test("buyer CLI normalizes native OPEN output, completed journals, and historical proof artifacts", () => {
   const transactionHash = `0x${"11".repeat(32)}`;
   const orderId = `0x${"22".repeat(32)}`;
   const intentHash = `0x${"33".repeat(32)}`;
@@ -615,6 +615,37 @@ test("buyer CLI normalizes native OPEN output and the historical proof artifact"
     positionProofHash,
     intent,
   });
+  const completedJournal = normalizeSourcePosition({
+    stage: "complete",
+    settlementTx: transactionHash,
+    orderId,
+    intentHash,
+    positionProofHash,
+    paidCard: { intent, issuance },
+  });
+  assert.deepEqual(completedJournal, {
+    transactionHash,
+    orderId,
+    intentHash,
+    positionProofHash,
+    intent,
+    issuance,
+  });
+  const legacyIntent = { version: "conviction-intent-v3", legacy: true };
+  const legacyIssuance = { version: "conviction-issuance-v1", legacy: true };
+  const preferredTransactionHash = `0x${"55".repeat(32)}`;
+  const mixed = normalizeSourcePosition({
+    transactionHash: preferredTransactionHash,
+    settlementTx: transactionHash,
+    orderId,
+    intentHash,
+    positionProofHash,
+    positionPassport: { intent: legacyIntent, issuance: legacyIssuance },
+    paidCard: { intent, issuance },
+  });
+  assert.equal(mixed.transactionHash, preferredTransactionHash);
+  assert.equal(mixed.intent, legacyIntent);
+  assert.equal(mixed.issuance, legacyIssuance);
   assert.throws(
     () => normalizeSourcePosition({ canonicalIntent: intent }),
     (error) => error?.code === "invalid_source_proof_file",
