@@ -1408,6 +1408,48 @@ export async function waitForStrictlyPostConfirmationSecond(confirmedAt, {
   return earliestLaunchAt;
 }
 
+export async function persistBoundTradeConsent({
+  state,
+  mode,
+  validated,
+  now = Date.now,
+  writeState = writeReconciliationJournal,
+} = {}) {
+  const normalizedMode = String(mode || "").toLowerCase();
+  const confirmedAt = Number(now());
+  const expiresAt = Date.parse(String(validated?.expiresAt || ""));
+  if (
+    !state || typeof state !== "object" || Array.isArray(state) ||
+    (normalizedMode !== "open" && normalizedMode !== "close") ||
+    !Number.isSafeInteger(confirmedAt) || !Number.isFinite(expiresAt) || confirmedAt >= expiresAt ||
+    !HASH_RE.test(String(validated?.intentHash || "")) ||
+    !Array.isArray(validated?.executionCard?.argv) || validated.executionCard.argv.length === 0 ||
+    !HASH_RE.test(String(state.paymentTx || "")) || !HASH_RE.test(String(state.replayKey || "")) ||
+    typeof writeState !== "function"
+  ) {
+    throw Object.assign(new Error("Trade consent cannot be bound to this paid execution card"), {
+      code: "invalid_trade_consent",
+    });
+  }
+  const confirmedAtIso = new Date(confirmedAt).toISOString();
+  state.tradeConfirmedAt = confirmedAtIso;
+  state.tradeConsent = {
+    version: normalizedMode === "close"
+      ? "conviction-close-trade-consent-v1"
+      : "conviction-open-trade-consent-v1",
+    intentHash: validated.intentHash,
+    executionArgvHash: sha256(validated.executionCard.argv),
+    paymentTx: state.paymentTx,
+    replayKey: state.replayKey,
+    confirmedAt: confirmedAtIso,
+    expiresAt: validated.expiresAt,
+  };
+  state.stage = "trade_confirmed";
+  state.reconciliationRequired = true;
+  await writeState(state);
+  return Object.freeze({ accepted: true, confirmedAt });
+}
+
 function decodeHeader(value, label) {
   try {
     return JSON.parse(Buffer.from(String(value || ""), "base64").toString("utf8"));
@@ -3392,15 +3434,27 @@ async function main() {
         } else {
           stdout.write([
             "\nBounded order ready:",
-            `  Market: ${b.market}`,
+            `  Market: ${b.marketQuestion}`,
+            `  Condition: ${b.conditionId}`,
             `  Side: ${b.side}`,
+            `  Outcome token: ${b.outcomeTokenId}`,
+            `  Total fee-inclusive budget: ${b.requestedBudgetRaw} atomic pUSD`,
             `  Maximum price: ${b.maxPrice}`,
             `  Maximum order principal: ${b.maximumOrderPrincipalRaw} atomic pUSD`,
             `  Current venue-fee reserve: ${b.maximumFeeRaw} atomic pUSD (V2 fee is operator-set at match time)`,
             `  Accepted total-debit ceiling for verification: ${b.maximumTotalDebitRaw} atomic pUSD`,
+            `  Full-fill shares at cap: ${b.fullFillSharesRaw} atomic shares`,
             `  Current pUSD balance: ${latestReadiness?.pUsdBalanceRaw || "unknown"} atomic`,
             `  Buyer wallet: ${b.wallet}`,
+            `  Intent: ${b.intentHash}`,
+            `  Signed by: ${b.issuerKeyId}`,
+            `  Issued: ${b.issuedAt}`,
             `  Expires: ${b.expiresAt}`,
+            `  Service payment completed: ${b.completedPayment.amountAtomic} atomic USD₮0 on ${b.completedPayment.network}`,
+            `  Payment transaction: ${b.completedPayment.transactionHash}`,
+            `  Payment payer: ${b.completedPayment.payer}`,
+            `  Payment recipient: ${b.completedPayment.payee}`,
+            "  Order type: FAK (bounded immediate fill; unfilled remainder cancels)",
             "  Polygon settlement is irreversible.",
             "",
           ].join("\n"));
@@ -3423,23 +3477,13 @@ async function main() {
     const answer = await readline.question(`Type \`confirm live mode\` to submit this one ${action}: `);
     const accepted = answer.trim() === "confirm live mode";
     if (accepted) {
-      checkpoint.tradeConfirmedAt = new Date().toISOString();
-      if (closeMode) {
-        checkpoint.tradeConsent = {
-          version: "conviction-close-trade-consent-v1",
-          intentHash: context.validated.intentHash,
-          executionArgvHash: sha256(context.validated.executionCard.argv),
-          paymentTx: checkpoint.paymentTx,
-          replayKey: checkpoint.replayKey,
-          confirmedAt: checkpoint.tradeConfirmedAt,
-          expiresAt: context.validated.expiresAt,
-        };
-        checkpoint.stage = "trade_confirmed";
-        checkpoint.reconciliationRequired = true;
-      }
-      await writeReconciliationJournal(checkpoint);
+      return persistBoundTradeConsent({
+        state: checkpoint,
+        mode: closeMode ? "close" : "open",
+        validated: context.validated,
+      });
     }
-    return accepted;
+    return false;
   };
 
   const loadReadiness = async () => {
@@ -3715,7 +3759,10 @@ async function main() {
             now: Date.now(),
           });
           requireExecutionLaunchWindow(lockedCard);
-          if (sha256(lockedCard.executionCard.argv) !== checkpoint.tradeConsent?.executionArgvHash) {
+          if (
+            lockedCard.intentHash !== checkpoint.tradeConsent?.intentHash ||
+            sha256(lockedCard.executionCard.argv) !== checkpoint.tradeConsent?.executionArgvHash
+          ) {
             throw Object.assign(new Error("Locked CLOSE differs from the confirmed order"), {
               code: "trade_consent_mismatch",
             });
@@ -3751,6 +3798,14 @@ async function main() {
             now: Date.now(),
           });
           requireExecutionLaunchWindow(lockedCard);
+          if (
+            lockedCard.intentHash !== checkpoint.tradeConsent?.intentHash ||
+            sha256(lockedCard.executionCard.argv) !== checkpoint.tradeConsent?.executionArgvHash
+          ) {
+            throw Object.assign(new Error("Locked OPEN differs from the confirmed order"), {
+              code: "trade_consent_mismatch",
+            });
+          }
         }
 
         checkpoint.stage = "execution_attempted";

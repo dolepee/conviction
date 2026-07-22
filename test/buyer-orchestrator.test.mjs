@@ -111,6 +111,31 @@ test("open journey keeps payment and trade consent distinct and executes exactly
   assert.equal(result.timings.paymentToProofMs, result.timings.provedAt - result.timings.paidAt);
 });
 
+test("OPEN preserves one structured consent timestamp when persistence crosses a second", async () => {
+  const f = fixture({ proofSettledAt: "1970-01-01T00:00:02.000Z" });
+  let clock = 1_000;
+  const result = await runOpenJourney({
+    request,
+    paymentPayer: PAYMENT_PAYER,
+    buyerWallet: BUYER_WALLET,
+    adapters: f.adapters,
+    confirm: async (kind) => {
+      if (kind === "payment") return true;
+      const confirmedAt = 1_999;
+      clock = 2_050;
+      return { accepted: true, confirmedAt };
+    },
+    now: () => clock,
+    trustedIssuers: [],
+  });
+  const confirmedEvent = result.events.find((event) => event.type === "trade_confirmed");
+  assert.equal(result.confirmation.confirmedAt, 1_999);
+  assert.equal(confirmedEvent.at, 1_999);
+  assert.equal(result.timings.confirmedAt, 1_999);
+  assert.equal(result.ordersPlaced, 1);
+  assert.equal(f.executes(), 1);
+});
+
 test("an OPEN proof from the confirmation second is rejected even when otherwise valid", async () => {
   const f = fixture({ proofSettledAt: "1970-01-01T00:00:01.999Z" });
   await assert.rejects(

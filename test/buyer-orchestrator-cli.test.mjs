@@ -18,6 +18,7 @@ import {
   parseJsonOutput,
   paymentAuthorizationMetadata,
   paymentTransaction,
+  persistBoundTradeConsent,
   reconcileCloseJournal,
   reconcileOpenJournal,
   recoverKnownUnstartedCloseExecution,
@@ -140,6 +141,54 @@ test("buyer execution waits until an order can strictly postdate confirmation", 
     (error) => error?.code === "confirmation_second_active",
   );
 });
+
+for (const [mode, version] of [
+  ["open", "conviction-open-trade-consent-v1"],
+  ["close", "conviction-close-trade-consent-v1"],
+]) {
+  test(`${mode.toUpperCase()} journal I/O preserves the exact structured consent timestamp`, async () => {
+    let clock = Date.parse("2026-07-22T02:00:10.999Z");
+    let durable;
+    const state = {
+      paymentTx: `0x${"11".repeat(32)}`,
+      replayKey: `0x${"22".repeat(32)}`,
+      tradeConfirmedAt: null,
+      tradeConsent: null,
+      stage: "payment_verified",
+      reconciliationRequired: false,
+    };
+    const validated = {
+      intentHash: `0x${"33".repeat(32)}`,
+      expiresAt: "2026-07-22T02:05:00.000Z",
+      executionCard: { argv: [mode === "open" ? "buy" : "sell", "--token-id", "123"] },
+    };
+    const result = await persistBoundTradeConsent({
+      state,
+      mode,
+      validated,
+      now: () => clock,
+      writeState: async (value) => {
+        durable = structuredClone(value);
+        clock = Date.parse("2026-07-22T02:00:11.050Z");
+      },
+    });
+    const exact = Date.parse("2026-07-22T02:00:10.999Z");
+    assert.deepEqual(result, { accepted: true, confirmedAt: exact });
+    assert.equal(state.tradeConfirmedAt, "2026-07-22T02:00:10.999Z");
+    assert.equal(durable.tradeConfirmedAt, state.tradeConfirmedAt);
+    assert.equal(state.tradeConsent.version, version);
+    assert.equal(state.tradeConsent.confirmedAt, state.tradeConfirmedAt);
+    assert.equal(state.tradeConsent.intentHash, validated.intentHash);
+    assert.equal(state.tradeConsent.paymentTx, state.paymentTx);
+    assert.equal(state.tradeConsent.replayKey, state.replayKey);
+    assert.equal(state.stage, "trade_confirmed");
+    assert.equal(state.reconciliationRequired, true);
+    assert.equal(
+      await waitForStrictlyPostConfirmationSecond(state.tradeConfirmedAt, { now: () => clock }),
+      Date.parse("2026-07-22T02:00:11.000Z"),
+    );
+  });
+}
 
 test("buyer CLI does not persist an empty journal for parse or other preflight-only failures", () => {
   assert.equal(shouldPersistFailureCheckpoint({ stage: "not_started" }, { executionStarted: false }), false);

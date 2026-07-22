@@ -18,6 +18,27 @@ function requireValue(condition, code, message, details = undefined) {
   if (!condition) throw new BuyerJourneyError(code, message, details);
 }
 
+function recordTradeConfirmation({ tradeConsent, events, expiresAt, now }) {
+  const structuredConsent = tradeConsent && typeof tradeConsent === "object" ? tradeConsent : null;
+  let confirmedAt;
+  if (structuredConsent) {
+    confirmedAt = Number(structuredConsent.confirmedAt);
+    const observedAfterConsent = now();
+    requireValue(
+      structuredConsent.accepted === true && Number.isSafeInteger(confirmedAt) &&
+        confirmedAt >= events.at(-1).at && confirmedAt <= observedAfterConsent &&
+        confirmedAt < Date.parse(expiresAt),
+      "invalid_confirmation_time",
+      "Buyer confirmation timestamp is invalid or outside the signed execution window",
+    );
+  } else {
+    confirmedAt = now();
+  }
+  const confirmed = { sequence: events.length + 1, type: "trade_confirmed", at: confirmedAt };
+  events.push(confirmed);
+  return confirmed;
+}
+
 function lower(value) {
   return String(value || "").toLowerCase();
 }
@@ -389,21 +410,48 @@ export async function runOpenJourney({
   emit({
     type: "trade_confirmation",
     bounds: {
+      action: "OPEN",
       market: request.market,
+      marketQuestion: validated.intent.market.question,
+      conditionId: lower(validated.intent.market.conditionId),
       side: request.side,
+      outcomeTokenId: validated.tokenId,
+      requestedBudgetRaw: validated.bounds.requestedBudgetRaw,
       maxPrice: validated.bounds.maxPrice,
       maximumOrderPrincipalRaw: validated.bounds.maximumOrderPrincipalRaw,
       maximumFeeRaw: validated.bounds.maximumFeeRaw,
       maximumTotalDebitRaw: validated.bounds.maximumTotalDebitRaw,
+      fullFillSharesRaw: validated.bounds.fullFillSharesRaw,
       expiresAt: validated.expiresAt,
       wallet: validated.wallet,
+      intentHash: validated.intentHash,
+      issuerKeyId: validated.issuance?.keyId,
+      issuedAt: validated.issuance?.issuedAt,
+      completedPayment: {
+        transactionHash: paymentProof.transactionHash,
+        amountAtomic: challenge?.decoded?.accepts?.[0]?.amount ?? challenge?.amount,
+        resource: challenge?.decoded?.resource?.url,
+        network: challenge?.decoded?.accepts?.[0]?.network,
+        asset: challenge?.decoded?.accepts?.[0]?.asset,
+        payer: paymentPayer,
+        payee: challenge?.decoded?.accepts?.[0]?.payTo,
+      },
     },
   });
   mark("bounds_presented");
   const tradeConsent = await confirm("trade", { request, validated, preview, dryRun });
   confirmationCount += 1;
-  requireValue(tradeConsent === true, "trade_not_confirmed", "Buyer declined the bounded trade");
-  const confirmed = mark("trade_confirmed");
+  requireValue(
+    tradeConsent === true || (tradeConsent && typeof tradeConsent === "object" && tradeConsent.accepted === true),
+    "trade_not_confirmed",
+    "Buyer declined the bounded trade",
+  );
+  const confirmed = recordTradeConfirmation({
+    tradeConsent,
+    events,
+    expiresAt: validated.expiresAt,
+    now,
+  });
 
   await adapters.ensureTradingMode({ buyerWallet });
   validated = await adapters.validateCard(paid.card, { trustedIssuers, now: now() });
@@ -604,8 +652,17 @@ export async function runCloseJourney({
   );
   const tradeConsent = await confirm("trade", { request, validated, preview, dryRun });
   confirmationCount += 1;
-  requireValue(tradeConsent === true, "trade_not_confirmed", "Buyer declined the bounded CLOSE");
-  const confirmed = mark("trade_confirmed");
+  requireValue(
+    tradeConsent === true || (tradeConsent && typeof tradeConsent === "object" && tradeConsent.accepted === true),
+    "trade_not_confirmed",
+    "Buyer declined the bounded CLOSE",
+  );
+  const confirmed = recordTradeConfirmation({
+    tradeConsent,
+    events,
+    expiresAt: validated.expiresAt,
+    now,
+  });
 
   await adapters.ensureTradingMode({ sellerWallet });
   validated = await adapters.validateCloseCard(paid.card, { trustedIssuers, now: now() });
