@@ -19,6 +19,7 @@ import {
   recoverPrePassportTakeProfitJournal,
   claimTakeProfitReservation,
   markTakeProfitPreSpawnFailure,
+  runTakeProfitCancelCli,
   runTakeProfitReconcileCli,
   takeProfitReplayKey,
   validatePrePassportTakeProfitJournal,
@@ -391,7 +392,7 @@ async function diskFixture({
 
 const CANCEL_CONFIRMED_AT = "2026-07-21T02:00:15.000Z";
 
-async function cancelExecutionFixture({ attempted = false } = {}) {
+async function armedTakeProfitFixture() {
   const fixture = await diskFixture();
   await runTakeProfitReconcileCli({
     journal: fixture.journalPath,
@@ -402,7 +403,15 @@ async function cancelExecutionFixture({ attempted = false } = {}) {
     now: () => Date.parse(FETCHED_AT),
     fetchExactOrderImpl: async () => orderSnapshot(),
   });
-  const journal = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  return {
+    ...fixture,
+    journal: JSON.parse(await readFile(fixture.journalPath, "utf8")),
+  };
+}
+
+async function cancelExecutionFixture({ attempted = false } = {}) {
+  const fixture = await armedTakeProfitFixture();
+  const { journal } = fixture;
   const preCancelSnapshot = orderSnapshot();
   const request = buildTakeProfitCancelRequest({
     journal,
@@ -644,6 +653,107 @@ test("a durable TP_CANCEL pre-spawn terminal replays without venue access and re
       assert.equal(replay.reconciliationRequired, false);
     }
     assert.equal(fetches, 0);
+    await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+    await access(fixture.reservationLockPath);
+  } finally {
+    await rm(fixture.stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("a losing TP_CANCEL claim with preserveSourceJournal cannot mutate or release the winner", async () => {
+  const fixture = await cancelExecutionFixture();
+  const journalBefore = await readFile(fixture.journalPath, "utf8");
+  const lockBefore = await readFile(fixture.executionLockPath, "utf8");
+  const preserveError = Object.assign(new Error("winner attached while loser was claiming"), {
+    code: "simulated_preserved_claim_loss",
+    preserveSourceJournal: true,
+    executionLockPath: fixture.executionLockPath,
+  });
+  try {
+    await assert.rejects(
+      runTakeProfitCancelCli({
+        journal: fixture.journalPath,
+        issuerRegistry: fixture.issuerRegistry,
+        json: true,
+      }, {
+        stateDirectory: fixture.stateDirectory,
+        now: () => Date.parse(CANCEL_CONFIRMED_AT) + 1_000,
+        fetchExactOrderImpl: async () => cancelSnapshotAt(Date.parse(CANCEL_CONFIRMED_AT) + 1_000),
+        readConfirmationImpl: async () => TAKE_PROFIT_CANCEL_CONFIRMATION,
+        claimExecutionLockImpl: async () => { throw preserveError; },
+      }),
+      (error) => error === preserveError,
+    );
+    assert.equal(await readFile(fixture.journalPath, "utf8"), journalBefore);
+    assert.equal(await readFile(fixture.executionLockPath, "utf8"), lockBefore);
+    await access(fixture.reservationLockPath);
+    const winner = JSON.parse(journalBefore);
+    assert.equal(winner.cancelExecution.phase, "lock_acquired");
+    assert.equal(winner.executionLockHash, sha256(JSON.parse(lockBefore)));
+    assert.equal(winner.reconciliationRequired, true);
+  } finally {
+    await rm(fixture.stateDirectory, { recursive: true, force: true });
+  }
+});
+
+test("terminal TP_CANCEL release failure stays attempted and recoverable until guarded release commits", async () => {
+  const fixture = await armedTakeProfitFixture();
+  const runAt = Date.parse(CANCEL_CONFIRMED_AT) + 1_000;
+  const beforeSnapshot = cancelSnapshotAt(runAt, "LIVE");
+  const afterSnapshot = cancelSnapshotAt(runAt, "CANCELED");
+  let snapshotReads = 0;
+  let releaseCalls = 0;
+  try {
+    await assert.rejects(
+      runTakeProfitCancelCli({
+        journal: fixture.journalPath,
+        issuerRegistry: fixture.issuerRegistry,
+        json: true,
+      }, {
+        stateDirectory: fixture.stateDirectory,
+        now: () => runAt,
+        fetchExactOrderImpl: async () => {
+          snapshotReads += 1;
+          return snapshotReads === 1 ? beforeSnapshot : afterSnapshot;
+        },
+        readConfirmationImpl: async () => TAKE_PROFIT_CANCEL_CONFIRMATION,
+        commandJsonImpl: async (_tool, _argv, _label, executionOptions = {}) => {
+          executionOptions.onStart?.();
+          return {
+            ok: true,
+            data: { canceled: [ORDER_ID], not_canceled: {} },
+          };
+        },
+        settleExecutionLockImpl: async (journal) => {
+          releaseCalls += 1;
+          const beforeRelease = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+          assert.equal(journal.cancelExecution.phase, "attempted");
+          assert.equal(beforeRelease.cancelExecution.phase, "attempted");
+          assert.equal(beforeRelease.cancelOutcome.orderTerminal, true);
+          assert.equal(beforeRelease.reconciliationRequired, true);
+          throw Object.assign(new Error("simulated terminal release failure"), {
+            code: "simulated_terminal_release_failure",
+          });
+        },
+      }),
+      (error) => error?.code === "simulated_terminal_release_failure",
+    );
+    assert.equal(snapshotReads, 2);
+    assert.equal(releaseCalls, 1);
+    const interrupted = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+    assert.equal(interrupted.cancelExecution.phase, "attempted");
+    assert.equal(interrupted.cancelOutcome.orderTerminal, true);
+    assert.equal(interrupted.reconciliationRequired, true);
+    await access(interrupted.executionLockPath);
+    await access(fixture.reservationLockPath);
+
+    const recovered = await reconcileCancelFixture(fixture, runAt + 1, async () =>
+      cancelSnapshotAt(runAt + 1, "CANCELED"));
+    assert.equal(recovered.reconciliationRequired, false);
+    assert.equal(recovered.executionLockReleased, true);
+    const terminal = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+    assert.equal(terminal.cancelExecution.phase, "terminal");
+    assert.equal(terminal.reconciliationRequired, false);
     await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
     await access(fixture.reservationLockPath);
   } finally {
