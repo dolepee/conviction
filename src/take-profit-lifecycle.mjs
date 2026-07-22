@@ -546,7 +546,14 @@ export function buildTakeProfitCancelRequest({
     `Type exactly: ${TAKE_PROFIT_CANCEL_CONFIRMATION}`,
   );
   const binding = validateTakeProfitJournal(journal, options);
-  const exact = validateFreshExactOrderSnapshot(binding, snapshot, options);
+  // A human may reasonably need longer than the 15-second machine-status
+  // window to read and confirm a cancellation. Keep the displayed snapshot
+  // inside the same 120-second bound as the typed consent; the post-cancel
+  // snapshot remains subject to the stricter default freshness check.
+  const exact = validateFreshExactOrderSnapshot(binding, snapshot, {
+    ...options,
+    maxSnapshotAgeMs: options.maxSnapshotAgeMs ?? CANCEL_CONFIRMATION_MAX_AGE_MS,
+  });
   const status = classifyExactOrder(exact);
   const confirmation = canonicalIso(confirmedAt, "invalid_cancel_confirmation", "Take-profit cancel confirmation time");
   const nowMs = nowMilliseconds(options.now);
@@ -634,7 +641,26 @@ export function buildTakeProfitCancelOutcome({
   observedAt,
 } = {}, options = {}) {
   const binding = validateTakeProfitJournal(journal, options);
-  const before = validateFreshExactOrderSnapshot(binding, beforeSnapshot, options);
+  const durableConsent = journal?.cancelConsent == null
+    ? null
+    : record(journal.cancelConsent, "invalid_cancel_checkpoint", "Stored cancel consent must be an object");
+  if (durableConsent) {
+    invariant(
+      durableConsent.version === "conviction-take-profit-cancel-consent-v2" &&
+        durableConsent.orderId === binding.orderId &&
+        durableConsent.preCancelSnapshotHash === sha256(beforeSnapshot),
+      "invalid_cancel_checkpoint",
+      "Stored cancel consent does not bind the exact pre-cancel snapshot",
+    );
+  }
+  const before = validateFreshExactOrderSnapshot(binding, beforeSnapshot, {
+    ...options,
+    // Once the exact cancel has been attempted, command/network latency must
+    // not retroactively invalidate the snapshot accepted at consent time.
+    // The fresh post-cancel snapshot below remains checked against current time.
+    now: durableConsent?.confirmedAt ?? options.now,
+    maxSnapshotAgeMs: options.maxSnapshotAgeMs ?? CANCEL_CONFIRMATION_MAX_AGE_MS,
+  });
   const acknowledgement = cancelAcknowledgement(cancelResult, binding.orderId);
 
   if (afterSnapshot === undefined || afterSnapshot === null) {

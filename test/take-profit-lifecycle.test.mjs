@@ -370,6 +370,28 @@ test("builds only the official exact-order cancel argv after distinct exact type
   assert.equal(request.argv.includes("--all"), false);
 });
 
+test("cancel consent accepts a human-readable snapshot within two minutes but rejects it at the boundary", () => {
+  const displayed = snapshot();
+  const request = buildTakeProfitCancelRequest({
+    journal: fixtureJournal(),
+    snapshot: displayed,
+    typedConfirmation: TAKE_PROFIT_CANCEL_CONFIRMATION,
+    confirmedAt: "2026-07-21T02:01:00.000Z",
+  }, options(NOW + 60_000));
+  assert.equal(request.orderId, ORDER_ID);
+  assert.equal(request.preCancelSnapshotHash, sha256(displayed));
+
+  assert.throws(
+    () => buildTakeProfitCancelRequest({
+      journal: fixtureJournal(),
+      snapshot: displayed,
+      typedConfirmation: TAKE_PROFIT_CANCEL_CONFIRMATION,
+      confirmedAt: "2026-07-21T02:02:13.000Z",
+    }, options(NOW + 123_000)),
+    (error) => error?.code === "stale_order_snapshot",
+  );
+});
+
 test("cancel request rejects reused/near-match consent and every non-cancelable order state", () => {
   for (const typedConfirmation of ["confirm live mode", "Confirm cancel take profit", "confirm cancel take profit "]) {
     assert.throws(
@@ -428,6 +450,42 @@ test("post-cancel exact recheck reports partial/full fill races instead of decla
   assert.equal(filled.status, "FILLED_PENDING_CHAIN_PROOF");
   assert.equal(filled.cancelConfirmedFromFreshOrder, false);
   assert.equal(filled.fillCancelRaceOccurred, true);
+});
+
+test("post-command latency cannot stale a pre-cancel snapshot already bound at consent time", () => {
+  const beforeSnapshot = snapshot();
+  const journal = fixtureJournal();
+  journal.cancelConsent = {
+    version: "conviction-take-profit-cancel-consent-v2",
+    orderId: ORDER_ID,
+    confirmedAt: "2026-07-21T02:02:12.000Z",
+    preCancelSnapshotHash: sha256(beforeSnapshot),
+  };
+  const outcome = buildTakeProfitCancelOutcome({
+    journal,
+    beforeSnapshot,
+    cancelResult: { ok: true, data: { canceled: [ORDER_ID], not_canceled: {} } },
+    afterSnapshot: snapshot({
+      fetchedAt: "2026-07-21T02:02:14.000Z",
+      order: { status: "CANCELED" },
+    }),
+  }, options(Date.parse("2026-07-21T02:02:14.000Z")));
+  assert.equal(outcome.status, "CANCELED");
+  assert.equal(outcome.cancelConfirmedFromFreshOrder, true);
+
+  journal.cancelConsent.preCancelSnapshotHash = `0x${"7".repeat(64)}`;
+  assert.throws(
+    () => buildTakeProfitCancelOutcome({
+      journal,
+      beforeSnapshot,
+      cancelResult: { ok: true, data: { canceled: [ORDER_ID], not_canceled: {} } },
+      afterSnapshot: snapshot({
+        fetchedAt: "2026-07-21T02:02:14.000Z",
+        order: { status: "CANCELED" },
+      }),
+    }, options(Date.parse("2026-07-21T02:02:14.000Z"))),
+    (error) => error?.code === "invalid_cancel_checkpoint",
+  );
 });
 
 test("cancel acknowledgement alone never turns 404, UNKNOWN, or still-LIVE into canceled", () => {
