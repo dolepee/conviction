@@ -51,7 +51,7 @@ The wallet-free economic preview expires 30 seconds after its market snapshot. T
 
 ## OPEN execution
 
-The buyer orchestrator derives an argument vector from canonical `executionCard.argv`, runs the official `polymarket-plugin` dry run, and may execute the identical vector only after a separate, fresh live confirmation. It advances beyond the confirmation second, then rechecks deposit-wallet mode, atomic pUSD balance, card expiry, and the venue dry run immediately before signing. FAK fills only at or below `maxPrice` and cancels any remainder. Conviction does not receive the wallet key or Polymarket credentials. V2 signs the order principal, token, shares, and price while the operator applies fees at match time; Conviction reserves the observed fee in the displayed total and verifies it after settlement, but does not mislabel that fee as part of the V2 signature.
+The buyer orchestrator derives an argument vector from canonical `executionCard.argv`, runs Conviction's full-commit-pinned and SHA-verified Polymarket runtime dry run, and may execute the identical vector only after a separate, fresh live confirmation. It advances beyond the confirmation second, then rechecks deposit-wallet mode, atomic pUSD balance, card expiry, and the venue dry run immediately before signing. FAK fills only at or below `maxPrice` and cancels any remainder. Conviction does not receive the wallet key or Polymarket credentials. V2 signs the order principal, token, shares, and price while the operator applies fees at match time; Conviction reserves the observed fee in the displayed total and verifies it after settlement, but does not mislabel that fee as part of the V2 signature.
 
 ## OPEN verification request
 

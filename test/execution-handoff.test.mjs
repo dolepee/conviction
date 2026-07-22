@@ -42,7 +42,8 @@ test("builds an explicit bounds acknowledgement", () => {
 
 test("copies only a dry-run request and requires separate later authorization", () => {
   const prompt = executionRequest(COMPILATION);
-  assert.match(prompt, /polymarket-plugin buy .* --dry-run/);
+  assert.match(prompt, /npm run polymarket -- buy .* --dry-run/);
+  assert.doesNotMatch(prompt, /Then preview exactly: polymarket-plugin /);
   assert.match(prompt, /not live-trading authorization/i);
   assert.match(prompt, /separate, fresh user message/i);
   assert.match(prompt, /Expected Polygon deposit wallet/);

@@ -1,6 +1,6 @@
 {
   "name": "conviction",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "description": "Non-custodial bounded prediction-market execution for OKX.AI",
@@ -12,6 +12,8 @@
     "gate": "npm run typecheck && npm test && npm run site:verify && npm run agent:verify && npm run acceptance:gate-a -- --offline && npm run acceptance:gate-b -- --offline && npm run acceptance:gate-c -- --offline",
     "payment:preflight": "node scripts/check-payment-credentials.mjs",
     "service:verify": "node scripts/verify-paid-service.mjs",
+    "runtime:install": "node scripts/install-polymarket-runtime.mjs",
+    "polymarket": "node scripts/run-polymarket-runtime.mjs",
     "intent:live": "node scripts/compile-live-intent.mjs",
     "receipt:verify": "node scripts/verify-live-receipt.mjs",
     "acceptance:gate-a": "node scripts/acceptance-gate.mjs",

@@ -7,7 +7,7 @@ export default function handler(request, response) {
   return response.status(200).json({
     ok: true,
     product: "Conviction",
-    version: "0.4.1",
+    version: "0.4.2",
     execution: "non-custodial",
     products: [
       { name: "OPEN", price: "0.05 USD₮0", path: "/api/service" },

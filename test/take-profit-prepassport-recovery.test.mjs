@@ -846,6 +846,7 @@ test("a losing TP_CANCEL claim with preserveSourceJournal cannot mutate or relea
         issuerRegistry: fixture.issuerRegistry,
         json: true,
       }, {
+        pluginCommand: "/test/pinned-polymarket-plugin",
         stateDirectory: fixture.stateDirectory,
         now: () => Date.parse(CANCEL_CONFIRMED_AT) + 1_000,
         fetchExactOrderImpl: async () => cancelSnapshotAt(Date.parse(CANCEL_CONFIRMED_AT) + 1_000),
@@ -880,6 +881,7 @@ test("terminal TP_CANCEL release failure stays attempted and recoverable until g
         issuerRegistry: fixture.issuerRegistry,
         json: true,
       }, {
+        pluginCommand: "/test/pinned-polymarket-plugin",
         stateDirectory: fixture.stateDirectory,
         now: () => runAt,
         fetchExactOrderImpl: async () => {
