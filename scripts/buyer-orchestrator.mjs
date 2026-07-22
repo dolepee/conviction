@@ -1458,6 +1458,131 @@ function decodeHeader(value, label) {
   }
 }
 
+export async function persistSuccessfulPaidServiceResponse({
+  state,
+  response,
+  json,
+  paymentResponseRaw,
+  writeState = writeReconciliationJournal,
+  ambiguousStage = "paid_request_settlement_ambiguous",
+} = {}) {
+  if (
+    !state || typeof state !== "object" || Array.isArray(state) ||
+    response?.ok !== true || !Number.isInteger(response?.status) ||
+    response.status < 200 || response.status >= 300 || json?.ok !== true ||
+    typeof writeState !== "function" ||
+    (ambiguousStage !== "paid_request_settlement_ambiguous" && ambiguousStage !== "paid_request_ambiguous")
+  ) {
+    throw Object.assign(new Error("Paid service response is not an accepted successful response"), {
+      code: "invalid_paid_service_response",
+    });
+  }
+
+  // A 2xx body is not settlement evidence. Persist the payment authorization's
+  // ambiguous state before parsing any merchant-controlled header so a missing,
+  // malformed, or crash-interrupted response remains exactly reconcilable.
+  const pending = structuredClone(state);
+  pending.paidServiceResponse = {
+    status: response.status,
+    paymentResponsePresent: Boolean(paymentResponseRaw),
+  };
+  pending.stage = ambiguousStage;
+  pending.reconciliationRequired = true;
+  await writeState(pending);
+  replaceRecord(state, pending);
+
+  const paymentResponse = decodeHeader(paymentResponseRaw, "PAYMENT-RESPONSE");
+  const paymentTx = paymentTransaction(paymentResponse);
+
+  // Keep the merchant response in memory until its claimed settlement is
+  // independently proven on X Layer. A syntactically valid transaction hash is
+  // not payment authority and must never unlock paid-card expiry cleanup.
+  return Object.freeze({ card: json, paymentResponse, paymentTx });
+}
+
+const EXACT_PAYMENT_CHECKS = Object.freeze([
+  "transactionSucceeded",
+  "receiptBoundToBlock",
+  "freshPayment",
+  "exactAsset",
+  "exactPayer",
+  "exactPayee",
+  "exactAmount",
+]);
+
+function exactStoredServicePayment(state, service) {
+  const proof = asObject(state?.paymentProof);
+  const response = asObject(state?.paidServiceResponse);
+  const paymentTx = String(state?.paymentTx || "");
+  const paymentPayer = String(state?.paymentPayer || "");
+  if (
+    !service || typeof service !== "object" || !DECIMAL_UINT_RE.test(String(service.priceAtomic || "")) ||
+    !Number.isInteger(response?.status) || response.status < 200 || response.status >= 300 ||
+    response.paymentResponsePresent !== true ||
+    !HASH_RE.test(paymentTx) || paymentTx !== paymentTx.toLowerCase() ||
+    !ADDRESS_RE.test(paymentPayer) || paymentPayer !== paymentPayer.toLowerCase() ||
+    proof?.version !== "conviction-x402-payment-v1" || proof.chainId !== 196 ||
+    proof.transactionHash !== paymentTx || proof.payer !== paymentPayer ||
+    proof.payee !== SERVICE_PAYEE || proof.asset !== SERVICE_ASSET ||
+    proof.amountAtomic !== service.priceAtomic ||
+    !DECIMAL_UINT_RE.test(String(proof.blockNumber || "")) ||
+    !HASH_RE.test(String(proof.blockHash || "")) ||
+    !DECIMAL_UINT_RE.test(String(proof.blockTimestamp || "")) ||
+    !EXACT_PAYMENT_CHECKS.every((field) => proof.checks?.[field] === true)
+  ) {
+    return null;
+  }
+  return proof;
+}
+
+export async function persistVerifiedPaidServicePayment({
+  state,
+  paid,
+  paymentProof,
+  service,
+  writeState = writeReconciliationJournal,
+  ambiguousStage = "paid_request_settlement_ambiguous",
+} = {}) {
+  const card = asObject(paid?.card);
+  const paymentTx = String(paid?.paymentTx || "").toLowerCase();
+  if (
+    !state || typeof state !== "object" || Array.isArray(state) ||
+    typeof writeState !== "function" || !card || !HASH_RE.test(paymentTx) ||
+    !HASH_RE.test(String(card.intentHash || "")) || state.stage !== ambiguousStage ||
+    (ambiguousStage !== "paid_request_settlement_ambiguous" && ambiguousStage !== "paid_request_ambiguous") ||
+    state.reconciliationRequired !== true || state.paidCard != null || state.paymentTx != null ||
+    state.paymentProof != null || state.executionArgvHash != null || state.orderId != null ||
+    state.settlementTx != null
+  ) {
+    throw Object.assign(new Error("Verified paid service response cannot be committed from this state"), {
+      code: "invalid_payment_verification_state",
+    });
+  }
+
+  // Also bind the verified transfer to the exact authorization metadata that
+  // reserved this replay identity. The helper below is deliberately reused by
+  // reconciliation so persisted proof and release authority have one shape.
+  validateStoredPaymentAuthorization(state.paymentAuthorization, {
+    paymentPayer: state.paymentPayer,
+    service,
+  });
+  const verified = structuredClone(state);
+  verified.stage = "payment_verified";
+  verified.paymentTx = paymentTx;
+  verified.intentHash = card.intentHash;
+  verified.paidCard = card;
+  verified.paymentProof = structuredClone(paymentProof);
+  verified.reconciliationRequired = true;
+  if (!exactStoredServicePayment(verified, service)) {
+    throw Object.assign(new Error("Independent x402 proof differs from the exact paid service"), {
+      code: "payment_proof_mismatch",
+    });
+  }
+  await writeState(verified);
+  replaceRecord(state, verified);
+  return state.paymentProof;
+}
+
 export function paymentAuthorizationMetadata(headerValue, {
   paymentPayer,
   service = POSITION_CARD_SERVICE,
@@ -2216,6 +2341,19 @@ export async function reconcileOpenJournal({
   }
 
   if (!state.executionArgvHash && state.paidCard) {
+    if (
+      !new Set(["payment_verified", "trade_confirmed", "execution_lock_acquired"]).has(state.stage) ||
+      !exactStoredServicePayment(state, POSITION_CARD_SERVICE)
+    ) {
+      return {
+        ok: true,
+        status: "manual_reconciliation_required",
+        reason: "payment_verification_missing_or_mismatched",
+        reconciliationRequired: true,
+        journalPath: journal,
+        stage: state.stage,
+      };
+    }
     const validated = validateCardImpl(state.paidCard, {
       trustedIssuers,
       allowExpired: true,
@@ -2520,6 +2658,19 @@ export async function reconcileCloseJournal({
     }
     reason = "authenticated_terminal_zero_fill";
   } else if (!state.executionArgvHash && state.paidCard) {
+    if (
+      !new Set(["payment_verified", "trade_confirmed", "execution_lock_acquired"]).has(state.stage) ||
+      !exactStoredServicePayment(state, POSITION_MANAGER_SERVICE)
+    ) {
+      return {
+        ok: true,
+        status: "manual_reconciliation_required",
+        reason: "payment_verification_missing_or_mismatched",
+        reconciliationRequired: true,
+        journalPath: journal,
+        stage: state.stage,
+      };
+    }
     const card = validateCardImpl(state.paidCard, {
       trustedIssuers,
       allowExpired: true,
@@ -3661,11 +3812,11 @@ async function main() {
         headers: { [PAYMENT_SIGNATURE_HEADER]: data.authorization_header },
       });
       const paymentResponseRaw = response.headers.get("payment-response");
-      checkpoint.paidServiceResponse = {
-        status: response.status,
-        paymentResponsePresent: Boolean(paymentResponseRaw),
-      };
       if (!response.ok || json?.ok !== true) {
+        checkpoint.paidServiceResponse = {
+          status: response.status,
+          paymentResponsePresent: Boolean(paymentResponseRaw),
+        };
         checkpoint.stage = response.status >= 400 && !paymentResponseRaw
           ? "paid_request_rejected_pre_settlement"
           : "paid_request_settlement_ambiguous";
@@ -3675,14 +3826,12 @@ async function main() {
           code: json?.error?.code || "paid_service_failed",
         });
       }
-      const paymentResponse = decodeHeader(paymentResponseRaw, "PAYMENT-RESPONSE");
-      const paymentTx = paymentTransaction(paymentResponse);
-      checkpoint.stage = "paid_card_received";
-      checkpoint.paymentTx = paymentTx;
-      checkpoint.intentHash = json.intentHash || null;
-      checkpoint.paidCard = json;
-      await writeReconciliationJournal(checkpoint);
-      return { card: json, paymentResponse, paymentTx };
+      return persistSuccessfulPaidServiceResponse({
+        state: checkpoint,
+        response,
+        json,
+        paymentResponseRaw,
+      });
     },
     verifyPayment: async ({ paid, startedAt }) => {
       const result = await fetchAndVerifyX402Payment({
@@ -3693,10 +3842,12 @@ async function main() {
         amountAtomic: service.priceAtomic,
         earliestAllowedTime: new Date(startedAt).toISOString(),
       });
-      checkpoint.stage = "payment_verified";
-      checkpoint.paymentProof = result.proof;
-      await writeReconciliationJournal(checkpoint);
-      return result.proof;
+      return persistVerifiedPaidServicePayment({
+        state: checkpoint,
+        paid,
+        paymentProof: result.proof,
+        service,
+      });
     },
     validateCard: async (card, validationOptions) => validateCard(card, validationOptions),
     validateCloseCard: async (card, validationOptions) => validateCloseCard(card, validationOptions),

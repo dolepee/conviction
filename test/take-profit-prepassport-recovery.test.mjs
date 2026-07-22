@@ -8,7 +8,12 @@ import test from "node:test";
 import { sha256 } from "../src/canonical.mjs";
 import { createIntentIssuer } from "../src/intent-issuer.mjs";
 import { compileTakeProfitIntent } from "../src/take-profit-intent-compiler.mjs";
-import { claimExecutionLock, releaseReconciledLocks } from "../scripts/buyer-orchestrator.mjs";
+import {
+  claimExecutionLock,
+  persistSuccessfulPaidServiceResponse,
+  persistVerifiedPaidServicePayment,
+  releaseReconciledLocks,
+} from "../scripts/buyer-orchestrator.mjs";
 import {
   recoverPrePassportTakeProfitJournal,
   claimTakeProfitReservation,
@@ -20,6 +25,7 @@ import {
 } from "../scripts/take-profit-orchestrator.mjs";
 import { POSITION_MANAGER_SERVICE, SERVICE_ASSET, SERVICE_PAYEE } from "../src/service-payment.mjs";
 import { validateTakeProfitJournal } from "../src/take-profit-lifecycle.mjs";
+import { fetchAndVerifyX402Payment } from "../src/x402-payment-verifier.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
 const NOW = Date.parse("2026-07-21T02:00:10.000Z");
@@ -181,6 +187,7 @@ function prePassportJournal() {
     paymentRequestedAt: "2026-07-21T02:00:10.000Z",
     paymentAuthorization: { redacted: true },
     paymentTx: PAYMENT_TX,
+    paidServiceResponse: { status: 200, paymentResponsePresent: true },
     paymentProof: {
       version: "conviction-x402-payment-v1",
       chainId: 196,
@@ -1018,6 +1025,280 @@ function paidUnstartedCheckpoint() {
     at: FETCHED_AT,
   };
   return journal;
+}
+
+function verifiedUnconfirmedCheckpoint() {
+  const journal = prePassportJournal();
+  journal.stage = "payment_verified";
+  journal.tradeConsent = null;
+  journal.executionLockPath = null;
+  journal.executionAttempted = false;
+  journal.executionArgv = null;
+  journal.executionArgvHash = null;
+  journal.liveResult = null;
+  journal.orderId = null;
+  journal.takeProfitPassport = null;
+  journal.takeProfitPassportHash = null;
+  journal.restingOrderProofHash = null;
+  journal.reconciliationRequired = true;
+  return journal;
+}
+
+for (const headerCase of ["missing", "malformed"]) {
+  test(`TAKE_PROFIT durably classifies a successful ${headerCase} PAYMENT-RESPONSE as authorization-only`, async () => {
+    const validBefore = String(NOW / 1_000 + 120);
+    const fixture = await diskFixture({ journal: authorizationCheckpoint({ validBefore }) });
+    const state = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+    const raw = headerCase === "malformed" ? "not-valid-base64-json" : null;
+    const response = new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: raw ? { "payment-response": raw } : {},
+    });
+    await assert.rejects(
+      persistSuccessfulPaidServiceResponse({
+        state,
+        response,
+        json: { ok: true, intentHash: `0x${"d".repeat(64)}` },
+        paymentResponseRaw: response.headers.get("payment-response"),
+        ambiguousStage: "paid_request_ambiguous",
+        writeState: (next) => writeTakeProfitState(next, {
+          directory: fixture.stateDirectory,
+          file: fixture.journalPath,
+        }),
+      }),
+      (error) => error?.code === "invalid_payment_header",
+    );
+    const ambiguous = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+    assert.equal(ambiguous.stage, "paid_request_ambiguous");
+    assert.deepEqual(ambiguous.paidServiceResponse, {
+      status: 200,
+      paymentResponsePresent: headerCase === "malformed",
+    });
+    assert.equal(ambiguous.paymentTx, null);
+    assert.equal(ambiguous.paidCard, null);
+    assert.equal(ambiguous.paymentProof, null);
+    assert.equal(ambiguous.executionAttempted, false);
+
+    const result = await runTakeProfitReconcileCli({
+      journal: fixture.journalPath,
+      issuerRegistry: fixture.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: fixture.stateDirectory,
+      now: () => NOW + 180_000,
+      authorizationStateImpl: async () => ({
+        used: false,
+        blockNumber: "101",
+        blockHash: `0x${"8".repeat(64)}`,
+        blockTimestamp: String(Number(validBefore) + 1),
+      }),
+      fetchExactOrderImpl: async () => assert.fail("ambiguous payment cannot fetch or place an order"),
+    });
+    assert.equal(result.status, "expired_unused_payment_authorization_reconciled");
+    await assert.rejects(access(fixture.reservationLockPath), (error) => error?.code === "ENOENT");
+  });
+}
+
+for (const decodedPaymentResponse of [{}, { transaction: "0x1234" }]) {
+  test("TAKE_PROFIT keeps a decoded PAYMENT-RESPONSE without a canonical transaction in its exact ambiguous stage", async () => {
+    const fixture = await diskFixture({ journal: authorizationCheckpoint() });
+    const state = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+    const response = new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: {
+        "payment-response": Buffer.from(JSON.stringify(decodedPaymentResponse)).toString("base64"),
+      },
+    });
+    await assert.rejects(
+      persistSuccessfulPaidServiceResponse({
+        state,
+        response,
+        json: { ok: true, intentHash: `0x${"d".repeat(64)}` },
+        paymentResponseRaw: response.headers.get("payment-response"),
+        ambiguousStage: "paid_request_ambiguous",
+        writeState: (next) => writeTakeProfitState(next, {
+          directory: fixture.stateDirectory,
+          file: fixture.journalPath,
+        }),
+      }),
+      (error) => error?.code === "missing_payment_transaction",
+    );
+    const durable = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+    assert.equal(durable.stage, "paid_request_ambiguous");
+    assert.equal(durable.reconciliationRequired, true);
+    assert.equal(durable.paymentTx, null);
+    assert.equal(durable.paidCard, null);
+    assert.equal(durable.paymentProof, null);
+    await access(fixture.reservationLockPath);
+  });
+}
+
+test("TAKE_PROFIT promotes its response only after the exact x402 proof is durably verified", async () => {
+  const fixture = await diskFixture({ journal: authorizationCheckpoint() });
+  const state = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  const response = new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      "payment-response": Buffer.from(JSON.stringify({ transaction: PAYMENT_TX })).toString("base64"),
+    },
+  });
+  const card = { ...paidCard(), ok: true };
+  const writeState = (next) => writeTakeProfitState(next, {
+    directory: fixture.stateDirectory,
+    file: fixture.journalPath,
+  });
+  const paid = await persistSuccessfulPaidServiceResponse({
+    state,
+    response,
+    json: card,
+    paymentResponseRaw: response.headers.get("payment-response"),
+    ambiguousStage: "paid_request_ambiguous",
+    writeState,
+  });
+  const proof = structuredClone(prePassportJournal().paymentProof);
+  await persistVerifiedPaidServicePayment({
+    state,
+    paid,
+    paymentProof: proof,
+    service: POSITION_MANAGER_SERVICE,
+    ambiguousStage: "paid_request_ambiguous",
+    writeState,
+  });
+  const durable = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  assert.equal(durable.stage, "payment_verified");
+  assert.equal(durable.paymentTx, PAYMENT_TX);
+  assert.equal(durable.paidCard.intentHash, card.intentHash);
+  assert.deepEqual(durable.paymentProof, proof);
+  assert.deepEqual(durable.paidServiceResponse, { status: 200, paymentResponsePresent: true });
+  assert.equal(durable.tradeConsent, null);
+  assert.equal(durable.executionAttempted, false);
+  await access(fixture.reservationLockPath);
+});
+
+test("TAKE_PROFIT keeps a valid-looking wrong payment transaction authorization-only after real RPC verification fails", async () => {
+  const validBefore = String(NOW / 1_000 + 120);
+  const fixture = await diskFixture({ journal: authorizationCheckpoint({ validBefore }) });
+  const state = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  const claimedTx = `0x${"9".repeat(64)}`;
+  const response = new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      "payment-response": Buffer.from(JSON.stringify({ transaction: claimedTx })).toString("base64"),
+    },
+  });
+  const card = { ...paidCard(), ok: true };
+  const paid = await persistSuccessfulPaidServiceResponse({
+    state,
+    response,
+    json: card,
+    paymentResponseRaw: response.headers.get("payment-response"),
+    ambiguousStage: "paid_request_ambiguous",
+    writeState: (next) => writeTakeProfitState(next, {
+      directory: fixture.stateDirectory,
+      file: fixture.journalPath,
+    }),
+  });
+  await assert.rejects(
+    fetchAndVerifyX402Payment({
+      paymentTx: paid.paymentTx,
+      payer: PAYER,
+      payee: SERVICE_PAYEE,
+      asset: SERVICE_ASSET,
+      amountAtomic: POSITION_MANAGER_SERVICE.priceAtomic,
+      earliestAllowedTime: new Date(NOW).toISOString(),
+    }, {
+      rpcCall: async () => { throw new Error("simulated unavailable RPC"); },
+    }),
+    (error) => error?.code === "payment_rpc_error",
+  );
+  const ambiguous = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  assert.equal(ambiguous.stage, "paid_request_ambiguous");
+  assert.equal(ambiguous.paymentTx, null);
+  assert.equal(ambiguous.paidCard, null);
+  assert.equal(ambiguous.paymentProof, null);
+
+  const result = await runTakeProfitReconcileCli({
+    journal: fixture.journalPath,
+    issuerRegistry: fixture.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: fixture.stateDirectory,
+    now: () => NOW + 180_000,
+    authorizationStateImpl: async () => ({
+      used: true,
+      blockTimestamp: String(Number(validBefore) + 1),
+    }),
+    fetchExactOrderImpl: async () => assert.fail("unverified payment cannot fetch or place an order"),
+  });
+  assert.equal(result.status, "manual_reconciliation_required");
+  assert.equal(result.reason, "payment_authorization_consumed_or_ambiguous");
+  await access(fixture.reservationLockPath);
+});
+
+test("TAKE_PROFIT verified payment before consent waits for signed-card expiry then releases exactly its reservation", async () => {
+  const waiting = await diskFixture({ journal: verifiedUnconfirmedCheckpoint() });
+  const waitingResult = await runTakeProfitReconcileCli({
+    journal: waiting.journalPath,
+    issuerRegistry: waiting.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: waiting.stateDirectory,
+    now: () => Date.parse("2026-07-21T02:04:00.000Z"),
+    fetchExactOrderImpl: async () => assert.fail("unconfirmed payment cannot fetch or place an order"),
+  });
+  assert.equal(waitingResult.status, "waiting_for_card_expiry");
+  assert.equal(waitingResult.reservationReleased, false);
+  await access(waiting.reservationLockPath);
+
+  const expired = await diskFixture({ journal: verifiedUnconfirmedCheckpoint() });
+  const expiredResult = await runTakeProfitReconcileCli({
+    journal: expired.journalPath,
+    issuerRegistry: expired.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: expired.stateDirectory,
+    now: () => Date.parse("2026-07-21T02:05:20.000Z"),
+    fetchExactOrderImpl: async () => assert.fail("unconfirmed payment cannot fetch or place an order"),
+  });
+  assert.equal(expiredResult.status, "expired_paid_unstarted_reconciled");
+  assert.equal(expiredResult.reservationReleased, true);
+  assert.equal(expiredResult.reconciliationRequired, false);
+  await assert.rejects(access(expired.reservationLockPath), (error) => error?.code === "ENOENT");
+  const persisted = JSON.parse(await readFile(expired.journalPath, "utf8"));
+  assert.equal(persisted.stage, "expired_paid_unstarted_reconciled");
+  assert.equal(persisted.tradeConsent, null);
+  assert.equal(persisted.orderId, null);
+});
+
+for (const mutation of ["proof", "card", "request", "reservation"]) {
+  test(`TAKE_PROFIT verified-but-unconfirmed cleanup refuses ${mutation} substitution`, async () => {
+    const journal = verifiedUnconfirmedCheckpoint();
+    if (mutation === "proof") journal.paymentProof.amountAtomic = String(BigInt(journal.paymentProof.amountAtomic) + 1n);
+    if (mutation === "card") {
+      journal.paidCard = structuredClone(journal.paidCard);
+      journal.paidCard.intentHash = `0x${"7".repeat(64)}`;
+    }
+    if (mutation === "request") journal.request.shares = "9";
+    const fixture = await diskFixture({ journal });
+    if (mutation === "reservation") {
+      const reservation = JSON.parse(await readFile(fixture.reservationLockPath, "utf8"));
+      reservation.replayKey = `0x${"7".repeat(64)}`;
+      await writeFile(fixture.reservationLockPath, `${JSON.stringify(reservation, null, 2)}\n`, { mode: 0o600 });
+    }
+    await assert.rejects(
+      runTakeProfitReconcileCli({
+        journal: fixture.journalPath,
+        issuerRegistry: fixture.issuerRegistry,
+        json: true,
+      }, {
+        stateDirectory: fixture.stateDirectory,
+        now: () => Date.parse("2026-07-21T02:05:20.000Z"),
+        fetchExactOrderImpl: async () => assert.fail("substituted checkpoint cannot fetch or place an order"),
+      }),
+    );
+    await access(fixture.reservationLockPath);
+    assert.equal(JSON.parse(await readFile(fixture.journalPath, "utf8")).stage, "payment_verified");
+  });
 }
 
 test("pre-spawn refusal is durably classified without claiming an order attempt", () => {

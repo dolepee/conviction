@@ -36,7 +36,8 @@ import {
   normalizeSourcePosition,
   parseJsonOutput,
   paymentAuthorizationMetadata,
-  paymentTransaction,
+  persistSuccessfulPaidServiceResponse,
+  persistVerifiedPaidServicePayment,
   releaseReconciledLocks,
   requireDistinctPaymentPayer,
   resolveFailedLockAttachment,
@@ -646,6 +647,20 @@ function validatePaidUnstartedTakeProfitCheckpoint(journal, options) {
   return validatePaidTakeProfitCheckpoint(journal, options);
 }
 
+function validateVerifiedUnconfirmedTakeProfitCheckpoint(journal, options) {
+  fail(
+    journal?.stage === "payment_verified" && journal.reconciliationRequired === true &&
+      journal.tradeConsent == null && journal.executionLockPath == null &&
+      journal.executionAttempted === false && journal.executionArgv == null &&
+      journal.executionArgvHash == null && journal.liveResult == null &&
+      journal.orderId == null && journal.takeProfitPassport == null &&
+      journal.takeProfitPassportHash == null && journal.restingOrderProofHash == null,
+    "invalid_unconfirmed_payment_checkpoint",
+    "Journal is not an exact verified-but-unconfirmed TAKE_PROFIT payment",
+  );
+  return validateVerifiedTakeProfitPaymentCheckpoint(journal, options);
+}
+
 async function reconcileTakeProfitNonOrderState(context, {
   now = Date.now,
   stateDirectory,
@@ -668,13 +683,19 @@ async function reconcileTakeProfitNonOrderState(context, {
     "execution_lock_acquired",
     "execution_blocked_before_launch",
   ]).has(context.journal.stage);
-  if (!isAuthorizationOnly && !isPaidUnstarted) return null;
+  const isVerifiedUnconfirmed = context.journal.stage === "payment_verified";
+  if (!isAuthorizationOnly && !isPaidUnstarted && !isVerifiedUnconfirmed) return null;
 
   await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
   const canonicalStateDirectory = await realpath(resolve(stateDirectory));
   const recovery = isAuthorizationOnly
     ? validateTakeProfitAuthorizationCheckpoint(context.journal)
-    : validatePaidUnstartedTakeProfitCheckpoint(context.journal, {
+    : isVerifiedUnconfirmed
+      ? validateVerifiedUnconfirmedTakeProfitCheckpoint(context.journal, {
+          trustedIssuers: context.trustedIssuers,
+          now: timestamp,
+        })
+      : validatePaidUnstartedTakeProfitCheckpoint(context.journal, {
         trustedIssuers: context.trustedIssuers,
         now: timestamp,
       });
@@ -784,7 +805,7 @@ async function reconcileTakeProfitNonOrderState(context, {
   });
 }
 
-function validatePaidTakeProfitCheckpoint(journalInput, {
+function validateVerifiedTakeProfitPaymentCheckpoint(journalInput, {
   trustedIssuers,
   now = Date.now(),
 } = {}) {
@@ -894,17 +915,53 @@ function validatePaidTakeProfitCheckpoint(journalInput, {
     "invalid_prepassport_journal",
     "Journal has no independently verified x402 payment proof",
   );
+  const paidServiceResponse = record(
+    journal.paidServiceResponse,
+    "invalid_prepassport_journal",
+    "Journal has no paid service response metadata",
+  );
   fail(
+    Number.isInteger(paidServiceResponse.status) && paidServiceResponse.status >= 200 &&
+      paidServiceResponse.status < 300 && paidServiceResponse.paymentResponsePresent === true &&
     paymentProof.version === "conviction-x402-payment-v1" && paymentProof.chainId === 196 &&
       paymentProof.transactionHash === paymentTx && paymentProof.payer === paymentPayer &&
       paymentProof.payee === SERVICE_PAYEE && paymentProof.asset === SERVICE_ASSET &&
       paymentProof.amountAtomic === POSITION_MANAGER_SERVICE.priceAtomic &&
+      /^\d+$/.test(String(paymentProof.blockNumber || "")) &&
+      HASH_RE.test(String(paymentProof.blockHash || "")) &&
       ["transactionSucceeded", "receiptBoundToBlock", "freshPayment", "exactAsset", "exactPayer", "exactPayee", "exactAmount"]
         .every((field) => paymentProof.checks?.[field] === true),
     "prepassport_payment_mismatch",
     "Stored x402 payment proof is not the exact Position Manager payment",
   );
   fail(/^\d+$/.test(String(paymentProof.blockTimestamp || "")), "invalid_prepassport_journal", "Stored x402 payment timestamp is invalid");
+
+  return Object.freeze({
+    journal,
+    validated,
+    paymentPayer,
+    signerAddress,
+    depositWallet,
+    intentHash,
+    replayKey,
+    paymentTx,
+    paymentProof,
+  });
+}
+
+function validatePaidTakeProfitCheckpoint(journalInput, options = {}) {
+  const verified = validateVerifiedTakeProfitPaymentCheckpoint(journalInput, options);
+  const {
+    journal,
+    validated,
+    paymentPayer,
+    signerAddress,
+    depositWallet,
+    intentHash,
+    replayKey,
+    paymentTx,
+    paymentProof,
+  } = verified;
 
   const consent = record(
     journal.tradeConsent,
@@ -943,6 +1000,8 @@ function validatePaidTakeProfitCheckpoint(journalInput, {
     intentHash,
     confirmedAt: confirmed.text,
     replayKey,
+    paymentTx,
+    paymentProof,
   });
 }
 
@@ -2039,18 +2098,23 @@ export async function runTakeProfitCli(options, {
         headers: { [PAYMENT_SIGNATURE_HEADER]: data.authorization_header },
       });
       const paymentResponseRaw = response.headers.get("payment-response");
-      state.paidServiceResponse = { status: response.status, paymentResponsePresent: Boolean(paymentResponseRaw) };
-      if (!response.ok || json?.ok !== true || !paymentResponseRaw) {
+      if (!response.ok || json?.ok !== true) {
+        state.paidServiceResponse = { status: response.status, paymentResponsePresent: Boolean(paymentResponseRaw) };
         state.reconciliationRequired = true;
         await persist("paid_request_ambiguous");
         fail(false, json?.error?.code || "paid_service_failed", json?.error?.message || "Paid TAKE_PROFIT compilation failed");
       }
-      const paymentResponse = decodeHeader(paymentResponseRaw, "PAYMENT-RESPONSE");
-      state.paymentTx = paymentTransaction(paymentResponse);
-      state.paidCard = json;
-      state.intentHash = json.intentHash;
-      await persist("paid_card_received");
-      return { card: json, paymentResponse, paymentTx: state.paymentTx };
+      return persistSuccessfulPaidServiceResponse({
+        state,
+        response,
+        json,
+        paymentResponseRaw,
+        ambiguousStage: "paid_request_ambiguous",
+        writeState: async (next) => writeTakeProfitState(next, {
+          directory: stateDirectory,
+          file: journal,
+        }),
+      });
     },
     verifyPayment: async ({ paid, startedAt }) => {
       const result = await fetchAndVerifyX402Payment({
@@ -2061,9 +2125,17 @@ export async function runTakeProfitCli(options, {
         amountAtomic: POSITION_MANAGER_SERVICE.priceAtomic,
         earliestAllowedTime: state.paymentRequestedAt || new Date(startedAt).toISOString(),
       });
-      state.paymentProof = result.proof;
-      await persist("payment_verified");
-      return result.proof;
+      return persistVerifiedPaidServicePayment({
+        state,
+        paid,
+        paymentProof: result.proof,
+        service: POSITION_MANAGER_SERVICE,
+        ambiguousStage: "paid_request_ambiguous",
+        writeState: async (next) => writeTakeProfitState(next, {
+          directory: stateDirectory,
+          file: journal,
+        }),
+      });
     },
     validateTakeProfitCard: (card, validationOptions) => validateTakeProfitCard(card, validationOptions),
     dryRun: (argv) => commandJson("polymarket-plugin", [...argv, "--dry-run"], "Polymarket TAKE_PROFIT dry run"),

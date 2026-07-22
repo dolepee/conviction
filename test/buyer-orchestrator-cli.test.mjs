@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { access, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile as fsWriteFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 const writeFile = (file, data, options = {}) => fsWriteFile(file, data, { ...options, mode: 0o600 });
@@ -19,6 +19,8 @@ import {
   paymentAuthorizationMetadata,
   paymentTransaction,
   persistBoundTradeConsent,
+  persistSuccessfulPaidServiceResponse,
+  persistVerifiedPaidServicePayment,
   reconcileCloseJournal,
   reconcileOpenJournal,
   recoverKnownUnstartedCloseExecution,
@@ -37,6 +39,7 @@ import {
 import {
   MANAGE_SERVICE_PRICE_ATOMIC,
   MANAGE_SERVICE_RESOURCE,
+  POSITION_CARD_SERVICE,
   POSITION_MANAGER_SERVICE,
   SERVICE_ASSET,
   SERVICE_NETWORK,
@@ -44,6 +47,7 @@ import {
   SERVICE_PRICE_ATOMIC,
   SERVICE_RESOURCE,
 } from "../src/service-payment.mjs";
+import { fetchAndVerifyX402Payment } from "../src/x402-payment-verifier.mjs";
 
 const BASE = [
   "open",
@@ -72,6 +76,35 @@ const CLOSE = [
   "--rationale", "Close only above my floor.",
   "--json",
 ];
+
+function exactServicePaymentProof({
+  paymentTx = `0x${"f".repeat(64)}`,
+  payer = "0x1111111111111111111111111111111111111111",
+  amountAtomic = MANAGE_SERVICE_PRICE_ATOMIC,
+} = {}) {
+  return {
+    version: "conviction-x402-payment-v1",
+    chainId: 196,
+    transactionHash: paymentTx,
+    blockNumber: "10",
+    blockHash: `0x${"e".repeat(64)}`,
+    blockTimestamp: "2",
+    asset: SERVICE_ASSET,
+    payer,
+    payee: SERVICE_PAYEE,
+    amountAtomic,
+    logIndex: "0x1",
+    checks: {
+      transactionSucceeded: true,
+      receiptBoundToBlock: true,
+      freshPayment: true,
+      exactAsset: true,
+      exactPayer: true,
+      exactPayee: true,
+      exactAmount: true,
+    },
+  };
+}
 
 test("buyer CLI accepts the release contract without pre-authorizing payment", () => {
   const parsed = parseArgs(BASE);
@@ -959,11 +992,16 @@ test("CLOSE reconciliation releases only an expired unexecuted card's scoped loc
   const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
   const executionLock = join(directory, "polymarket-execution.lock.json");
   const replayKey = `0x${"a".repeat(64)}`;
+  const paymentTx = `0x${"f".repeat(64)}`;
   try {
     const state = {
       mode: "close",
-      stage: "paid_card_received",
+      stage: "payment_verified",
       reconciliationRequired: true,
+      paymentPayer: "0x1111111111111111111111111111111111111111",
+      paymentTx,
+      paymentProof: exactServicePaymentProof({ paymentTx }),
+      paidServiceResponse: { status: 200, paymentResponsePresent: true },
       paidCard: { fixture: true },
       executionArgvHash: null,
       replayKey,
@@ -995,6 +1033,47 @@ test("CLOSE reconciliation releases only an expired unexecuted card's scoped loc
     const updated = JSON.parse(await readFile(journal, "utf8"));
     assert.equal(updated.replayLockPath, null);
     assert.equal(updated.executionLockPath, null);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CLOSE reconciliation never treats a legacy card-only response as paid release authority", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-reconcile-unverified-card-test-"));
+  const journal = join(directory, "journey.json");
+  const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
+  const replayKey = `0x${"a".repeat(64)}`;
+  try {
+    const state = {
+      mode: "close",
+      stage: "paid_card_received",
+      reconciliationRequired: true,
+      paidCard: { fixture: true },
+      paymentTx: `0x${"f".repeat(64)}`,
+      paymentProof: null,
+      executionArgvHash: null,
+      replayKey,
+      replayLockPath: replayLock,
+      executionLockPath: null,
+    };
+    await Promise.all([
+      writeFile(journal, JSON.stringify(state)),
+      writeFile(replayLock, JSON.stringify({
+        version: "conviction-close-replay-lock-v1",
+        replayKey,
+        journalPath: journal,
+      })),
+    ]);
+    const result = await reconcileCloseJournal({
+      file: journal,
+      trustedIssuers: new Map(),
+      now: 2_000,
+      stateDirectory: directory,
+      validateCardImpl: () => assert.fail("unverified merchant card must not be trusted"),
+    });
+    assert.equal(result.status, "manual_reconciliation_required");
+    assert.equal(result.reason, "payment_verification_missing_or_mismatched");
+    await access(replayLock);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -1239,6 +1318,379 @@ function recoverableOpenPaymentState({ journal, validBefore = "1", stage, usedRe
     },
   };
 }
+
+function paidResponseFixture({ mode, journal, validBefore = "1" }) {
+  if (mode === "open") {
+    const fixture = recoverableOpenPaymentState({
+      journal,
+      validBefore,
+      stage: "payment_authorization_created",
+    });
+    return {
+      ...fixture,
+      state: { ...fixture.state, journalPath: journal },
+      lock: fixture.replayLock,
+      service: POSITION_CARD_SERVICE,
+      reconcile: (options) => reconcileOpenJournal(options),
+    };
+  }
+  const replayLockPath = join(dirname(journal), `close-${"a".repeat(64)}.lock.json`);
+  return {
+    state: {
+      ...rejectedPaymentState({
+        replayLock: replayLockPath,
+        validBefore,
+        stage: "payment_authorization_created",
+      }),
+      journalPath: journal,
+    },
+    replayLockPath,
+    lock: JSON.parse(replayLockDocument(journal)),
+    service: POSITION_MANAGER_SERVICE,
+    reconcile: (options) => reconcileCloseJournal(options),
+  };
+}
+
+for (const mode of ["open", "close"]) {
+  for (const headerCase of ["missing", "malformed"]) {
+    test(`${mode.toUpperCase()} durably classifies a successful ${headerCase} PAYMENT-RESPONSE before parsing and safely reconciles`, async () => {
+      const directory = await mkdtemp(join(tmpdir(), `conviction-${mode}-${headerCase}-paid-response-`));
+      const journal = join(directory, "journey.json");
+      const fixture = paidResponseFixture({ mode, journal });
+      const header = headerCase === "malformed" ? "not-valid-base64-json" : null;
+      const response = new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: header ? { "payment-response": header } : {},
+      });
+      const json = { ok: true, intentHash: `0x${"d".repeat(64)}` };
+      const authorizationBefore = structuredClone(fixture.state.paymentAuthorization);
+      const replayKeyBefore = fixture.state.replayKey;
+      try {
+        await Promise.all([
+          writeFile(journal, `${JSON.stringify(fixture.state, null, 2)}\n`),
+          writeFile(fixture.replayLockPath, `${JSON.stringify(fixture.lock, null, 2)}\n`),
+        ]);
+        const lockBefore = await readFile(fixture.replayLockPath, "utf8");
+        await assert.rejects(
+          persistSuccessfulPaidServiceResponse({
+            state: fixture.state,
+            response,
+            json,
+            paymentResponseRaw: response.headers.get("payment-response"),
+            writeState: (next) => writeReconciliationJournal(next, {
+              directory,
+              file: journal,
+            }),
+          }),
+          (error) => error?.code === "invalid_payment_header",
+        );
+
+        const durable = JSON.parse(await readFile(journal, "utf8"));
+        assert.equal(durable.stage, "paid_request_settlement_ambiguous");
+        assert.equal(durable.reconciliationRequired, true);
+        assert.deepEqual(durable.paidServiceResponse, {
+          status: 200,
+          paymentResponsePresent: headerCase === "malformed",
+        });
+        assert.deepEqual(durable.paymentAuthorization, authorizationBefore);
+        assert.equal(durable.replayKey, replayKeyBefore);
+        assert.equal(durable.paymentTx, null);
+        assert.equal(durable.paidCard, null);
+        assert.equal(durable.paymentProof ?? null, null);
+        assert.equal("paymentResponseRaw" in durable, false);
+        assert.equal(await readFile(fixture.replayLockPath, "utf8"), lockBefore);
+
+        const result = await fixture.reconcile({
+          file: journal,
+          trustedIssuers: new Map(),
+          now: 2_000,
+          stateDirectory: directory,
+          authorizationStateImpl: async () => ({
+            used: false,
+            blockNumber: "10",
+            blockHash: `0x${"1".repeat(64)}`,
+            blockTimestamp: "2",
+          }),
+        });
+        assert.equal(result.status, "expired_unsettled_authorization_reconciled");
+        await assert.rejects(access(fixture.replayLockPath), (error) => error?.code === "ENOENT");
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+  }
+
+  test(`${mode.toUpperCase()} keeps a valid-looking wrong payment transaction authorization-only when RPC verification fails`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), `conviction-${mode}-wrong-payment-tx-`));
+    const journal = join(directory, "journey.json");
+    const fixture = paidResponseFixture({ mode, journal });
+    const claimedTx = `0x${"9".repeat(64)}`;
+    const responseHeader = Buffer.from(JSON.stringify({ transaction: claimedTx })).toString("base64");
+    const response = new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "payment-response": responseHeader },
+    });
+    const card = { ok: true, intentHash: `0x${"d".repeat(64)}` };
+    try {
+      await Promise.all([
+        writeFile(journal, `${JSON.stringify(fixture.state, null, 2)}\n`),
+        writeFile(fixture.replayLockPath, `${JSON.stringify(fixture.lock, null, 2)}\n`),
+      ]);
+      const paid = await persistSuccessfulPaidServiceResponse({
+        state: fixture.state,
+        response,
+        json: card,
+        paymentResponseRaw: response.headers.get("payment-response"),
+        writeState: (next) => writeReconciliationJournal(next, { directory, file: journal }),
+      });
+      assert.equal(paid.paymentTx, claimedTx);
+      assert.equal(paid.card, card);
+      await assert.rejects(
+        fetchAndVerifyX402Payment({
+          paymentTx: paid.paymentTx,
+          payer: fixture.state.paymentPayer,
+          payee: SERVICE_PAYEE,
+          asset: SERVICE_ASSET,
+          amountAtomic: fixture.service.priceAtomic,
+          earliestAllowedTime: "1970-01-01T00:00:00.000Z",
+        }, {
+          rpcCall: async () => { throw new Error("simulated unavailable RPC"); },
+        }),
+        (error) => error?.code === "payment_rpc_error",
+      );
+
+      const durable = JSON.parse(await readFile(journal, "utf8"));
+      assert.equal(durable.stage, "paid_request_settlement_ambiguous");
+      assert.equal(durable.paymentTx, null);
+      assert.equal(durable.paidCard, null);
+      assert.equal(durable.paymentProof ?? null, null);
+      assert.equal(durable.reconciliationRequired, true);
+
+      const result = await fixture.reconcile({
+        file: journal,
+        trustedIssuers: new Map(),
+        now: 2_000,
+        stateDirectory: directory,
+        authorizationStateImpl: async () => ({ used: true, blockTimestamp: "2" }),
+      });
+      assert.equal(result.status, "manual_reconciliation_required");
+      assert.equal(result.reason, "payment_authorization_consumed_or_ambiguous");
+      await access(fixture.replayLockPath);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const decodedPaymentResponse of [
+  {},
+  { transaction: "0x1234" },
+]) {
+  test("a decoded PAYMENT-RESPONSE without one canonical settlement transaction remains authorization-only", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "conviction-decoded-payment-response-"));
+    const journal = join(directory, "journey.json");
+    const fixture = paidResponseFixture({ mode: "close", journal });
+    const response = new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: {
+        "payment-response": Buffer.from(JSON.stringify(decodedPaymentResponse)).toString("base64"),
+      },
+    });
+    try {
+      await Promise.all([
+        writeFile(journal, `${JSON.stringify(fixture.state, null, 2)}\n`),
+        writeFile(fixture.replayLockPath, `${JSON.stringify(fixture.lock, null, 2)}\n`),
+      ]);
+      await assert.rejects(
+        persistSuccessfulPaidServiceResponse({
+          state: fixture.state,
+          response,
+          json: { ok: true, intentHash: `0x${"d".repeat(64)}` },
+          paymentResponseRaw: response.headers.get("payment-response"),
+          writeState: (next) => writeReconciliationJournal(next, { directory, file: journal }),
+        }),
+        (error) => error?.code === "missing_payment_transaction",
+      );
+      const durable = JSON.parse(await readFile(journal, "utf8"));
+      assert.equal(durable.stage, "paid_request_settlement_ambiguous");
+      assert.equal(durable.paymentTx, null);
+      assert.equal(durable.paidCard, null);
+      assert.equal(durable.paymentProof ?? null, null);
+      await access(fixture.replayLockPath);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const mismatch of ["transactionHash", "payer", "payee", "asset", "amountAtomic", "checks"]) {
+  test(`a ${mismatch} payment-proof mismatch cannot promote merchant output into paid authority`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), `conviction-payment-proof-${mismatch}-`));
+    const journal = join(directory, "journey.json");
+    const fixture = paidResponseFixture({ mode: "close", journal });
+    const paymentTx = `0x${"f".repeat(64)}`;
+    const response = new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: {
+        "payment-response": Buffer.from(JSON.stringify({ transaction: paymentTx })).toString("base64"),
+      },
+    });
+    try {
+      await Promise.all([
+        writeFile(journal, `${JSON.stringify(fixture.state, null, 2)}\n`),
+        writeFile(fixture.replayLockPath, `${JSON.stringify(fixture.lock, null, 2)}\n`),
+      ]);
+      const writeState = (next) => writeReconciliationJournal(next, { directory, file: journal });
+      const paid = await persistSuccessfulPaidServiceResponse({
+        state: fixture.state,
+        response,
+        json: { ok: true, intentHash: `0x${"d".repeat(64)}` },
+        paymentResponseRaw: response.headers.get("payment-response"),
+        writeState,
+      });
+      const proof = exactServicePaymentProof({ paymentTx });
+      if (mismatch === "transactionHash") proof.transactionHash = `0x${"8".repeat(64)}`;
+      if (mismatch === "payer") proof.payer = "0x2222222222222222222222222222222222222222";
+      if (mismatch === "payee") proof.payee = "0x2222222222222222222222222222222222222222";
+      if (mismatch === "asset") proof.asset = "0x2222222222222222222222222222222222222222";
+      if (mismatch === "amountAtomic") proof.amountAtomic = String(BigInt(proof.amountAtomic) + 1n);
+      if (mismatch === "checks") proof.checks.exactAmount = false;
+      await assert.rejects(
+        persistVerifiedPaidServicePayment({
+          state: fixture.state,
+          paid,
+          paymentProof: proof,
+          service: POSITION_MANAGER_SERVICE,
+          writeState,
+        }),
+        (error) => error?.code === "payment_proof_mismatch",
+      );
+      const durable = JSON.parse(await readFile(journal, "utf8"));
+      assert.equal(durable.stage, "paid_request_settlement_ambiguous");
+      assert.equal(durable.paymentTx, null);
+      assert.equal(durable.paidCard, null);
+      assert.equal(durable.paymentProof ?? null, null);
+      assert.equal(durable.reconciliationRequired, true);
+      await access(fixture.replayLockPath);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("candidate and verified writer failures cannot partially promote live or durable payment state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-payment-writer-failure-"));
+  const journal = join(directory, "journey.json");
+  const fixture = paidResponseFixture({ mode: "close", journal });
+  const paymentTx = `0x${"f".repeat(64)}`;
+  const response = new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      "payment-response": Buffer.from(JSON.stringify({ transaction: paymentTx })).toString("base64"),
+    },
+  });
+  const card = { ok: true, intentHash: `0x${"d".repeat(64)}` };
+  try {
+    await Promise.all([
+      writeFile(journal, `${JSON.stringify(fixture.state, null, 2)}\n`),
+      writeFile(fixture.replayLockPath, `${JSON.stringify(fixture.lock, null, 2)}\n`),
+    ]);
+    const liveBeforeCandidate = structuredClone(fixture.state);
+    const durableBeforeCandidate = await readFile(journal, "utf8");
+    await assert.rejects(
+      persistSuccessfulPaidServiceResponse({
+        state: fixture.state,
+        response,
+        json: card,
+        paymentResponseRaw: response.headers.get("payment-response"),
+        writeState: async () => {
+          throw Object.assign(new Error("simulated candidate writer failure"), { code: "simulated_write_failure" });
+        },
+      }),
+      (error) => error?.code === "simulated_write_failure",
+    );
+    assert.deepEqual(fixture.state, liveBeforeCandidate);
+    assert.equal(await readFile(journal, "utf8"), durableBeforeCandidate);
+
+    const writeState = (next) => writeReconciliationJournal(next, { directory, file: journal });
+    const paid = await persistSuccessfulPaidServiceResponse({
+      state: fixture.state,
+      response,
+      json: card,
+      paymentResponseRaw: response.headers.get("payment-response"),
+      writeState,
+    });
+    const liveBeforeVerified = structuredClone(fixture.state);
+    const durableBeforeVerified = await readFile(journal, "utf8");
+    await assert.rejects(
+      persistVerifiedPaidServicePayment({
+        state: fixture.state,
+        paid,
+        paymentProof: exactServicePaymentProof({ paymentTx }),
+        service: POSITION_MANAGER_SERVICE,
+        writeState: async () => {
+          throw Object.assign(new Error("simulated verified writer failure"), { code: "simulated_write_failure" });
+        },
+      }),
+      (error) => error?.code === "simulated_write_failure",
+    );
+    assert.deepEqual(fixture.state, liveBeforeVerified);
+    assert.equal(await readFile(journal, "utf8"), durableBeforeVerified);
+    assert.equal(fixture.state.stage, "paid_request_settlement_ambiguous");
+    assert.equal(fixture.state.paymentTx, null);
+    assert.equal(fixture.state.paidCard, null);
+    assert.equal(fixture.state.paymentProof ?? null, null);
+    await access(fixture.replayLockPath);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("independently verified payment atomically promotes the in-memory card into durable payment authority", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-verified-payment-commit-"));
+  const journal = join(directory, "journey.json");
+  const fixture = paidResponseFixture({ mode: "close", journal });
+  const paymentTx = `0x${"f".repeat(64)}`;
+  const response = new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      "payment-response": Buffer.from(JSON.stringify({ transaction: paymentTx })).toString("base64"),
+    },
+  });
+  const card = { ok: true, intentHash: `0x${"d".repeat(64)}` };
+  try {
+    await Promise.all([
+      writeFile(journal, `${JSON.stringify(fixture.state, null, 2)}\n`),
+      writeFile(fixture.replayLockPath, `${JSON.stringify(fixture.lock, null, 2)}\n`),
+    ]);
+    const writeState = (next) => writeReconciliationJournal(next, { directory, file: journal });
+    const paid = await persistSuccessfulPaidServiceResponse({
+      state: fixture.state,
+      response,
+      json: card,
+      paymentResponseRaw: response.headers.get("payment-response"),
+      writeState,
+    });
+    const proof = exactServicePaymentProof({ paymentTx });
+    const result = await persistVerifiedPaidServicePayment({
+      state: fixture.state,
+      paid,
+      paymentProof: proof,
+      service: POSITION_MANAGER_SERVICE,
+      writeState,
+    });
+    assert.deepEqual(result, proof);
+    const durable = JSON.parse(await readFile(journal, "utf8"));
+    assert.equal(durable.stage, "payment_verified");
+    assert.equal(durable.reconciliationRequired, true);
+    assert.equal(durable.paymentTx, paymentTx);
+    assert.deepEqual(durable.paidCard, card);
+    assert.deepEqual(durable.paymentProof, proof);
+    assert.deepEqual(durable.paidServiceResponse, { status: 200, paymentResponsePresent: true });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("OPEN keeps every ambiguous EIP-3009 payment reserved until finalized expiry proves it unused", async () => {
   for (const stage of [
