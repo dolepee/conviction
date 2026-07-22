@@ -1,6 +1,6 @@
 # Conviction ASP Listing and Target Catalog
 
-Status: Conviction ASP `#7034` was created and submitted for marketplace review on 2026-07-21 with the single service recorded below; `Listing under review` is the last confirmed state from that date, not a live status assertion. The paid route is deployed, and an exact `0.05 USD₮0` controlled house payment settled successfully before delivering the bounded card. Do not create or resubmit the identity unless OKX returns a rejection requiring a specific change.
+Status: Conviction ASP `#7034` was created and submitted for marketplace review on 2026-07-21 with the single OPEN service recorded below; `Listing under review` is the last confirmed state from that date, not a live status assertion. Production v0.4.3 has since passed fresh controlled house OPEN, CLOSE, and TAKE_PROFIT gates with release-digest runtime evidence. Update this existing identity once with the final two-service catalog; do not create or resubmit a second identity.
 
 Registration transaction: `0x29fa8a07669fd30b3953e02c148dbb17827b179cd55058f2214bad0df4e78fa6`
 
@@ -43,9 +43,9 @@ The paid endpoint compiles the bounded pre-execution card only. Companion receip
 
 The public website keeps a free interactive preview. The listed fee is for the standard machine-to-machine payment and delivery path, not exclusive access to the underlying compiler.
 
-## Target second service after team review
+## Final second service for the marketplace update
 
-This service is implemented in the release but is **not** registered or active in the marketplace yet. Do not edit the listing under review or submit this addition until the team reruns the complete review against the final deployed release.
+This service is implemented, deployed, and live-gated in v0.4.3 but is **not** registered or active in the marketplace yet. Add it in the same final update that aligns the agent description with the two-product production surface.
 
 Name: `Bounded Position Manager`
 
@@ -74,7 +74,8 @@ Use the canonical request in `docs/SERVICE_CONTRACT.md`. The paid response must 
 
 - Identity and service copy: owner-approved
 - Current registered service list: one service
-- Target catalog after final team review: exactly two paid services; Position Manager is not yet registered or activated
+- Final catalog: exactly two paid services; Position Manager is production-gated but not yet registered or activated
+- Controlled live acceptance: OPEN, CLOSE, and TAKE_PROFIT passed on 2026-07-22 with one payment and one confirmation per action; TAKE_PROFIT was canceled at zero fill after proof
 - Listing validation: passed once before creation
 - Agent creation: complete as `#7034`
 - Activation submission: complete
