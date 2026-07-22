@@ -1,6 +1,7 @@
 import express from "express";
 
 import { compileCloseIntent } from "../src/exit-intent-compiler.mjs";
+import { compileTakeProfitIntent } from "../src/take-profit-intent-compiler.mjs";
 import { ConvictionError } from "../src/errors.mjs";
 import {
   createEnvironmentIntentIssuer,
@@ -16,6 +17,17 @@ import {
 import { verifySourcePosition } from "../src/source-position.mjs";
 
 export const MANAGE_QUOTE_TTL_MS = 300_000;
+
+function normalizeManagerAction(value) {
+  const action = String(value ?? "").trim().toUpperCase();
+  if (action !== "CLOSE" && action !== "TAKE_PROFIT") {
+    throw new ConvictionError(
+      "unsupported_manager_action",
+      "action must be CLOSE or TAKE_PROFIT",
+    );
+  }
+  return action;
+}
 
 function send(response, status, body) {
   response.status(status).setHeader("content-type", "application/json; charset=utf-8");
@@ -44,14 +56,16 @@ export function createManageHandler({
     }
     try {
       const body = request.body && typeof request.body === "object" ? request.body : {};
+      const action = normalizeManagerAction(body.action);
       const [market, source] = await Promise.all([
         resolveMarketImpl(body.market, { outcome: body.outcome }),
         verifySourceImpl(body.sourcePosition, { trustedIssuers: trusted }),
       ]);
-      const compile = (position) => compileCloseIntent(
+      const compileIntent = action === "TAKE_PROFIT" ? compileTakeProfitIntent : compileCloseIntent;
+      const compile = (position) => compileIntent(
         {
           ...body,
-          action: "close",
+          action,
           source,
         },
         market,
@@ -85,7 +99,7 @@ export function createManageHandler({
       console.error("manage handler failed", { name: error?.name, code: error?.code });
       return send(response, 500, {
         ok: false,
-        error: { code: "internal_error", message: "Bounded CLOSE compilation failed" },
+        error: { code: "internal_error", message: "Bounded position-management compilation failed" },
       });
     }
   };

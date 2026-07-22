@@ -10,9 +10,14 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import { strictlyPostdatesConfirmationSecond } from "../src/acceptance-timing.mjs";
 import { runOpenJourney } from "../src/buyer-orchestrator.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
+import {
+  evaluateOpenConsentAcceptance,
+  evaluateOpenDisplayBinding,
+} from "../src/open-acceptance.mjs";
 import { fetchAndVerifyPosition } from "../src/receipt-verifier.mjs";
 import {
   SERVICE_ASSET,
@@ -45,6 +50,18 @@ let reconciliation = null;
 function record(id, name, status, detail = "") {
   results.push({ id, name, status, detail });
   process.stdout.write(`${status.padEnd(7)} ${id.padEnd(5)} ${name}${detail ? ` — ${detail}` : ""}\n`);
+}
+
+function emittedEvent(text, type) {
+  for (const line of String(text || "").split("\n")) {
+    for (let index = line.indexOf("{"); index >= 0; index = line.indexOf("{", index + 1)) {
+      try {
+        const parsed = JSON.parse(line.slice(index));
+        if (parsed?.type === type) return parsed;
+      } catch {}
+    }
+  }
+  return null;
 }
 
 function adversarialFixture(mutation) {
@@ -246,22 +263,14 @@ if (mode === "live") {
         validatedCard.tokenId === String(gatePreview.preview.market.outcomeTokenId);
     } catch {}
 
-    const eventTypes = Array.isArray(r.events) ? r.events.map((event) => event.type) : [];
-    const expectedSequence = [
-      "readiness_verified", "market_previewed", "payment_challenge_presented",
-      "payment_confirmed", "payment_verified", "signed_card_verified",
-      "dry_run_verified", "bounds_presented", "trade_confirmed",
-      "pre_execution_verified", "execution_started", "order_submitted",
-      "position_proof_verified",
-    ];
-    const paidIndex = eventTypes.indexOf("payment_verified");
-    const confirmIndex = eventTypes.indexOf("trade_confirmed");
-    const submitIndex = eventTypes.indexOf("order_submitted");
-    const confirmedEvent = r.events?.find((event) => event.type === "trade_confirmed");
-    const consentOk = cardBindingOk && r.confirmation?.count === 1 &&
-      JSON.stringify(eventTypes) === JSON.stringify(expectedSequence) &&
-      r.confirmation.confirmedAt === confirmedEvent?.at &&
-      paidIndex >= 0 && paidIndex < confirmIndex && confirmIndex < submitIndex;
+    const displayed = emittedEvent(journey.errors, "trade_confirmation")?.bounds;
+    const displayOk = evaluateOpenDisplayBinding({
+      displayed,
+      validatedCard,
+      required,
+      reportPaymentProof: r.paymentProof,
+    });
+    const consentOk = evaluateOpenConsentAcceptance({ cardBindingOk, displayOk, report: r });
     record("2", "Signed bounds shown and exactly one trade confirmation", consentOk ? "PASS" : "FAIL", `confirmations:${r.confirmation?.count}`);
 
     let position;
@@ -274,8 +283,10 @@ if (mode === "live") {
         trustedIssuers,
       });
       const walletOk = position.ok && position.positionProof.wallet.toLowerCase() === required.buyerWallet.toLowerCase();
-      const settledAfterConfirmation = Date.parse(position.positionProof.settledAt) >=
-        Math.floor(Number(r.confirmation.confirmedAt) / 1_000) * 1_000;
+      const settledAfterConfirmation = strictlyPostdatesConfirmationSecond(
+        position.positionProof.settledAt,
+        r.confirmation.confirmedAt,
+      );
       record("3", "Fresh Polygon fill lands in the pinned buyer wallet", walletOk && settledAfterConfirmation ? "PASS" : "FAIL", r.settlementTx);
       const proofOk = position.positionProofHash === r.positionProofHash &&
         position.positionPassport?.version === "conviction-position-passport-v1" &&

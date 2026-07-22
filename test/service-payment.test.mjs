@@ -15,6 +15,8 @@ import {
   MANAGE_SERVICE_PRICE_ATOMIC,
   MANAGE_SERVICE_RESOURCE,
   POSITION_MANAGER_SERVICE,
+  pinnedServiceUrl,
+  requirePinnedServiceOrigin,
   SERVICE_ASSET,
   SERVICE_NETWORK,
   SERVICE_PAYEE,
@@ -54,6 +56,37 @@ const FACILITATOR = Object.freeze({
   async settle() {
     throw new Error("settle must not run for an unpaid request");
   },
+});
+
+test("pins buyer runtimes to the canonical service origin and resource", () => {
+  assert.equal(
+    requirePinnedServiceOrigin("https://conviction-bay.vercel.app/", POSITION_MANAGER_SERVICE),
+    "https://conviction-bay.vercel.app",
+  );
+  assert.equal(pinnedServiceUrl(POSITION_MANAGER_SERVICE), MANAGE_SERVICE_RESOURCE);
+  assert.equal(
+    pinnedServiceUrl(POSITION_MANAGER_SERVICE, "/api/manage-preview"),
+    "https://conviction-bay.vercel.app/api/manage-preview",
+  );
+  assert.throws(
+    () => pinnedServiceUrl(POSITION_MANAGER_SERVICE, "https://attacker.example/steal"),
+    (error) => error?.code === "invalid_service_path",
+  );
+  for (const value of [
+    "http://conviction-bay.vercel.app",
+    "https://attacker.example",
+    "https://conviction-bay.vercel.app@attacker.example",
+    "https://attacker.example/?next=https://conviction-bay.vercel.app",
+    "https://conviction-bay.vercel.app/api/manage",
+    "https://conviction-bay.vercel.app?redirect=https://attacker.example",
+    "not-a-url",
+  ]) {
+    assert.throws(
+      () => requirePinnedServiceOrigin(value, POSITION_MANAGER_SERVICE),
+      (error) => error?.code === "untrusted_service_origin" || error?.code === "invalid_service_origin",
+      value,
+    );
+  }
 });
 
 function quietLogger() {
@@ -155,6 +188,10 @@ test("pins the listing payment to one exact X Layer amount and payee", () => {
     asset: SERVICE_ASSET,
     extra: { name: "USD₮0", version: "1" },
   });
+  assert.match(config.customPaywallHtml, /free interactive OPEN preview/);
+  assert.match(config.customPaywallHtml, /href="\/#try"/);
+  assert.doesNotMatch(config.customPaywallHtml, /manage-preview/);
+  assert.match(config.settlementFailedResponseBody().body.error.message, /position card was not delivered$/);
   assert.equal(PAID_SERVICE_QUOTE_TTL_MS, 300_000);
 });
 
@@ -165,6 +202,11 @@ test("pins the position manager to a distinct paid resource and price", () => {
   assert.equal(config.accepts.payTo, SERVICE_PAYEE);
   assert.equal(config.accepts.price.amount, MANAGE_SERVICE_PRICE_ATOMIC);
   assert.match(config.description, /CLOSE/);
+  assert.match(config.customPaywallHtml, /repository-backed buyer agent\/CLI/);
+  assert.match(config.customPaywallHtml, /<code>\/api\/manage-preview<\/code>/);
+  assert.match(config.customPaywallHtml, /href="\/#manage"/);
+  assert.doesNotMatch(config.customPaywallHtml, /interactive OPEN preview/);
+  assert.match(config.settlementFailedResponseBody().body.error.message, /bounded position-manager card was not delivered$/);
 });
 
 test("fails closed when any facilitator credential is absent", () => {

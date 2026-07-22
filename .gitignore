@@ -10,5 +10,6 @@ dist/
 output/
 acceptance-report.json
 acceptance-report-b.json
+acceptance-report-c.json
 .vercel/
 .vercel

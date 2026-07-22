@@ -282,7 +282,7 @@ export function validateCloseCard(input, {
   };
 }
 
-function validatePluginFields(validated, data, { preview }) {
+function validatePluginFields(validated, data, { preview, terminalZero = false }) {
   const marketId = lower(validated.intent.market.conditionId);
   fail(lower(data.condition_id) === marketId, "plugin_mismatch", "Plugin condition ID differs from close card");
   if (preview) {
@@ -315,7 +315,11 @@ function validatePluginFields(validated, data, { preview }) {
   }
   if (preview || data.usdc_out !== undefined) {
     const outputRaw = parseDecimal(data.usdc_out, 6, "plugin pUSD proceeds");
-    fail(outputRaw >= BigInt(validated.bounds.minimumGrossProceedsRaw), "plugin_mismatch", "Plugin proceeds are below the signed gross floor");
+    if (terminalZero) {
+      fail(outputRaw === 0n, "plugin_mismatch", "Terminal zero-fill CLOSE reports nonzero proceeds");
+    } else {
+      fail(outputRaw >= BigInt(validated.bounds.minimumGrossProceedsRaw), "plugin_mismatch", "Plugin proceeds are below the signed gross floor");
+    }
   }
   for (const [field, expected] of [
     ["clob_version", "V2"],
@@ -356,6 +360,45 @@ export function validateCloseLiveResult(cardInput, resultInput, options = {}) {
   const transactionHash = lower(data.tx_hashes[0]);
   fail(HASH_RE.test(transactionHash), "invalid_transaction_hash", "Live CLOSE has no valid settlement transaction");
   return { ok: true, validated, orderId, transactionHash, result: data };
+}
+
+const TERMINAL_ZERO_FILL_STATUSES = new Set([
+  "canceled",
+  "cancelled",
+  "expired",
+  "failed",
+  "rejected",
+  "unmatched",
+]);
+
+/**
+ * Authenticate the local plugin's identity for a terminal zero-fill FOK SELL.
+ * Lock release additionally requires a fresh credential-owner-bound exact CLOB
+ * snapshot; this result alone is never treated as proof that no fill occurred.
+ */
+export function validateTerminalZeroCloseResult(cardInput, resultInput, options = {}) {
+  const validated = validateCloseCard(cardInput, {
+    allowExpired: true,
+    trustedIssuers: options.trustedIssuers,
+  });
+  const { outer, data } = unwrapPlugin(resultInput, "Polymarket terminal CLOSE result");
+  fail(typeof outer.ok === "boolean" && outer.dry_run !== true, "not_live_result", "Terminal CLOSE result is not a live plugin result");
+  fail(!String(data.note || "").toLowerCase().includes("dry-run"), "not_live_result", "Dry-run output cannot become terminal CLOSE evidence");
+  validatePluginFields(validated, data, { preview: false, terminalZero: true });
+  const status = String(data.status || "").toLowerCase();
+  fail(TERMINAL_ZERO_FILL_STATUSES.has(status), "nonterminal_close", "CLOSE result is not a supported terminal zero-fill status");
+  const orderId = lower(data.order_id);
+  fail(HASH_RE.test(orderId), "invalid_order_id", "Terminal CLOSE result has no valid order ID");
+  const transactionHashes = data.tx_hashes === undefined ? [] : data.tx_hashes;
+  fail(Array.isArray(transactionHashes) && transactionHashes.length === 0, "ambiguous_settlement", "Terminal zero-fill CLOSE cannot report a settlement transaction");
+  return {
+    ok: true,
+    validated,
+    orderId,
+    status,
+    reportedSharesRaw: parseDecimal(data.shares, 6, "plugin shares").toString(),
+    result: data,
+  };
 }
 
 export function buildCloseReceiptRequest(cardInput, resultInput, options = {}) {

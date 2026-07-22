@@ -4,10 +4,26 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Privacy — Conviction</title>
-    <meta name="description" content="What Conviction processes when it previews, opens, closes, or verifies a bounded Polygon prediction-market position." />
+    <meta name="description" content="What Conviction processes when it previews, opens, closes, manages, or verifies a bounded Polygon prediction-market position." />
     <meta name="robots" content="index,follow" />
-    <link rel="canonical" href="https://conviction-bay.vercel.app/privacy.html" />
+    <link rel="canonical" href="https://conviction-bay.vercel.app/privacy" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://conviction-bay.vercel.app/privacy" />
+    <meta property="og:title" content="Privacy — Conviction" />
+    <meta property="og:description" content="What Conviction processes when it previews, opens, closes, manages, or verifies a bounded Polygon prediction-market position." />
+    <meta property="og:image" content="https://conviction-bay.vercel.app/assets/conviction-og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="675" />
+    <meta property="og:image:alt" content="Conviction managed-position product card beside a controlled house YES fill." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Privacy — Conviction" />
+    <meta name="twitter:description" content="What Conviction processes when it previews, opens, closes, manages, or verifies a bounded Polygon prediction-market position." />
+    <meta name="twitter:image" content="https://conviction-bay.vercel.app/assets/conviction-og.png" />
+    <meta name="twitter:image:alt" content="Conviction managed-position product card beside a controlled house YES fill." />
     <link rel="icon" href="/assets/conviction-logo.svg" type="image/svg+xml" />
+    <link rel="icon" href="/assets/conviction-icon-32.png" type="image/png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" sizes="180x180" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -22,7 +38,7 @@
       <p class="policy-updated">Effective 21 July 2026</p>
       <section>
         <h2>What is processed</h2>
-        <p>For an OPEN market lookup or bounds preview, Conviction processes the market reference, selected outcome, total risk budget, and maximum price. A final OPEN card also processes the public Polygon deposit-wallet address and an optional note. For CLOSE, Conviction processes the market, outcome, exact whole shares, minimum price, seller address, optional note, and prior OPEN source. It independently re-fetches that source settlement and reads the seller's public outcome-token balance and exchange approval. OPEN and CLOSE receipt verification process the submitted transaction hash, order ID, intent, intent hash, and any issuance proof.</p>
+        <p>For an OPEN market lookup or bounds preview, Conviction processes the market reference, selected outcome, total risk budget, and maximum price. A final OPEN card also processes the public Polygon deposit-wallet address and an optional note. For Position Manager, Conviction processes the selected CLOSE or TAKE_PROFIT action, market, outcome, exact whole shares, minimum or target price, any TAKE_PROFIT venue expiry, seller address, optional note, and prior OPEN source. It independently re-fetches that source settlement and reads public balance, approval, order, trade, and Polygon receipt data needed for the selected action and proof.</p>
       </section>
       <section>
         <h2>What the application does not request</h2>
@@ -30,7 +46,7 @@
       </section>
       <section>
         <h2>Storage and infrastructure</h2>
-        <p>Conviction has no application database, user accounts, analytics SDK, advertising tracker, or cookies. The public previews and verifiers temporarily retain an IP-shaped client identifier and request count in a warm server instance to limit abuse; those buckets are bounded and are not written to an application database. Hosting, x402 facilitation, Polymarket APIs, and Polygon RPC infrastructure may retain ordinary request, operational, or payment logs under their own policies. A successful paid OPEN or CLOSE notification contains only fixed settlement metadata—service name, amount, network, transaction hash, and time—not the wallet, note, source proof, or request body.</p>
+        <p>Conviction has no application database, user accounts, analytics SDK, advertising tracker, or cookies. The public previews and verifiers temporarily retain an IP-shaped client identifier and request count in a warm server instance to limit abuse; those buckets are bounded and are not written to an application database. Buyer-side reconciliation journals and authenticated CLOB credentials stay on the buyer's machine and are never submitted to a hosted Conviction endpoint. Hosting, x402 facilitation, Polymarket APIs, and Polygon RPC infrastructure may retain ordinary request, operational, or payment logs under their own policies. A successful paid OPEN or Position Manager notification contains only fixed settlement metadata—service name, amount, network, transaction hash, and time—not the wallet, note, source proof, or request body.</p>
       </section>
       <section>
         <h2>Contact</h2>

@@ -4,14 +4,28 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { ConvictionError, invariant } from "./errors.mjs";
+import { parsePolymarketClobShares } from "./polymarket-quantities.mjs";
 
 const CLOB_ORIGIN = "https://clob.polymarket.com";
 const ORDERS_PATH = "/data/orders";
+const ORDER_PATH_PREFIX = "/data/order/";
 const LAST_CURSOR = "LTE=";
 const MAX_PAGES = 1_000;
 const MAX_ORDERS = 100_000;
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 const TOKEN_ID_RE = /^(0|[1-9]\d*)$/;
+const ORDER_ID_RE = /^0x[0-9a-f]{64}$/;
+const SAFE_STATUS_RE = /^[A-Z0-9_]{1,64}$/;
+const CANONICAL_ORDER_STATUSES = new Map([
+  ["ORDER_STATUS_LIVE", "LIVE"],
+  ["ORDER_STATUS_OPEN", "OPEN"],
+  ["ORDER_STATUS_UNMATCHED", "UNMATCHED"],
+  ["ORDER_STATUS_MATCHED", "MATCHED"],
+  ["ORDER_STATUS_CANCELED", "CANCELED"],
+  ["ORDER_STATUS_CANCELLED", "CANCELED"],
+  ["ORDER_STATUS_CANCELED_MARKET_RESOLVED", "CANCELED"],
+  ["ORDER_STATUS_EXPIRED", "EXPIRED"],
+]);
 
 function fail(code, message, details) {
   throw new ConvictionError(code, message, details);
@@ -33,7 +47,7 @@ function paddedBase64Url(buffer) {
   return buffer.toString("base64").replaceAll("+", "-").replaceAll("/", "_");
 }
 
-function hmacHeaders({ signerAddress, apiKey, secret, passphrase, timestamp }) {
+function hmacHeaders({ signerAddress, apiKey, secret, passphrase, timestamp, requestPath = ORDERS_PATH }) {
   invariant(
     typeof apiKey === "string" && apiKey.length > 0 &&
       typeof passphrase === "string" && passphrase.length > 0 &&
@@ -43,7 +57,7 @@ function hmacHeaders({ signerAddress, apiKey, secret, passphrase, timestamp }) {
   );
   const secretBytes = Buffer.from(secret, "base64url");
   invariant(secretBytes.length > 0, "invalid_open_orders_credentials", "Polymarket credential secret is invalid");
-  const message = `${timestamp}GET${ORDERS_PATH}`;
+  const message = `${timestamp}GET${requestPath}`;
   const signature = paddedBase64Url(createHmac("sha256", secretBytes).update(message).digest());
   return {
     POLY_ADDRESS: signerAddress,
@@ -52,6 +66,18 @@ function hmacHeaders({ signerAddress, apiKey, secret, passphrase, timestamp }) {
     POLY_API_KEY: apiKey,
     POLY_PASSPHRASE: passphrase,
   };
+}
+
+function canonicalOrderId(value) {
+  const orderId = String(value || "").toLowerCase();
+  invariant(ORDER_ID_RE.test(orderId), "invalid_order_identity", "Polymarket order ID is invalid");
+  return orderId;
+}
+
+function canonicalOrderStatus(value, code) {
+  const status = typeof value === "string" ? value.toUpperCase() : "";
+  invariant(SAFE_STATUS_RE.test(status), code, "Polymarket order status is invalid");
+  return CANONICAL_ORDER_STATUSES.get(status) || status;
 }
 
 export async function loadDepositWalletCredentials({
@@ -162,6 +188,7 @@ export async function fetchAllOpenOrders({
     ) {
       fail("incomplete_open_orders", "Polymarket returned inconsistent open-order page metadata");
     }
+    const normalizedPage = [];
     for (const order of body.data) {
       const returnedTokenId = String(order?.asset_id ?? order?.token_id ?? "");
       if (!TOKEN_ID_RE.test(returnedTokenId) || returnedTokenId !== outcomeTokenId) {
@@ -178,8 +205,26 @@ export async function fetchAllOpenOrders({
         fail("incomplete_open_orders", "Polymarket returned a missing or repeated open-order ID");
       }
       seenOrderIds.add(orderId);
+      const originalSizeRaw = parsePolymarketClobShares(order?.original_size, "Open-order original size", {
+        code: "invalid_open_orders_quantity",
+        positive: true,
+      });
+      const sizeMatchedRaw = parsePolymarketClobShares(order?.size_matched, "Open-order matched size", {
+        code: "invalid_open_orders_quantity",
+      });
+      invariant(
+        sizeMatchedRaw <= originalSizeRaw,
+        "invalid_open_orders_quantity",
+        "Open-order matched size exceeds its original size",
+      );
+      normalizedPage.push(Object.freeze({
+        ...order,
+        status: canonicalOrderStatus(order?.status, "invalid_open_orders_status"),
+        original_size: originalSizeRaw.toString(),
+        size_matched: sizeMatchedRaw.toString(),
+      }));
     }
-    orders.push(...body.data);
+    orders.push(...normalizedPage);
     if (orders.length > MAX_ORDERS) {
       fail("open_orders_limit", "Polymarket open-order verification exceeded its safe bound");
     }
@@ -200,4 +245,120 @@ export async function fetchAllOpenOrders({
     cursor = next;
   }
   fail("open_orders_limit", "Polymarket open-order pagination did not terminate");
+}
+
+export async function fetchExactOrder({
+  signerAddress: signerValue,
+  depositWallet: depositValue,
+  orderId: orderValue,
+  outcomeTokenId: tokenValue,
+  credentials,
+  credentialsPath,
+  fetchImpl = fetch,
+  now = () => Date.now(),
+  origin = CLOB_ORIGIN,
+} = {}) {
+  const signerAddress = canonicalAddress(signerValue, "Polymarket signer address");
+  const depositWallet = canonicalAddress(depositValue, "Polymarket deposit wallet");
+  const orderId = canonicalOrderId(orderValue);
+  const outcomeTokenId = canonicalTokenId(tokenValue);
+  invariant(origin === CLOB_ORIGIN, "invalid_order_origin", "Order verification must use the canonical Polymarket CLOB");
+  const auth = credentials || await loadDepositWalletCredentials({
+    signerAddress,
+    depositWallet,
+    credentialsPath,
+  });
+  invariant(
+    auth.signerAddress === signerAddress && auth.depositWallet === depositWallet,
+    "order_wallet_mismatch",
+    "Polymarket order credentials changed wallet identity",
+  );
+
+  const requestPath = `${ORDER_PATH_PREFIX}${orderId}`;
+  const nowMs = Number(now());
+  const timestamp = Math.floor(nowMs / 1_000);
+  invariant(
+    Number.isFinite(nowMs) && Number.isSafeInteger(timestamp) && timestamp > 0,
+    "invalid_order_clock",
+    "Order-verification clock is invalid",
+  );
+  const headers = hmacHeaders({ ...auth, signerAddress, timestamp, requestPath });
+  let response;
+  let body;
+  try {
+    response = await fetchImpl(`${origin}${requestPath}`, {
+      method: "GET",
+      headers,
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
+    body = await response.json();
+  } catch {
+    fail("order_unavailable", "Exact Polymarket order could not be fetched");
+  }
+  if (response.status === 404) {
+    fail("order_not_found", "Polymarket did not return the exact order");
+  }
+  if (!response.ok || !body || typeof body !== "object" || Array.isArray(body)) {
+    fail("order_unavailable", "Polymarket returned an invalid exact-order response", {
+      status: response.status,
+    });
+  }
+  if (String(body.id || "").toLowerCase() !== orderId) {
+    fail("order_identity_mismatch", "Polymarket returned another order ID");
+  }
+  if (String(body.asset_id || "") !== outcomeTokenId) {
+    fail("order_token_mismatch", "Polymarket returned another outcome token");
+  }
+  if (
+    String(body.owner || "") !== auth.apiKey ||
+    String(body.maker_address || "").toLowerCase() !== depositWallet
+  ) {
+    fail("order_wallet_mismatch", "Polymarket returned an order outside the selected credential and deposit wallet");
+  }
+  const associatedTrades = Array.isArray(body.associate_trades)
+    ? body.associate_trades.map((value) => String(value))
+    : null;
+  if (!associatedTrades || associatedTrades.some((value) => !value || value !== value.trim())) {
+    fail("invalid_order_response", "Polymarket returned invalid associated-trade metadata");
+  }
+  const originalSizeRaw = parsePolymarketClobShares(body.original_size, "Order original size", {
+    code: "invalid_order_response",
+    positive: true,
+  });
+  const sizeMatchedRaw = parsePolymarketClobShares(body.size_matched, "Order matched size", {
+    code: "invalid_order_response",
+  });
+  invariant(
+    sizeMatchedRaw <= originalSizeRaw,
+    "invalid_order_response",
+    "Polymarket order matched size exceeds its original size",
+  );
+
+  return Object.freeze({
+    version: "conviction-polymarket-order-snapshot-v1",
+    verificationSource: "authenticated-polymarket-clob",
+    onChain: false,
+    fetchedAt: new Date(nowMs).toISOString(),
+    signerAddress,
+    depositWallet,
+    credentialOwnerVerified: true,
+    order: Object.freeze({
+      id: orderId,
+      status: canonicalOrderStatus(body.status, "invalid_order_response"),
+      market: String(body.market || "").toLowerCase(),
+      assetId: String(body.asset_id || ""),
+      side: String(body.side || "").toUpperCase(),
+      // These snapshot fields remain atomic integer strings. Human-readable
+      // formatting only happens after the lifecycle verifier has bound them.
+      originalSize: originalSizeRaw.toString(),
+      sizeMatched: sizeMatchedRaw.toString(),
+      price: String(body.price ?? ""),
+      orderType: String(body.order_type || "").toUpperCase(),
+      expiration: String(body.expiration ?? ""),
+      outcome: String(body.outcome || ""),
+      createdAt: String(body.created_at || ""),
+      associatedTrades: Object.freeze(associatedTrades),
+    }),
+  });
 }

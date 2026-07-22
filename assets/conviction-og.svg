@@ -6,27 +6,27 @@
     <rect width="58" height="58" rx="4" fill="#2148e8"/>
     <path d="M14 14h30v8H23v11h21v8H14z" fill="#fffaf0"/>
     <circle cx="43" cy="43" r="8" fill="#ff5c35" stroke="#16211e" stroke-width="3"/>
-    <text x="76" y="41" font-family="Manrope,Arial,sans-serif" font-size="30" font-weight="800" fill="#16211e">Conviction</text>
+    <text x="76" y="41" font-family="Arial,Helvetica,sans-serif" font-size="30" font-weight="800" fill="#16211e">Conviction</text>
   </g>
-  <text x="70" y="250" font-family="DM Mono,monospace" font-size="18" font-weight="500" letter-spacing="3" fill="#2148e8">PREVIEW FIRST. BOUND THE ORDER. PROVE THE FILL.</text>
-  <text x="70" y="330" font-family="Manrope,Arial,sans-serif" font-size="72" font-weight="800" letter-spacing="-4" fill="#16211e">Turn a market call into</text>
-  <text x="70" y="410" font-family="Manrope,Arial,sans-serif" font-size="72" font-weight="800" letter-spacing="-4" fill="#2148e8">a bounded order.</text>
-  <text x="70" y="490" font-family="Manrope,Arial,sans-serif" font-size="24" fill="#65716b">No-wallet preview. Explicit limits. Dry run. Polygon proof.</text>
+  <text x="70" y="245" font-family="Menlo,Consolas,monospace" font-size="17" font-weight="500" letter-spacing="2.5" fill="#2148e8">OPEN. CLOSE. TAKE PROFIT. PROVE EACH STATE.</text>
+  <text x="70" y="325" font-family="Arial,Helvetica,sans-serif" font-size="68" font-weight="800" letter-spacing="-3.5" fill="#16211e">Turn a market call into</text>
+  <text x="70" y="402" font-family="Arial,Helvetica,sans-serif" font-size="68" font-weight="800" letter-spacing="-3.5" fill="#2148e8">a managed position.</text>
+  <text x="70" y="482" font-family="Arial,Helvetica,sans-serif" font-size="22" fill="#65716b">Buyer-held wallet. Explicit limits. Independent proof.</text>
   <g transform="translate(810 120)">
     <rect width="320" height="435" fill="#fffaf0" stroke="#16211e" stroke-width="2"/>
     <rect x="14" y="14" width="292" height="407" fill="none" stroke="#cbc3ae" stroke-dasharray="5 5"/>
-    <text x="30" y="50" font-family="DM Mono,monospace" font-size="13" fill="#65716b">CONTROLLED HOUSE PROOF / 001</text>
-    <text x="30" y="115" font-family="Manrope,Arial,sans-serif" font-size="24" font-weight="800" fill="#16211e">5.000000 YES</text>
+    <text x="30" y="50" font-family="Menlo,Consolas,monospace" font-size="12" fill="#65716b">CONTROLLED HOUSE OPEN PROOF / 001</text>
+    <text x="30" y="115" font-family="Arial,Helvetica,sans-serif" font-size="24" font-weight="800" fill="#16211e">5.000000 YES</text>
     <rect x="30" y="145" width="260" height="92" fill="#2148e8"/>
     <circle cx="83" cy="191" r="32" fill="#fffaf0"/>
-    <text x="62" y="199" font-family="Manrope,Arial,sans-serif" font-size="18" font-weight="900" fill="#2148e8">YES</text>
-    <text x="132" y="183" font-family="Manrope,Arial,sans-serif" font-size="20" font-weight="800" fill="#fffaf0">MATCHED</text>
-    <text x="132" y="207" font-family="DM Mono,monospace" font-size="12" fill="#d9e0ff">POLYMARKET V2</text>
-    <text x="30" y="285" font-family="DM Mono,monospace" font-size="13" fill="#65716b">SPEND</text>
-    <text x="30" y="317" font-family="Manrope,Arial,sans-serif" font-size="25" font-weight="800" fill="#16211e">1.35 pUSD</text>
-    <text x="180" y="285" font-family="DM Mono,monospace" font-size="13" fill="#65716b">MAX PRICE</text>
-    <text x="180" y="317" font-family="Manrope,Arial,sans-serif" font-size="25" font-weight="800" fill="#16211e">27¢</text>
+    <text x="62" y="199" font-family="Arial,Helvetica,sans-serif" font-size="18" font-weight="900" fill="#2148e8">YES</text>
+    <text x="132" y="183" font-family="Arial,Helvetica,sans-serif" font-size="18" font-weight="800" fill="#fffaf0">OPEN MATCHED</text>
+    <text x="132" y="207" font-family="Menlo,Consolas,monospace" font-size="12" fill="#d9e0ff">POLYMARKET V2</text>
+    <text x="30" y="285" font-family="Menlo,Consolas,monospace" font-size="13" fill="#65716b">SPEND</text>
+    <text x="30" y="317" font-family="Arial,Helvetica,sans-serif" font-size="25" font-weight="800" fill="#16211e">1.35 pUSD</text>
+    <text x="180" y="285" font-family="Menlo,Consolas,monospace" font-size="13" fill="#65716b">MAX PRICE</text>
+    <text x="180" y="317" font-family="Arial,Helvetica,sans-serif" font-size="25" font-weight="800" fill="#16211e">27¢</text>
     <line x1="30" y1="350" x2="290" y2="350" stroke="#cbc3ae"/>
-    <text x="30" y="389" font-family="DM Mono,monospace" font-size="13" fill="#16734b">✓ 5/5 RECEIPT CHECKS</text>
+    <text x="30" y="389" font-family="Menlo,Consolas,monospace" font-size="13" fill="#16734b">✓ 7/7 RECEIPT CHECKS</text>
   </g>
 </svg>

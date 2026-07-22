@@ -66,3 +66,13 @@ test("Gate B accepts the canonical retrospective public OPEN deliverable as a so
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("Gate B does not kill a paid checkpoint on a pre-payment wall-clock timer", () => {
+  const source = readFileSync(
+    path.resolve(import.meta.dirname, "..", "scripts", "acceptance-gate-b.mjs"),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /child\.kill\(["']SIGKILL["']\)/);
+  assert.match(source, /paymentToProofMs = Number\(provedEvent\?\.at\) - Number\(paidEvent\?\.at\)/);
+  assert.doesNotMatch(source, /journey\.wallMs < 120_000/);
+});

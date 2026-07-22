@@ -446,9 +446,9 @@ function renderCompiled(payload) {
     </label>
     <div class="handoff-panel" id="handoff-panel" hidden>
       <div class="stage-heading">
-        <span>Step 4</span>
-        <h4>Preview it in OKX Agentic Wallet</h4>
-        <p>Copying this request does not place an order. It instructs the official plugin to dry-run first and require a separate confirmation afterward.</p>
+        <span>Manual fallback</span>
+        <h4>Inspect the exact request in OKX Agentic Wallet</h4>
+        <p>The public buyer-agent runner handles this handoff automatically. If you use this browser fallback, copying still places no order: the official plugin dry-runs first and requires separate confirmation.</p>
       </div>
       <textarea id="execution-prompt" rows="12" readonly aria-label="Secure execution prompt">${escapeHtml(prompt)}</textarea>
       <div class="stage-actions">

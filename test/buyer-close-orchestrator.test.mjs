@@ -175,6 +175,12 @@ test("a proof settling before live-trade confirmation is rejected", async () => 
   assert.equal(f.executes(), 1);
 });
 
+test("a CLOSE proof from the confirmation second is rejected", async () => {
+  const f = fixture({ proofSettledAt: "1970-01-01T00:00:01.999Z" });
+  await assert.rejects(run(f), (error) => error instanceof BuyerJourneyError && error.code === "settlement_before_confirmation");
+  assert.equal(f.executes(), 1);
+});
+
 function run(f, overrides = {}) {
   return runCloseJourney({
     request,
@@ -200,6 +206,7 @@ test("close journey keeps x402 and trade consent distinct and executes exactly o
   assert.equal(f.executes(), 1);
   assert.ok(result.timings.paidAt < result.timings.confirmedAt);
   assert.ok(result.timings.confirmedAt < result.timings.provedAt);
+  assert.equal(result.timings.paymentToProofMs, result.timings.provedAt - result.timings.paidAt);
   const confirmation = f.emitted.find((event) => event.type === "trade_confirmation");
   assert.equal(confirmation.bounds.marketQuestion, "Fixture market?");
   assert.equal(confirmation.bounds.conditionId, CONDITION);
@@ -207,6 +214,26 @@ test("close journey keeps x402 and trade consent distinct and executes exactly o
   assert.equal(confirmation.bounds.issuerKeyId, "fixture-key");
   assert.equal(confirmation.bounds.completedPayment.transactionHash, `0x${"ef".repeat(32)}`);
   assert.equal(confirmation.bounds.feeAndNetEnforcement, "post-settlement-verification-only");
+});
+
+test("CLOSE preserves one structured consent timestamp when persistence crosses a second", async () => {
+  const f = fixture({ proofSettledAt: "1970-01-01T00:00:02.000Z" });
+  let clock = 1_000;
+  const result = await run(f, {
+    confirm: async (kind) => {
+      if (kind === "payment") return true;
+      const confirmedAt = 1_999;
+      clock = 2_050;
+      return { accepted: true, confirmedAt };
+    },
+    now: () => clock,
+  });
+  const confirmedEvent = result.events.find((event) => event.type === "trade_confirmed");
+  assert.equal(result.confirmation.confirmedAt, 1_999);
+  assert.equal(confirmedEvent.at, 1_999);
+  assert.equal(result.timings.confirmedAt, 1_999);
+  assert.equal(result.ordersPlaced, 1);
+  assert.equal(f.executes(), 1);
 });
 
 for (const [name, mutate, code] of [

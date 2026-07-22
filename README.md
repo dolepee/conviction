@@ -1,8 +1,8 @@
 # Conviction
 
-Conviction turns your prediction-market call into a bounded YES or NO position: OPEN with a fee-inclusive budget and hard maximum price, then CLOSE exact whole shares with a hard minimum price. The buyer's own Agentic Wallet signs and holds the position, and Conviction independently verifies each resulting fill on Polygon.
+Conviction turns your prediction-market call into a buyer-held, bounded YES or NO position and manages the exit without taking custody. OPEN buys with a fee-inclusive budget and hard maximum price. Position Manager either CLOSES exact whole shares immediately above a hard floor or arms one post-only TAKE_PROFIT order at a target and venue expiry. The buyer's own Agentic Wallet signs and holds every position, while Conviction verifies order identity and resulting fills independently.
 
-It is deliberately narrow: standard Polymarket V2 binary markets, YES or NO, bounded FAK buys, and source-bound FOK sells. Conviction does not recommend an outcome, hold keys, accept reusable signatures, or broadcast from the web app. Take profit and other resting-order automation are not implemented yet.
+There are exactly two paid products: OPEN Position Card at `0.05 USD₮0`, and Position Manager at `0.10 USD₮0` with an explicit `CLOSE` or `TAKE_PROFIT` action. Conviction stays deliberately narrow: standard Polymarket V2 binary markets, YES or NO, bounded FAK buys, source-bound FOK closes, and one source-bound post-only GTD take-profit. It does not recommend an outcome, hold keys, accept reusable signatures, provide stop loss or recurring strategies, or broadcast from the web app.
 
 **Live app:** [conviction-bay.vercel.app](https://conviction-bay.vercel.app)
 
@@ -31,7 +31,7 @@ The reference intent expired before settlement, so the dossier does not claim th
 
 1. The buyer pastes one Polymarket market. Conviction reads both YES and NO books without requesting a wallet.
 2. The buyer selects the outcome, fee-inclusive pUSD risk budget, and maximum price. A wallet-free preview shows the objective exposure.
-3. Only after reviewing those bounds does the buyer bind their configured deposit wallet and receive a five-minute signed position card plus a secure dry-run prompt.
+3. Only after reviewing those bounds does the buyer bind their configured deposit wallet and receive a five-minute wallet-bound position-card preview plus a secure dry-run prompt. The paid machine route issues the signed card after separate service payment.
 4. The official Polymarket plugin previews the exact request in the buyer's Agentic Wallet and requires a separate live confirmation before any write.
 5. Conviction derives principal, fee, total debit, and shares from Polygon events and binds them to the original intent, wallet, selected token, economic bounds, order ID, exchange, and chain.
 
@@ -44,11 +44,22 @@ The reference intent expired before settlement, so the dossier does not claim th
 
 A legacy v2/v3 OPEN proof can establish retrospective provenance for CLOSE, but it is not a consumable lot or a one-time authorization. Fresh seller-owned balance is the authority to sell, and the runtime rechecks it before submission. The browser app currently exposes the OPEN preview and verifier; source-bound CLOSE is available through the public agent/CLI and machine APIs.
 
+### TAKE_PROFIT
+
+1. The buyer supplies a verified OPEN result, exact whole shares, target price, and a whole-second UTC venue expiry.
+2. Position Manager independently reverifies the OPEN source, seller balance and V2 approval, market tick and minimum size, current best bid, and the complete selected-token SELL reservation set.
+3. After the separate manager payment and one fresh trade confirmation, the buyer runtime waits past the confirmation second, repeats every readiness and dry-run check, and places exactly one post-only GTD SELL.
+4. The initial result is an authenticated order binding, never a false on-chain fill claim. A zero-match `LIVE` order returns `conviction-resting-order-proof-v1` with status `ARMED`; if the first authenticated fetch already shows a match or venue-state transition, Conviction instead returns a recoverable `conviction-submitted-order-proof-v1` pending reconciliation and any required Polygon proof. The five-minute signed card controls placement only; the submitted order can remain live until its venue expiry, a fill, or exact-order cancellation.
+5. `tp-status` recovers the pinned order and associated trades. Any partial or full fill is independently re-derived from Polygon receipts and returned as `conviction-take-profit-fill-proof-v1`. It preserves whether the remainder is active, canceled, or expired, and labels included-but-not-finalized Polygon evidence `PROVISIONAL` until the finalized head covers every settlement. Missing or ambiguous CLOB state remains unresolved rather than being mislabeled canceled.
+6. `cancel-tp` requires the separate exact phrase `confirm cancel take profit`, cancels only the pinned order ID, and then rechecks for a fill/cancel race.
+
+The browser is a free OPEN preview and manual proof inspector. The repository-backed buyer agent/CLI executes OPEN, CLOSE, and TAKE_PROFIT without asking the user to type plugin commands or visit Polymarket.
+
 The full wire contract is in [`docs/SERVICE_CONTRACT.md`](docs/SERVICE_CONTRACT.md). The OKX.AI listing copy is in [`docs/ASP_LISTING.md`](docs/ASP_LISTING.md).
 
 ## Run locally
 
-Requires Node.js 22+ and Python 3.
+Requires Node.js 22.x LTS and Python 3. Buyer-state claims, journal updates, and crash-safe lock releases use Python's standard `fcntl.flock` support to serialize independent local processes.
 
 ```sh
 npm run gate
@@ -63,17 +74,20 @@ The site is served at `http://localhost:3000`. The API surface is:
 - `POST /api/intent` — fresh wallet-bound card used by the public web app
 - `POST /api/service` — payment-protected OPEN card (`0.05 USD₮0` on X Layer)
 - `POST /api/receipt` — independently verified OPEN proof
-- `POST /api/manage-preview` — free, non-executable source-bound CLOSE preview
-- `POST /api/manage` — payment-protected source-bound CLOSE card (`0.10 USD₮0` on X Layer)
+- `POST /api/manage-preview` — free, non-executable Position Manager preview (`action: close|take_profit`)
+- `POST /api/manage` — payment-protected Position Manager card (`0.10 USD₮0` on X Layer; `action: close|take_profit`)
 - `POST /api/close-receipt` — independently verified CLOSE proof
 
-The free OPEN preview, final public OPEN card, and paid OPEN endpoint use the same fail-closed economic core. The CLOSE preview and paid manager likewise share the same source, position, liquidity, and proceeds checks. The machine fees pay for the x402 payment and signed-card delivery paths; previews intentionally remain free. The paid routes pin their payment requirements to X Layer mainnet, exactly `0.05 USD₮0` for OPEN and `0.10 USD₮0` for CLOSE, and the project owner address. They require `OKX_API_KEY`,
+The free OPEN preview, final public OPEN card, and paid OPEN endpoint use the same fail-closed economic core. Both Position Manager actions share the same source, position, token, approval, and proceeds core, while CLOSE adds fillable FOK bid-depth checks and TAKE_PROFIT adds post-only GTD placement, exact status, trade recovery, fill proof, and exact cancellation. The machine fees pay for x402 settlement and signed-card delivery; previews and proof/status reads remain free. The paid routes pin their payment requirements to X Layer mainnet, exactly `0.05 USD₮0` for OPEN and `0.10 USD₮0` for one manager action, and the project owner address. They require `OKX_API_KEY`,
 `OKX_SECRET_KEY`, and `OKX_PASSPHRASE` in the server environment. An unpaid
 request receives a standard payment challenge. Invalid compile requests are not
 settled, and a successful response is withheld if settlement fails.
 
+Before a paid card gains authority, the buyer runtime independently verifies the X Layer receipt and creates an owner-only durable claim for that exact payment transaction, bound to the journey's authorization nonce, replay identity, service, payer, amount, and proof. One transaction can authorize only one journey. These `payment-*.lock.json` claims are permanent replay records; never delete them to force a retry.
+
 Before deploying seller credentials, verify that the key is payment-enabled,
-then verify the deployed challenge:
+then verify the deployed v0.4 health manifest and both exact bare x402
+challenges:
 
 ```sh
 npm run payment:preflight
@@ -92,15 +106,95 @@ npm run intent:live -- \
   "<optional 20-500 character note>"
 ```
 
-The public buyer orchestrator supports `open` and source-bound `close`. It serializes the final wallet/configuration window and keeps a private reconciliation journal outside Git. If a CLOSE process loses an execution response, never retry it under another market spelling or payer. Reconcile the recorded journey without paying or trading again:
+### Run the public buyer agent/CLI
+
+The executable skill is repository-backed: clone this release and run or symlink `skills/conviction-executor` from this repository so its pinned helpers retain their `src/` dependencies. Copying the skill directory alone is unsupported.
+
+Prerequisites are Node.js 22, `onchainos`, the official `polymarket-plugin`, an active OKX Agentic Wallet, persisted `deposit-wallet` mode, owner-only local Polymarket CLOB credentials, the pinned production issuer registry, X Layer USD₮0 for the selected service fee, and the required pUSD or outcome shares on Polygon. Conviction never asks the user to type plugin commands during a journey. The OPEN, CLOSE, and TAKE_PROFIT placement runners invoke them and stop only for the distinct payment and trade confirmations; the later `cancel-tp` action separately requires the exact cancellation confirmation documented below.
+
+OPEN:
 
 ```sh
-node scripts/buyer-orchestrator.mjs reconcile-close \
-  --journal "$CONVICTION_JOURNAL_PATH" \
-  --issuer-registry config/trusted-issuer.production.json
+node scripts/buyer-orchestrator.mjs open \
+  --origin https://conviction-bay.vercel.app \
+  --market <polymarket-url-or-slug> --side <YES-or-NO> \
+  --budget <fee-inclusive-pUSD> --max-price <price-cap> \
+  --payment-payer <x-layer-wallet> --buyer-wallet <polygon-deposit-wallet> \
+  --issuer-registry config/trusted-issuer.production.json --json
 ```
 
-The command releases a replay lock only after independently verifying the recorded settlement, or after proving that no execution began and the signed card expired. Ambiguous executions remain locked for manual reconciliation.
+Immediate CLOSE:
+
+```sh
+node scripts/buyer-orchestrator.mjs close \
+  --origin https://conviction-bay.vercel.app \
+  --market <polymarket-url-or-slug> --side <YES-or-NO> \
+  --shares <whole-shares> --min-price <price-floor> \
+  --payment-payer <x-layer-wallet> --seller-wallet <polygon-deposit-wallet> \
+  --source-proof <verified-open-result.json> \
+  --issuer-registry config/trusted-issuer.production.json --json
+```
+
+Bounded TAKE_PROFIT:
+
+```sh
+node scripts/take-profit-orchestrator.mjs take-profit \
+  --origin https://conviction-bay.vercel.app \
+  --market <polymarket-url-or-slug> --side <YES-or-NO> \
+  --shares <whole-shares> --target-price <target> \
+  --expires-at <UTC-ISO-whole-second> \
+  --payment-payer <x-layer-wallet> --seller-wallet <polygon-deposit-wallet> \
+  --source-proof <verified-open-result.json> \
+  --issuer-registry config/trusted-issuer.production.json --json
+```
+
+Read status and prove any recovered fill without another payment or trade:
+
+```sh
+node scripts/take-profit-orchestrator.mjs tp-status \
+  --journal <private-take-profit-journey.json> \
+  --issuer-registry config/trusted-issuer.production.json --json
+```
+
+Cancel only the pinned remaining order after a fresh exact confirmation:
+
+```sh
+node scripts/take-profit-orchestrator.mjs cancel-tp \
+  --journal <private-take-profit-journey.json> \
+  --issuer-registry config/trusted-issuer.production.json --json
+```
+
+If cancellation races a fill or Polygon evidence is not finalized yet, the global execution lock remains. Reconcile it without another payment, placement, or cancellation. The same command can bootstrap a passport only from an exact live order ID already persisted before the first CLOB fetch. Before any order exists, it releases a reservation only for an expired authorization proven unused at a finalized X Layer block, or an expired paid card proven never spawned; consumed or ambiguous payment state remains locked. A submit lock caught between the live response and first passport may release after the exact owner-authenticated order is durably proven zero-match `ARMED`; its generation-pinned release retains the owner-verified scoped TAKE_PROFIT reservation. Its release guard blocks concurrent claims under the owner-local kernel mutex and is automatically reclaimed only when its exact source, target, transition, field set, and lock generations authenticate. In-progress, invalid, or foreign guards fail closed. Cancel-attempt locks and any initially matched, unknown, or otherwise unresolved submission keep the global lock until the existing terminal zero-fill or terminal finalized-fill condition is proven:
+
+```sh
+node scripts/take-profit-orchestrator.mjs reconcile-tp \
+  --journal <private-take-profit-journey.json> \
+  --issuer-registry config/trusted-issuer.production.json --json
+```
+
+The runners wait until the second after live-trade confirmation, serialize the final wallet/configuration window, and keep owner-only reconciliation journals outside Git. A verified OPEN or CLOSE settlement must also have a Polygon block timestamp strictly later than the confirmation second.
+
+If an OPEN returns an ambiguous response, reconcile its recorded order read-only. A verified settlement releases only that journey's owner-verified execution lock. A zero-fill FAK releases it only when a fresh credential-owner-bound exact CLOB snapshot proves the signed order identity, canonical `CANCELED`/`EXPIRED` status, zero matched shares, no trades, and creation inside the signed post-confirmation window:
+
+```sh
+node scripts/buyer-orchestrator.mjs reconcile-open \
+  --journal "$CONVICTION_JOURNAL_PATH" \
+  --issuer-registry config/trusted-issuer.production.json --json
+```
+
+If a CLOSE process loses an execution response, never retry it under another market spelling or payer. A known pre-spawn refusal restores the existing paid-and-confirmed checkpoint while retaining its replay lock; continue only through `resume-close`, which reverifies the payment, card, source position, wallet, balance, approval, reservations, and dry run without paying again. Otherwise reconcile the recorded journey read-only:
+
+```sh
+node scripts/buyer-orchestrator.mjs resume-close \
+  --journal "$CONVICTION_JOURNAL_PATH" \
+  --issuer-registry config/trusted-issuer.production.json --json
+
+node scripts/buyer-orchestrator.mjs reconcile-close \
+  --journal "$CONVICTION_JOURNAL_PATH" \
+  --issuer-registry config/trusted-issuer.production.json --json
+```
+
+`reconcile-close` releases its owner-verified replay and execution locks only after independently verifying the recorded settlement, proving an exact terminal zero-fill FOK through the same authenticated CLOB checks, or proving that no execution began and the signed card expired. Ambiguous evidence remains locked for manual reconciliation; never delete a lock to force progress.
 
 The public [privacy](https://conviction-bay.vercel.app/privacy.html) and [terms](https://conviction-bay.vercel.app/terms.html) pages state exactly what is processed, what the paid service delivers, and which wallet and approval steps remain third-party operations.
 
@@ -110,7 +204,9 @@ The public [privacy](https://conviction-bay.vercel.app/privacy.html) and [terms]
 npm run gate
 ```
 
-The gate checks JavaScript and Python syntax, deterministic YES/NO OPEN and CLOSE compilation, outcome-specific market resolution, server-computed exposure and proceeds, stale/price/liquidity/rounding refusal paths, source, intent, token, and receipt substitution, the exact payment challenges, launch-surface markers, and A2A buyer/reviewer/secret-refusal behavior.
+The local release gate checks JavaScript and Python syntax, deterministic YES/NO OPEN/CLOSE/TAKE_PROFIT compilation, outcome-specific market resolution, server-computed exposure and proceeds, stale/price/liquidity/rounding refusal paths, source, intent, token, order, trade, and receipt substitution, exact x402 challenges, payment/trade-consent separation, post-only placement, authenticated initial order binding, lifecycle status, exact cancellation, aggregate Polygon fill verification, launch-surface markers, and A2A secret-refusal behavior. It runs Gates A, B, and C in offline mode, where adversarial mutations must fail with zero orders.
+
+Offline success is not live acceptance. The tracked runtime reports leave all three live gates explicitly undecided until a fresh buyer authorizes each applicable service payment and trade: exact bounds plus one confirmation, buyer-wallet execution (or authenticated initial TAKE_PROFIT order binding), same-journey proof, and payment-to-proof under two minutes. No local test or dry probe is presented as satisfying those live requirements.
 
 ## Operational boundary
 
@@ -120,15 +216,18 @@ Polymarket V2 signs the token, principal, shares, and price but applies operator
 
 A CLOSE card is bound to a prior independently reverified OPEN proof, but that source proof is provenance rather than an on-chain lot identifier. It is not consumed by a close. Conviction therefore treats the fresh wallet balance and approval as the sale authority, rechecks both before submission, and verifies the exact outcome-token debit and net pUSD credit afterward.
 
+A TAKE_PROFIT reserves selected-token shares in a venue-hosted order and may fill partially across more than one Polygon transaction. Conviction never submits another selected-token SELL while its complete authenticated reservation snapshot is nonzero. It treats unknown order state, missing trade attribution, missing receipts, and fill/cancel races as unresolved. A retained cancel execution lock is released only by `reconcile-tp` after owner-verified terminal state and, for any fill, finalized Polygon proof. There is no background daemon, recurring strategy, automatic re-entry, hidden price change, or broad cancel.
+
 Never send Conviction a seed phrase, private key, bearer token, CLOB credential, reusable signature, or raw transaction authorization.
 
 ## Status
 
-- Live controlled execution: complete
-- Intent compiler and receipt verifier: complete
-- Judge-facing web surface: deployed and live-verified
+- Controlled OPEN execution: live house proof complete; CLOSE implementation and offline acceptance complete, with a fresh live Gate B still pending
+- OPEN intent and live Polygon receipt verification: complete; CLOSE intent/receipt verification is implemented and offline-tested, with a fresh live proof still pending
+- TAKE_PROFIT source: bounded placement, authenticated initial order binding, exact status/cancel, authenticated trade recovery, and aggregate Polygon fill verification implemented; fresh live Gate C remains consent-gated
+- Public web surface: OPEN preview/manual verifier deployed; managed-position copy is part of this v0.4 release
 - Paid OKX.AI service endpoint: deployed; exact `0.05 USD₮0` payment settled and bounded card delivered with 118 seconds remaining ([X Layer transaction](https://www.oklink.com/xlayer/tx/0xb86bec4537095d4ef771a975fbf73196565f1a6d947ceb953e0d930480ed0eaf))
-- OKX.AI ASP: Conviction `#7034` registered with one `0.05 USDT` service and currently under marketplace review; external buyer proof remains pending
+- OKX.AI ASP: Conviction `#7034` registered with one `0.05 USDT` service; `Listing under review` was last confirmed 2026-07-21, and external buyer proof remains pending
 
 The paid call is a controlled house proof between house wallets. It proves the
 machine-payment and delivery path, not external revenue or traction.

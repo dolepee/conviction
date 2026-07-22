@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Conviction — Preview, bound, and verify a prediction-market order</title>
+    <title>Conviction — Open, close, and manage bounded prediction-market positions</title>
     <meta
       name="description"
-      content="Paste a binary Polymarket market, preview the live YES or NO exposure without a wallet, then carry an exact bounded request into your own Agentic Wallet and verify the fill on Polygon."
+      content="Open or close bounded Polymarket YES/NO positions with Polygon fill proof, or arm take profit with authenticated CLOB evidence and prove later fills."
     />
     <meta name="theme-color" content="#f6f0df" />
     <meta name="color-scheme" content="light" />
@@ -14,23 +14,23 @@
     <link rel="canonical" href="https://conviction-bay.vercel.app/" />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://conviction-bay.vercel.app/" />
-    <meta property="og:title" content="Conviction — Preview first. Bound the order. Prove the fill." />
+    <meta property="og:title" content="Conviction — Choose the position. Bound every order. Prove the result." />
     <meta
       property="og:description"
-      content="A no-wallet preview, explicit YES or NO order bounds, and a verifiable Polygon receipt."
+      content="Buyer-side OPEN and CLOSE with verified Polygon receipts; take profit returns an authenticated order binding, then proves any later fill."
     />
     <meta property="og:image" content="https://conviction-bay.vercel.app/assets/conviction-og.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="675" />
-    <meta property="og:image:alt" content="Conviction execution card showing a bounded Polymarket YES fill." />
+    <meta property="og:image:alt" content="Conviction managed-position product card beside a controlled house YES fill." />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Conviction — Preview first. Bound the order. Prove the fill." />
+    <meta name="twitter:title" content="Conviction — Choose the position. Bound every order. Prove the result." />
     <meta
       name="twitter:description"
-      content="Preview a binary market without a wallet, then carry exact bounds into your Agentic Wallet and verify the result."
+      content="Open or close with verified Polygon fills, or place take profit with an authenticated CLOB order binding and prove any later fill."
     />
     <meta name="twitter:image" content="https://conviction-bay.vercel.app/assets/conviction-og.png" />
-    <meta name="twitter:image:alt" content="Conviction execution card showing a bounded Polymarket YES fill." />
+    <meta name="twitter:image:alt" content="Conviction managed-position product card beside a controlled house YES fill." />
     <link rel="icon" href="/assets/conviction-logo.svg" type="image/svg+xml" />
     <link rel="icon" href="/assets/conviction-icon-32.png" type="image/png" sizes="32x32" />
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" sizes="180x180" />
@@ -47,6 +47,7 @@
       </a>
       <nav aria-label="Primary navigation">
         <a href="#how">How it works</a>
+        <a href="#manage">Manage</a>
         <a href="#try">Try it</a>
         <a href="#verify">Verify</a>
         <a href="#safety">Safety</a>
@@ -57,12 +58,12 @@
     <main id="main">
       <section class="hero" id="top" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <p class="eyebrow">Read-only first. Your wallet only at confirmation.</p>
-          <h1 id="hero-title">Turn a market call into a <em>bounded order.</em></h1>
+          <p class="eyebrow">Buyer-held wallet. Explicit bounds. Independent proof.</p>
+          <h1 id="hero-title">Turn a market call into a <em>managed position.</em></h1>
           <p class="lede">
-            Paste one binary market and inspect live YES or NO prices without connecting a wallet.
-            When the bounds look right, bind your own deposit wallet, copy the exact dry-run request into
-            OKX Agentic Wallet, and verify the resulting fill on Polygon.
+            Your buyer agent can open or close a YES/NO position, or arm a take-profit order, without handing
+            Conviction a key. It pays the selected service, shows the exact bounds, obtains fresh trade consent,
+            handles the official wallet flow, and returns independently checked evidence in the same session.
           </p>
           <div class="hero-actions">
             <a class="button button-primary" href="#try">Try a no-wallet preview</a>
@@ -74,9 +75,9 @@
             >Open verified house fill <span aria-hidden="true">↗</span></a>
           </div>
           <ul class="trust-strip" aria-label="Product guarantees">
-            <li>Free no-wallet preview</li>
-            <li>No browser signing</li>
-            <li>Independent Polygon proof</li>
+            <li>OPEN or Position Manager</li>
+            <li>No key leaves your wallet</li>
+            <li>CLOB identity + Polygon proof</li>
           </ul>
         </div>
 
@@ -115,8 +116,26 @@
         <ol class="loop-steps">
           <li><span>01</span><h3>Paste a market</h3><p>Start read-only. No wallet, approval, payment, signature, or transaction.</p></li>
           <li><span>02</span><h3>Preview the bounds</h3><p>Choose YES or NO, total risk budget, and the maximum price you accept.</p></li>
-          <li><span>03</span><h3>Confirm in your wallet</h3><p>Copy a dry-run request. The official plugin previews it before any live confirmation.</p></li>
-          <li><span>04</span><h3>Verify the fill</h3><p>Return with the transaction and order ID; every bound is checked on Polygon.</p></li>
+          <li><span>03</span><h3>Confirm one bounded trade</h3><p>After the separate service payment, your buyer agent dry-runs the exact order and asks for fresh trade consent.</p></li>
+          <li><span>04</span><h3>Receive the proof</h3><p>The same session returns an authenticated order proof or independently verified Polygon fill.</p></li>
+        </ol>
+      </section>
+
+      <section class="loop" id="manage" aria-labelledby="manage-title">
+        <div class="section-heading">
+          <p class="eyebrow">Two paid products, one position lifecycle</p>
+          <h2 id="manage-title">Open it. Exit it. Or leave a bounded target.</h2>
+          <p>
+            OPEN costs 0.05 USD₮0 on X Layer. Position Manager costs 0.10 USD₮0 and accepts exactly one
+            source-bound action: immediate CLOSE or post-only TAKE_PROFIT. These are service fees; Polygon
+            principal, venue fees, and gas remain separate.
+          </p>
+        </div>
+        <ol class="loop-steps">
+          <li><span>01</span><h3>OPEN</h3><p>Buy YES or NO with a fee-inclusive risk budget, hard maximum price, and FAK semantics.</p></li>
+          <li><span>02</span><h3>CLOSE</h3><p>Sell exact whole shares immediately with a hard floor and FOK exact-fill-or-no-fill semantics.</p></li>
+          <li><span>03</span><h3>TAKE PROFIT</h3><p>Arm one post-only GTD SELL at your target, then check, prove any fill, or cancel only that exact order.</p></li>
+          <li><span>04</span><h3>FAIL CLOSED</h3><p>Token, wallet, source, amount, price, expiry, status, or receipt substitution stops the action.</p></li>
         </ol>
       </section>
 
@@ -129,7 +148,9 @@
             market token, amount, shares, exchange, order ID, or chain makes verification fail closed.
           </p>
           <p>
-            The paid service returns the pre-execution position card, not a claimed fill. The controlled
+            A paid endpoint returns a signed pre-execution card, not a claimed fill. The buyer-side runner
+            validates that card, handles the exact wallet action after fresh consent, and then verifies the result.
+            The controlled
             proof dossier is a separate retrospective check of one house-confirmed execution; its reference
             intent expired before settlement and is not presented as the source of that fill.
           </p>
@@ -288,8 +309,8 @@
           <p class="eyebrow">After execution</p>
           <h2 id="verify-title">Verify the fill, not the success message.</h2>
           <p>
-            Keep the downloaded intent dossier. After the official plugin returns a Polygon transaction and order ID,
-            Conviction independently checks the selected token, wallet, exchange, principal, fee, shares, and every bound.
+            This browser form is a manual proof inspector. The public buyer agent performs the same verification
+            automatically after execution and returns the hashes in the original conversation.
           </p>
         </div>
         <div class="verification-grid">
@@ -321,8 +342,9 @@
         </div>
         <div class="safety-copy">
           <p>
-            No signals, no hidden sizing, no custody, no leverage. You choose the market, side, and economic bound;
-            the website produces a card, while the official Polymarket plugin and your Agentic Wallet handle any signing.
+            No signals, no hidden sizing, no custody, no leverage. You choose the market, side, and economic bound.
+            The buyer-side agent calls the services and official plugin itself; this website remains a free preview,
+            manual card inspector, and proof verifier. Your Agentic Wallet handles every signature.
           </p>
           <p>
             New Polymarket deposit wallets use max token allowances and blanket outcome-token approvals to
@@ -345,6 +367,7 @@
         <a href="/privacy.html">Privacy</a>
         <a href="/terms.html">Terms</a>
         <a href="/api/health">Status</a>
+        <a href="https://github.com/dolepee/conviction" target="_blank" rel="noreferrer">Repository</a>
         <a href="https://x.com/Emini_qdee" target="_blank" rel="noreferrer">Contact</a>
       </nav>
       <p>© <span id="year">2026</span> qdee</p>

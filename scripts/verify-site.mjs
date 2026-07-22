@@ -8,6 +8,11 @@ const css = await readFile(new URL("../styles.css", import.meta.url), "utf8");
 const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
 const privacy = await readFile(new URL("../privacy.html", import.meta.url), "utf8");
 const terms = await readFile(new URL("../terms.html", import.meta.url), "utf8");
+const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+const serviceContract = await readFile(new URL("../docs/SERVICE_CONTRACT.md", import.meta.url), "utf8");
+const listingContract = await readFile(new URL("../docs/ASP_LISTING.md", import.meta.url), "utf8");
+const executorSkill = await readFile(new URL("../skills/conviction-executor/SKILL.md", import.meta.url), "utf8");
+const takeProfitCli = await readFile(new URL("./take-profit-orchestrator.mjs", import.meta.url), "utf8");
 const controlledProof = JSON.parse(
   await readFile(new URL("../assets/conviction-review-deliverable.json", import.meta.url), "utf8"),
 );
@@ -16,6 +21,10 @@ const samplePositionCard = JSON.parse(
 );
 const manifest = JSON.parse(
   await readFile(new URL("../manifest.webmanifest", import.meta.url), "utf8"),
+);
+const socialImageSvg = await readFile(
+  new URL("../assets/conviction-og.svg", import.meta.url),
+  "utf8",
 );
 const robots = await readFile(new URL("../robots.txt", import.meta.url), "utf8");
 const vercel = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
@@ -38,6 +47,7 @@ for (const required of [
   'rel="manifest"',
   'class="skip-link"',
   'id="proof"',
+  'id="manage"',
   'id="try"',
   'id="verify"',
   'id="market-form"',
@@ -50,6 +60,15 @@ for (const required of [
   assert.ok(html.includes(required), `missing required site marker: ${required}`);
 }
 assert.ok(css.includes("@media (max-width: 560px)"), "missing mobile breakpoint");
+assert.doesNotMatch(
+  css,
+  /\.site-header nav\s*\{[^}]*display:\s*none/s,
+  "primary section navigation must remain available on mobile",
+);
+assert.ok(
+  css.includes("grid-template-columns: repeat(5, minmax(0, 1fr))"),
+  "mobile section navigation is not laid out as a compact five-link grid",
+);
 assert.ok(css.includes(":focus-visible"), "missing visible focus styling");
 assert.ok(css.includes("prefers-reduced-motion"), "missing reduced-motion support");
 assert.ok(css.includes("--muted: #5f6964"), "muted text token does not meet AA contrast");
@@ -84,11 +103,57 @@ assert.equal(/id="market-input"[^>]*\svalue=/.test(html), false, "market input m
 assert.equal(/id="wallet-input"[^>]*\svalue=/.test(html), false, "wallet input must start empty");
 assert.ok(html.includes('href="/privacy.html"'), "footer does not expose privacy terms");
 assert.ok(html.includes('href="/terms.html"'), "footer does not expose service terms");
+for (const [page, slug, title] of [
+  [privacy, "privacy", "Privacy — Conviction"],
+  [terms, "terms", "Terms — Conviction"],
+]) {
+  assert.ok(
+    page.includes(`<link rel="canonical" href="https://conviction-bay.vercel.app/${slug}" />`),
+    `${title} does not use its final extensionless canonical URL`,
+  );
+  for (const marker of [
+    'property="og:type"',
+    `property="og:url" content="https://conviction-bay.vercel.app/${slug}"`,
+    `property="og:title" content="${title}"`,
+    'property="og:description"',
+    'property="og:image"',
+    'property="og:image:width" content="1200"',
+    'property="og:image:height" content="675"',
+    'property="og:image:alt"',
+    'name="twitter:card" content="summary_large_image"',
+    `name="twitter:title" content="${title}"`,
+    'name="twitter:description"',
+    'name="twitter:image"',
+    'name="twitter:image:alt"',
+    'rel="apple-touch-icon"',
+    'rel="manifest"',
+  ]) {
+    assert.ok(page.includes(marker), `${title} is missing launch metadata: ${marker}`);
+  }
+}
 assert.match(privacy, /no application database/i);
 assert.match(privacy, /IP-shaped client identifier/i);
 assert.match(privacy, /Never submit a seed phrase/i);
-assert.match(terms, /ready-to-sign bounded position card/i);
-assert.match(terms, /Neither response is a fill/i);
+assert.match(terms, /ready-to-sign bounded OPEN card/i);
+assert.match(terms, /post-only GTD TAKE_PROFIT card/i);
+assert.match(terms, /paying 0\.05 or 0\.10 USD₮0 never authorizes a trade/i);
+assert.match(terms, /Neither response alone is a fill/i);
+for (const [surface, copy] of [
+  ["README", readme],
+  ["service contract", serviceContract],
+  ["listing contract", listingContract],
+  ["executor skill", executorSkill],
+  ["TAKE_PROFIT CLI", takeProfitCli],
+]) {
+  assert.match(copy, /zero-match [`]*LIVE[`]*[^\n]*ARMED/i, `${surface} omits the zero-match ARMED path`);
+  assert.match(
+    copy,
+    /first(?: authenticated)?[- ]fetch[^\n]*(?:match|state transition)[^\n]*recoverable/i,
+    `${surface} omits the first-fetch recoverable path`,
+  );
+}
+assert.match(readme, /wallet-bound position-card preview/i);
+assert.match(readme, /cancel-tp[^\n]*separately requires the exact cancellation confirmation/i);
 assert.ok(html.includes("/assets/conviction-sample-position-card.json"), "historical position card is not linked");
 assert.ok(html.includes("/assets/conviction-review-deliverable.json"), "controlled proof dossier is not linked");
 assert.equal(samplePositionCard.cardStatus, "historical-expired-do-not-execute");
@@ -113,8 +178,20 @@ assert.equal(
 );
 assert.equal(manifest.name, "Conviction");
 assert.equal(manifest.start_url, "/");
+assert.match(manifest.description, /OPEN and CLOSE fills plus post-only TAKE_PROFIT lifecycle proof/);
 assert.ok(manifest.icons.some((icon) => icon.sizes === "192x192"));
 assert.ok(manifest.icons.some((icon) => icon.sizes === "512x512"));
+assert.match(socialImageSvg, /OPEN\. CLOSE\. TAKE PROFIT\. PROVE EACH STATE\./);
+assert.match(socialImageSvg, /a managed position\./);
+assert.match(socialImageSvg, /CONTROLLED HOUSE OPEN PROOF \/ 001/);
+assert.match(socialImageSvg, /7\/7 RECEIPT CHECKS/);
+assert.doesNotMatch(socialImageSvg, /5\/5 RECEIPT CHECKS/);
+assert.doesNotMatch(socialImageSvg, /a bounded order\./);
+assert.match(css, /--font-sans: ui-sans-serif/);
+assert.match(css, /--font-mono: ui-monospace/);
+assert.doesNotMatch(css, /Manrope|DM Mono/);
+assert.doesNotMatch(socialImageSvg, /Manrope|DM Mono/);
+assert.deepEqual(await readPngSize("../assets/conviction-og.png"), { width: 1200, height: 675 });
 assert.deepEqual(await readPngSize("../assets/conviction-icon-32.png"), { width: 32, height: 32 });
 assert.deepEqual(await readPngSize("../assets/apple-touch-icon.png"), { width: 180, height: 180 });
 assert.deepEqual(await readPngSize("../assets/conviction-icon-192.png"), { width: 192, height: 192 });

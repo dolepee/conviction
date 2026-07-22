@@ -1,4 +1,5 @@
 import { compileClosePreview } from "../src/exit-intent-compiler.mjs";
+import { compileTakeProfitPreview } from "../src/take-profit-intent-compiler.mjs";
 import { ConvictionError } from "../src/errors.mjs";
 import { trustedIssuerRegistryFromEnvironment } from "../src/intent-issuer.mjs";
 import { resolveMarket } from "../src/market-client.mjs";
@@ -10,6 +11,17 @@ function send(response, status, body) {
   response.status(status).setHeader("content-type", "application/json; charset=utf-8");
   response.setHeader("cache-control", "no-store");
   response.end(JSON.stringify(body));
+}
+
+function normalizeManagerAction(value) {
+  const action = String(value ?? "").trim().toUpperCase();
+  if (action !== "CLOSE" && action !== "TAKE_PROFIT") {
+    throw new ConvictionError(
+      "unsupported_manager_action",
+      "action must be CLOSE or TAKE_PROFIT",
+    );
+  }
+  return action;
 }
 
 export function createManagePreviewHandler({
@@ -33,12 +45,14 @@ export function createManagePreviewHandler({
     try {
       const body = request.body && typeof request.body === "object" ? request.body : {};
       const result = await publicGuard.run(request, async () => {
+        const action = normalizeManagerAction(body.action);
         const [market, source] = await Promise.all([
           resolveMarketImpl(body.market, { outcome: body.outcome }),
           verifySourceImpl(body.sourcePosition, { trustedIssuers: trusted }),
         ]);
         const position = await fetchPositionImpl(body.wallet, market.outcomeTokenId);
-        return compileClosePreview({ ...body, action: "close", source }, market, position, compileOptions);
+        const compilePreview = action === "TAKE_PROFIT" ? compileTakeProfitPreview : compileClosePreview;
+        return compilePreview({ ...body, action, source }, market, position, compileOptions);
       });
       return send(response, 200, result);
     } catch (error) {
@@ -51,7 +65,7 @@ export function createManagePreviewHandler({
         return send(response, upstream ? 502 : 422, { ok: false, error: { code: error.code, message: error.message, details: error.details } });
       }
       console.error("manage preview handler failed", { name: error?.name, code: error?.code });
-      return send(response, 500, { ok: false, error: { code: "internal_error", message: "Close preview failed" } });
+      return send(response, 500, { ok: false, error: { code: "internal_error", message: "Position-manager preview failed" } });
     }
   };
 }

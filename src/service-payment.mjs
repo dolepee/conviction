@@ -29,6 +29,9 @@ export const POSITION_CARD_SERVICE = Object.freeze({
   serviceName: "Bounded YES/NO Position Card",
   description: "Create one ready-to-sign, fee-inclusive YES or NO position card",
   deliveryNoun: "position card",
+  previewHtml: "Use the free interactive OPEN preview on the Conviction home page.",
+  previewHref: "/#try",
+  previewLabel: "Open the free OPEN preview",
 });
 
 export const POSITION_MANAGER_SERVICE = Object.freeze({
@@ -37,9 +40,52 @@ export const POSITION_MANAGER_SERVICE = Object.freeze({
   priceAtomic: MANAGE_SERVICE_PRICE_ATOMIC,
   priceDisplay: MANAGE_SERVICE_PRICE_DISPLAY,
   serviceName: "Bounded Position Manager",
-  description: "Create one source-bound, ready-to-sign bounded CLOSE card",
-  deliveryNoun: "bounded CLOSE card",
+  description: "Create one source-bound bounded CLOSE or TAKE_PROFIT card",
+  deliveryNoun: "bounded position-manager card",
+  previewHtml: "Use the repository-backed buyer agent/CLI, or send the same JSON to <code>/api/manage-preview</code> for a free non-executable manager preview.",
+  previewHref: "/#manage",
+  previewLabel: "See Position Manager",
 });
+
+export function requirePinnedServiceOrigin(value, service = POSITION_CARD_SERVICE) {
+  let supplied;
+  let expected;
+  try {
+    supplied = new URL(String(value || ""));
+    expected = new URL(service.resource);
+  } catch {
+    throw Object.assign(new Error("Service origin is not a valid absolute URL"), {
+      code: "invalid_service_origin",
+    });
+  }
+  if (
+    supplied.username || supplied.password || supplied.pathname !== "/" ||
+    supplied.search || supplied.hash || supplied.origin !== expected.origin
+  ) {
+    throw Object.assign(
+      new Error(`Service origin must be exactly ${expected.origin}`),
+      { code: "untrusted_service_origin" },
+    );
+  }
+  return expected.origin;
+}
+
+export function pinnedServiceUrl(service = POSITION_CARD_SERVICE, path = service.path) {
+  const resource = new URL(service.resource);
+  if (path === service.path) return resource.toString();
+  if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//")) {
+    throw Object.assign(new Error("Service sibling path must be an absolute path on the pinned origin"), {
+      code: "invalid_service_path",
+    });
+  }
+  const sibling = new URL(path, resource.origin);
+  if (sibling.origin !== resource.origin) {
+    throw Object.assign(new Error("Service sibling escaped the pinned origin"), {
+      code: "invalid_service_path",
+    });
+  }
+  return sibling.toString();
+}
 
 function servicePaywallHtml(service) {
   return `<!doctype html>
@@ -56,8 +102,8 @@ function servicePaywallHtml(service) {
         <p class="eyebrow">Conviction API</p>
         <h1>Payment required</h1>
         <p>This machine endpoint costs exactly ${service.priceDisplay} on X Layer per successfully delivered ${service.deliveryNoun}.</p>
-        <p>Call it through an x402-compatible client or use the free interactive preview on the Conviction home page.</p>
-        <a class="button button-primary" href="/">Open Conviction</a>
+        <p>Call it through an x402-compatible client. ${service.previewHtml}</p>
+        <a class="button button-primary" href="${service.previewHref}">${service.previewLabel}</a>
       </div>
     </main>
   </body>
@@ -136,7 +182,7 @@ export function serviceRouteConfiguration(service = POSITION_CARD_SERVICE) {
           ok: false,
           error: {
             code: "payment_settlement_failed",
-            message: "Payment could not be settled; the position card was not delivered",
+            message: `Payment could not be settled; the ${service.deliveryNoun} was not delivered`,
           },
         },
       }),
