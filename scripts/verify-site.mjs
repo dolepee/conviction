@@ -19,6 +19,9 @@ const controlledProof = JSON.parse(
 const liveAcceptance = JSON.parse(
   await readFile(new URL("../assets/conviction-live-acceptance-2026-07-22.json", import.meta.url), "utf8"),
 );
+const signedOpenProof = JSON.parse(
+  await readFile(new URL("../assets/conviction-signed-open-proof.json", import.meta.url), "utf8"),
+);
 const samplePositionCard = JSON.parse(
   await readFile(new URL("../assets/conviction-sample-position-card.json", import.meta.url), "utf8"),
 );
@@ -84,6 +87,8 @@ assert.ok(app.includes('postJson("/api/market"'), "one-field market lookup is no
 assert.ok(app.includes('postJson("/api/preview"'), "wallet-free preview is not connected");
 assert.ok(app.includes('postJson("/api/intent"'), "final compiler UI is not connected to intent API");
 assert.ok(app.includes('postJson("/api/receipt"'), "receipt verification is not connected");
+assert.ok(app.includes("artifact.issuance"), "receipt verification omits the issuer signature");
+assert.ok(app.includes('payload.assurance === "issuer-signed"'), "receipt UI does not branch on cryptographic assurance");
 assert.ok(app.includes('setAttribute("aria-invalid", "true")'), "invalid fields are not identified");
 assert.ok(app.includes('setAttribute("aria-errormessage", statusId)'), "field errors are not associated with status text");
 assert.ok(app.includes('setAttribute("aria-describedby", [...describedBy].join(" "))'), "field errors lack a broadly supported description");
@@ -164,6 +169,7 @@ assert.match(readme, /cancel-tp[^\n]*separately requires the exact cancellation 
 assert.ok(html.includes("/assets/conviction-sample-position-card.json"), "historical position card is not linked");
 assert.ok(html.includes("/assets/conviction-review-deliverable.json"), "controlled proof dossier is not linked");
 assert.ok(html.includes("/assets/conviction-live-acceptance-2026-07-22.json"), "live acceptance pack is not linked");
+assert.ok(html.includes("/assets/conviction-signed-open-proof.json"), "issuer-signed OPEN proof is not linked");
 assert.equal(samplePositionCard.cardStatus, "historical-expired-do-not-execute");
 assert.equal(samplePositionCard.scope.noTransactionSignedOrBroadcast, true);
 assert.equal(samplePositionCard.scope.postFillVerificationIncluded, false);
@@ -178,9 +184,18 @@ assert.equal(sha256(controlledProof.receiptProof), controlledProof.hashes.receip
 assert.equal(sha256(controlledProof.positionProof), controlledProof.hashes.positionProofHash);
 assert.ok(Object.values(controlledProof.receiptProof.checks).every(Boolean));
 assert.ok(Object.values(controlledProof.positionProof.checks).every(Boolean));
+assert.equal(signedOpenProof.assurance, "issuer-signed");
+assert.equal(signedOpenProof.intent.version, "conviction-intent-v4");
+assert.equal(signedOpenProof.issuance.intentHash, signedOpenProof.intentHash);
+assert.equal(sha256(signedOpenProof.intent), signedOpenProof.intentHash);
+assert.equal(sha256(signedOpenProof.receiptProof), signedOpenProof.positionProof.receiptHash);
+assert.equal(sha256(signedOpenProof.positionProof), signedOpenProof.positionProofHash);
+assert.equal(sha256(signedOpenProof.positionPassport), signedOpenProof.positionPassportHash);
+assert.ok(Object.values(signedOpenProof.positionProof.checks).every(Boolean));
+assert.equal(signedOpenProof.positionProof.checks.marketConditionTokensMatched, true);
 assert.equal(liveAcceptance.version, "conviction-live-acceptance-pack-v2");
-assert.equal(liveAcceptance.currentProductionVersion, "0.4.7");
-assert.equal(liveAcceptance.currentProductionReleaseTag, "v0.4.7");
+assert.equal(liveAcceptance.currentProductionVersion, "0.4.8");
+assert.equal(liveAcceptance.currentProductionReleaseTag, "v0.4.8");
 assert.ok(
   liveAcceptance.limitations.some((item) => /nonzero-fee verification path.*unproven/i.test(item)),
   "live acceptance pack must disclose that a nonzero-fee settlement remains unproven",
@@ -189,8 +204,8 @@ assert.equal(liveAcceptance.evidenceExecution.nativeOkxHandoffLiveTested, false)
 assert.match(liveAcceptance.evidenceExecution.runtime, /repository-backed Conviction buyer orchestrator/);
 assert.ok(Object.values(liveAcceptance.gates).every((gate) => gate.verdict === "PASS"));
 assert.ok(
-  html.includes(liveAcceptance.gates.OPEN.positionProofHash),
-  "live OPEN proof hash is not shown",
+  html.includes(signedOpenProof.positionProofHash),
+  "issuer-signed OPEN proof hash is not shown",
 );
 assert.equal(
   html.includes("0x1746d89ea5c08c5edc214fcca3baf5b3bc6ce7b4ea9d02427dd88035cd4373b3"),

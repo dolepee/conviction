@@ -7,7 +7,7 @@ export default function handler(request, response) {
   return response.status(200).json({
     ok: true,
     product: "Conviction",
-    version: "0.4.7",
+    version: "0.4.8",
     execution: "non-custodial",
     executorDiscovery: "/api/executor",
     products: [

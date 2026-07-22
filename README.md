@@ -8,22 +8,16 @@ There are exactly two paid products: OPEN Position Card at `0.05 USD₮0`, and P
 
 ## Live proof
 
-The controlled house transaction bought exactly **5 YES shares** for **1.35 pUSD** at a price of **0.27**. The verifier retrospectively matches that fill to the canonical wallet, token, amount, fee, shares, and price bounds below.
+The headline artifact is an [issuer-signed v4 OPEN proof](assets/conviction-signed-open-proof.json). Its controlled house intent was issued before settlement and the fill landed inside the signed five-minute window.
 
-- Polygon settlement: [`0x25d2a555…fb8a`](https://polygonscan.com/tx/0x25d2a555c1fe20493563136b608c7a566261b1e9eaf7cf594171d97c4489fb8a)
-- Polymarket order: `0xbad8f143b0e71f0cf78f3ec268d22e5cffa8b8e9ef7f0821ac720eac94ebf42c`
-- Receipt block: `90,598,011`
-- Current fee-aware receipt hash: `0x8b51f365e655afe066383c0b405fc4d978a9c08cba76be7680630b34548a13d0`
-- Position-proof hash: `0x63fceb5a55d1f061ab139f3f69fb6f3568620e17b516c6d19c42289d0686c244`
-- Verified invariants: successful Polygon receipt, standard V2 exchange, exact pUSD debit, exact YES-token receipt, exact venue fee, matching order ID, and every original position-card bound.
+- Polygon settlement: [`0xf0923530…34bf`](https://polygonscan.com/tx/0xf09235303198470114e46c123c19e4e0562420e933d10a169dc92bf1ed2f34bf)
+- Polymarket order: `0xee83696bee42b89a4a25676f2bd1e959be73efbab8c17794f952c990074d6d9e`
+- Receipt block: `90,672,458`
+- Position-proof hash: `0x8d4533ddb3caf12e1f31d67f50ed933d7be0708bd3ab1b8efe30ac16a031f2cb`
+- Position-passport hash: `0xd9bcf8a986927b264a8192f1609122d4d6248953b83532bab94a87cbcd4e15d1`
+- Verified invariants: trusted issuer signature, settlement inside the signed window, canonical receipt block, CTF-derived YES and NO tokens, exact exchange/wallet/order, and every principal, fee, debit, share, and price bound.
 
-The [historical position card](assets/conviction-sample-position-card.json) is an expired,
-non-executable v3 artifact retained for reproducibility; the current paid route issues signed v4 cards. The
-[controlled proof dossier](assets/conviction-review-deliverable.json) is separate post-fill evidence;
-it is not the paid service output.
-
-This is a controlled house proof, not external traction or financial performance.
-The reference intent expired before settlement, so the dossier does not claim that the intent predated or caused the fill. It proves deterministic retrospective verification of the fill against those bounds.
+This is a controlled house proof, not external traction or financial performance. The older [v3 card](assets/conviction-sample-position-card.json) and [retrospective match](assets/conviction-review-deliverable.json) remain only as explicitly self-asserted historical artifacts; the public verifier rejects them.
 
 ## Product loop
 
@@ -239,7 +233,7 @@ Never send Conviction a seed phrase, private key, bearer token, CLOB credential,
 
 ## Status
 
-- Production runtime: [v0.4.7](https://github.com/dolepee/conviction/tree/v0.4.7) is deployed at `https://conviction-bay.vercel.app`; native OKX Agentic Wallet plus the official Plugin Store runtime is the no-Conviction-install OPEN/CLOSE path, while TAKE_PROFIT retains the signed, corrected fallback without changing fees, trade bounds, or custody
+- Production runtime: v0.4.8 is release-gated for deployment at `https://conviction-bay.vercel.app`; it requires issuer-signed public proofs, CTF-derived market binding, and immutable executor v6 without changing fees, trade bounds, or custody
 - OPEN: fresh buyer-seat `0.05 USD₮0` payment, one confirmed bounded order, exact 10 YES Polygon fill, and independent position proof passed in 42.0 seconds locally / 48.8 seconds independently ([payment](https://www.oklink.com/xlayer/tx/0xccbf4d92a1c80a7697d2f17b2d41129806826a7e28a4325303e3abcaaf17be6c), [fill](https://polygonscan.com/tx/0x716734f1bccb9c7c6c20cc7d0f064c857159b075fd12707ddbedd40c18cb3409))
 - CLOSE: fresh buyer-seat `0.10 USD₮0` payment, one confirmed exact 10 YES FOK sale, and independent close proof passed in 56.7 seconds locally / 61.7 seconds independently ([payment](https://www.oklink.com/xlayer/tx/0x03e05a3fdc18dbbd320e30abb062830b67fecf9d77a3e0c6142dca195c03d279), [fill](https://polygonscan.com/tx/0x7f0bb701c22bdb8aff43a66c259de01330e5b41c45908d36e677a4216dfbfba4))
 - TAKE_PROFIT: fresh buyer-seat `0.10 USD₮0` payment armed exactly one zero-match post-only 9 YES GTD order with an authenticated proof in 38.0 seconds locally / 42.3 seconds independently; exact cancellation then returned `CANCELED`, zero matched, no open orders, and no global execution lock ([payment](https://www.oklink.com/xlayer/tx/0x2f1257db47bba77f45766767a18ededca6b82310c725a08f62e7797e549ba80a))

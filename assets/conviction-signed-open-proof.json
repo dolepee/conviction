@@ -1,0 +1,340 @@
+{
+  "version": "conviction-signed-open-proof-v1",
+  "artifactType": "controlled-issuer-signed-open-proof",
+  "label": "Controlled house proof — issuer-signed intent and independently verified Polygon fill",
+  "assurance": "issuer-signed",
+  "controlledHouseProof": true,
+  "externalTraction": false,
+  "financialPerformanceClaim": false,
+  "transactionHash": "0xf09235303198470114e46c123c19e4e0562420e933d10a169dc92bf1ed2f34bf",
+  "orderId": "0xee83696bee42b89a4a25676f2bd1e959be73efbab8c17794f952c990074d6d9e",
+  "intentHash": "0x8a7a5737e1302ef687b2e44f1edb748e3825a748d254cda8c20d2721767acd27",
+  "issuance": {
+    "version": "conviction-issuance-v1",
+    "keyId": "conviction-prod-2026-07",
+    "intentHash": "0x8a7a5737e1302ef687b2e44f1edb748e3825a748d254cda8c20d2721767acd27",
+    "issuedAt": "2026-07-22T09:47:04.638Z",
+    "expiresAt": "2026-07-22T09:52:04.043Z",
+    "algorithm": "Ed25519",
+    "publicKeyFingerprint": "sha256:5d7e9414ad8abadc8b7920f5a3a179e090d088c20ac91491a719c54135669133",
+    "signature": "zgBxHGlM61tE2Pf-pzaTxd3zcseZfgE0IWUb7Kn1IB2L91C_XuZFqOFWndE_tRRZvRLlgwzIjmAkhrfoYJHEBw"
+  },
+  "intent": {
+    "version": "conviction-intent-v4",
+    "chainId": 137,
+    "market": {
+      "source": "polymarket",
+      "conditionId": "0xbb4d51e6364066d92eb6f9b8413dd7193de70966736044463b205834805a1f3b",
+      "slug": "will-the-iranian-regime-fall-by-the-end-of-2026",
+      "question": "Will the Iranian regime fall before 2027?",
+      "description": "This market will resolve to \"Yes\" if the Islamic Republic of Iran’s current ruling regime is overthrown, collapsed, or otherwise ceases to govern by December 31, 2026, 11:59 PM ET. Otherwise, this market will resolve to “No”.\n\nThis requires a broad consensus of reporting indicating that core structures of the Islamic Republic (e.g. the office of the Supreme Leader, the Guardian Council, IRGC control under clerical authority) have been dissolved, incapacitated, or replaced by a fundamentally different governing system or otherwise lost de facto power over a majority of the population of Iran. This could occur via revolution, civil war, military coup, or voluntary abdication, but only qualifies if the Islamic Republic no longer exercises sovereign power.\n\nRoutine political events such as elections, reforms, or leadership succession do not qualify. Internal coups or power shifts that preserve the Islamic Republic’s core structures also do not qualify. Only a clear break in continuity—such as a new provisional government, revolutionary council, or constitution replacing the Islamic Republic will qualify.\n\nPartial loss of territory or challenges from rebel or exile groups will not qualify unless the Islamic Republic no longer administers the majority of the Iranian population within Iran. \n\nThe resolution source will be a consensus of credible reporting. ",
+      "resolutionSource": null,
+      "endDate": "2026-12-31T00:00:00Z",
+      "outcome": "YES",
+      "outcomeTokenId": "10991849228756847439673778874175365458450913336396982752046655649803657501964",
+      "counterOutcomeTokenId": "106181075047366745139197108801635573283215248045056329679360376976893016488727",
+      "outcomes": {
+        "YES": {
+          "tokenId": "10991849228756847439673778874175365458450913336396982752046655649803657501964"
+        },
+        "NO": {
+          "tokenId": "106181075047366745139197108801635573283215248045056329679360376976893016488727"
+        }
+      },
+      "negRisk": false,
+      "exchange": "0xe111180000d2663c0091e4f400237545b87b996b",
+      "collateral": "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"
+    },
+    "order": {
+      "side": "BUY",
+      "outcome": "YES",
+      "outcomeTokenId": "10991849228756847439673778874175365458450913336396982752046655649803657501964",
+      "orderType": "FAK",
+      "requestedBudget": "1.1",
+      "requestedBudgetRaw": "1100000",
+      "maximumSpend": "1.08",
+      "maximumSpendRaw": "1080000",
+      "maximumOrderPrincipal": "1.08",
+      "maximumOrderPrincipalRaw": "1080000",
+      "maximumFee": "0",
+      "maximumFeeRaw": "0",
+      "maximumTotalDebit": "1.08",
+      "maximumTotalDebitRaw": "1080000",
+      "unusedBudget": "0.02",
+      "maxPrice": "0.12",
+      "fullFillSharesAtCap": "9",
+      "fullFillSharesAtCapRaw": "9000000",
+      "feeBps": 0,
+      "feeSource": "polymarket_clob_maker_base_fee",
+      "feeReserveMethod": "ceil(orderPrincipal*feeBps/10000)",
+      "feeEnforcement": "signed-order-bounds-plus-post-settlement-verification",
+      "principalPrecision": "v2-cent-aligned-whole-shares"
+    },
+    "buyer": {
+      "wallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe"
+    },
+    "rationale": "",
+    "snapshot": {
+      "capturedAt": "2026-07-22T09:47:04.043Z",
+      "expiresAt": "2026-07-22T09:52:04.043Z",
+      "bestAsk": "0.11",
+      "bestBid": "0.1",
+      "spread": "0.01",
+      "boundedAskDepth": "156339.62"
+    },
+    "exposure": {
+      "maximumLoss": "1.08",
+      "fullFillPayoutAtCap": "9",
+      "grossProfitAtCap": "7.92",
+      "grossBreakEvenPrice": "0.12",
+      "priceCapCushion": "0.01",
+      "boundedLiquidityCoverageBps": "173710688",
+      "feesIncluded": true,
+      "maximumFee": "0",
+      "maximumTotalDebit": "1.08",
+      "unusedBudget": "0.02",
+      "assumesFullFillAtCap": true,
+      "secondsToResolution": 13961575
+    }
+  },
+  "receiptProof": {
+    "version": "conviction-receipt-v4",
+    "chainId": 137,
+    "transactionHash": "0xf09235303198470114e46c123c19e4e0562420e933d10a169dc92bf1ed2f34bf",
+    "blockNumber": 90672458,
+    "exchange": "0xe111180000d2663c0091e4f400237545b87b996b",
+    "wallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+    "orderId": "0xee83696bee42b89a4a25676f2bd1e959be73efbab8c17794f952c990074d6d9e",
+    "outcome": "YES",
+    "outcomeTokenId": "10991849228756847439673778874175365458450913336396982752046655649803657501964",
+    "principalRaw": "1079999",
+    "feeRaw": "0",
+    "totalDebitRaw": "1079999",
+    "sharesRaw": "9818180",
+    "checks": {
+      "transactionSucceeded": true,
+      "standardExchangeV2": true,
+      "exactCollateralTransfer": true,
+      "exactOutcomeTransfer": true,
+      "exactVenueFee": true,
+      "exactOrderFill": true,
+      "settlementBlockMatched": true
+    },
+    "blockHash": "0x06e008f4a2c17afd3b9c559b2a5c74c05631ce3b66d372780e3020168ea6ff3f",
+    "settledAt": "2026-07-22T09:48:04.000Z"
+  },
+  "positionProof": {
+    "version": "conviction-position-proof-v3",
+    "intentHash": "0x8a7a5737e1302ef687b2e44f1edb748e3825a748d254cda8c20d2721767acd27",
+    "receiptHash": "0x0c3012fbd21a53c3528c13ad4e698e435428b7e6b14bce62238c35d1cf93ca17",
+    "transactionHash": "0xf09235303198470114e46c123c19e4e0562420e933d10a169dc92bf1ed2f34bf",
+    "blockNumber": 90672458,
+    "blockHash": "0x06e008f4a2c17afd3b9c559b2a5c74c05631ce3b66d372780e3020168ea6ff3f",
+    "settledAt": "2026-07-22T09:48:04.000Z",
+    "issuanceKeyId": "conviction-prod-2026-07",
+    "issuanceFingerprint": "sha256:5d7e9414ad8abadc8b7920f5a3a179e090d088c20ac91491a719c54135669133",
+    "orderId": "0xee83696bee42b89a4a25676f2bd1e959be73efbab8c17794f952c990074d6d9e",
+    "marketConditionId": "0xbb4d51e6364066d92eb6f9b8413dd7193de70966736044463b205834805a1f3b",
+    "outcome": "YES",
+    "outcomeTokenId": "10991849228756847439673778874175365458450913336396982752046655649803657501964",
+    "wallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+    "bounds": {
+      "requestedBudgetRaw": "1100000",
+      "maximumOrderPrincipalRaw": "1080000",
+      "maximumFeeRaw": "0",
+      "maximumTotalDebitRaw": "1080000",
+      "maxPrice": "0.12"
+    },
+    "fill": {
+      "actualSpendRaw": "1079999",
+      "actualOrderPrincipalRaw": "1079999",
+      "actualFeeRaw": "0",
+      "actualTotalDebitRaw": "1079999",
+      "actualSharesRaw": "9818180",
+      "averagePriceCeiling": "0.11",
+      "allInAveragePriceCeiling": "0.11"
+    },
+    "checks": {
+      "canonicalIntentHash": true,
+      "selectedOutcomeToken": true,
+      "orderPrincipalWithinMaximum": true,
+      "venueFeeWithinMaximum": true,
+      "totalDebitWithinMaximum": true,
+      "averagePriceWithinMaximum": true,
+      "receiptSettlementMatched": true,
+      "trustedIssuerSignature": true,
+      "settlementInsideSignedWindow": true,
+      "settlementBlockMatched": true,
+      "marketConditionTokensMatched": true
+    },
+    "verificationMode": "signed-intent-window",
+    "temporalBinding": true
+  },
+  "positionProofHash": "0x8d4533ddb3caf12e1f31d67f50ed933d7be0708bd3ab1b8efe30ac16a031f2cb",
+  "positionPassport": {
+    "version": "conviction-position-passport-v1",
+    "status": "VERIFIED",
+    "issuance": {
+      "version": "conviction-issuance-v1",
+      "keyId": "conviction-prod-2026-07",
+      "intentHash": "0x8a7a5737e1302ef687b2e44f1edb748e3825a748d254cda8c20d2721767acd27",
+      "issuedAt": "2026-07-22T09:47:04.638Z",
+      "expiresAt": "2026-07-22T09:52:04.043Z",
+      "algorithm": "Ed25519",
+      "publicKeyFingerprint": "sha256:5d7e9414ad8abadc8b7920f5a3a179e090d088c20ac91491a719c54135669133",
+      "signature": "zgBxHGlM61tE2Pf-pzaTxd3zcseZfgE0IWUb7Kn1IB2L91C_XuZFqOFWndE_tRRZvRLlgwzIjmAkhrfoYJHEBw"
+    },
+    "intent": {
+      "version": "conviction-intent-v4",
+      "chainId": 137,
+      "market": {
+        "source": "polymarket",
+        "conditionId": "0xbb4d51e6364066d92eb6f9b8413dd7193de70966736044463b205834805a1f3b",
+        "slug": "will-the-iranian-regime-fall-by-the-end-of-2026",
+        "question": "Will the Iranian regime fall before 2027?",
+        "description": "This market will resolve to \"Yes\" if the Islamic Republic of Iran’s current ruling regime is overthrown, collapsed, or otherwise ceases to govern by December 31, 2026, 11:59 PM ET. Otherwise, this market will resolve to “No”.\n\nThis requires a broad consensus of reporting indicating that core structures of the Islamic Republic (e.g. the office of the Supreme Leader, the Guardian Council, IRGC control under clerical authority) have been dissolved, incapacitated, or replaced by a fundamentally different governing system or otherwise lost de facto power over a majority of the population of Iran. This could occur via revolution, civil war, military coup, or voluntary abdication, but only qualifies if the Islamic Republic no longer exercises sovereign power.\n\nRoutine political events such as elections, reforms, or leadership succession do not qualify. Internal coups or power shifts that preserve the Islamic Republic’s core structures also do not qualify. Only a clear break in continuity—such as a new provisional government, revolutionary council, or constitution replacing the Islamic Republic will qualify.\n\nPartial loss of territory or challenges from rebel or exile groups will not qualify unless the Islamic Republic no longer administers the majority of the Iranian population within Iran. \n\nThe resolution source will be a consensus of credible reporting. ",
+        "resolutionSource": null,
+        "endDate": "2026-12-31T00:00:00Z",
+        "outcome": "YES",
+        "outcomeTokenId": "10991849228756847439673778874175365458450913336396982752046655649803657501964",
+        "counterOutcomeTokenId": "106181075047366745139197108801635573283215248045056329679360376976893016488727",
+        "outcomes": {
+          "YES": {
+            "tokenId": "10991849228756847439673778874175365458450913336396982752046655649803657501964"
+          },
+          "NO": {
+            "tokenId": "106181075047366745139197108801635573283215248045056329679360376976893016488727"
+          }
+        },
+        "negRisk": false,
+        "exchange": "0xe111180000d2663c0091e4f400237545b87b996b",
+        "collateral": "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb"
+      },
+      "order": {
+        "side": "BUY",
+        "outcome": "YES",
+        "outcomeTokenId": "10991849228756847439673778874175365458450913336396982752046655649803657501964",
+        "orderType": "FAK",
+        "requestedBudget": "1.1",
+        "requestedBudgetRaw": "1100000",
+        "maximumSpend": "1.08",
+        "maximumSpendRaw": "1080000",
+        "maximumOrderPrincipal": "1.08",
+        "maximumOrderPrincipalRaw": "1080000",
+        "maximumFee": "0",
+        "maximumFeeRaw": "0",
+        "maximumTotalDebit": "1.08",
+        "maximumTotalDebitRaw": "1080000",
+        "unusedBudget": "0.02",
+        "maxPrice": "0.12",
+        "fullFillSharesAtCap": "9",
+        "fullFillSharesAtCapRaw": "9000000",
+        "feeBps": 0,
+        "feeSource": "polymarket_clob_maker_base_fee",
+        "feeReserveMethod": "ceil(orderPrincipal*feeBps/10000)",
+        "feeEnforcement": "signed-order-bounds-plus-post-settlement-verification",
+        "principalPrecision": "v2-cent-aligned-whole-shares"
+      },
+      "buyer": {
+        "wallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe"
+      },
+      "rationale": "",
+      "snapshot": {
+        "capturedAt": "2026-07-22T09:47:04.043Z",
+        "expiresAt": "2026-07-22T09:52:04.043Z",
+        "bestAsk": "0.11",
+        "bestBid": "0.1",
+        "spread": "0.01",
+        "boundedAskDepth": "156339.62"
+      },
+      "exposure": {
+        "maximumLoss": "1.08",
+        "fullFillPayoutAtCap": "9",
+        "grossProfitAtCap": "7.92",
+        "grossBreakEvenPrice": "0.12",
+        "priceCapCushion": "0.01",
+        "boundedLiquidityCoverageBps": "173710688",
+        "feesIncluded": true,
+        "maximumFee": "0",
+        "maximumTotalDebit": "1.08",
+        "unusedBudget": "0.02",
+        "assumesFullFillAtCap": true,
+        "secondsToResolution": 13961575
+      }
+    },
+    "receiptProof": {
+      "version": "conviction-receipt-v4",
+      "chainId": 137,
+      "transactionHash": "0xf09235303198470114e46c123c19e4e0562420e933d10a169dc92bf1ed2f34bf",
+      "blockNumber": 90672458,
+      "exchange": "0xe111180000d2663c0091e4f400237545b87b996b",
+      "wallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+      "orderId": "0xee83696bee42b89a4a25676f2bd1e959be73efbab8c17794f952c990074d6d9e",
+      "outcome": "YES",
+      "outcomeTokenId": "10991849228756847439673778874175365458450913336396982752046655649803657501964",
+      "principalRaw": "1079999",
+      "feeRaw": "0",
+      "totalDebitRaw": "1079999",
+      "sharesRaw": "9818180",
+      "checks": {
+        "transactionSucceeded": true,
+        "standardExchangeV2": true,
+        "exactCollateralTransfer": true,
+        "exactOutcomeTransfer": true,
+        "exactVenueFee": true,
+        "exactOrderFill": true,
+        "settlementBlockMatched": true
+      },
+      "blockHash": "0x06e008f4a2c17afd3b9c559b2a5c74c05631ce3b66d372780e3020168ea6ff3f",
+      "settledAt": "2026-07-22T09:48:04.000Z"
+    },
+    "positionProof": {
+      "version": "conviction-position-proof-v3",
+      "intentHash": "0x8a7a5737e1302ef687b2e44f1edb748e3825a748d254cda8c20d2721767acd27",
+      "receiptHash": "0x0c3012fbd21a53c3528c13ad4e698e435428b7e6b14bce62238c35d1cf93ca17",
+      "transactionHash": "0xf09235303198470114e46c123c19e4e0562420e933d10a169dc92bf1ed2f34bf",
+      "blockNumber": 90672458,
+      "blockHash": "0x06e008f4a2c17afd3b9c559b2a5c74c05631ce3b66d372780e3020168ea6ff3f",
+      "settledAt": "2026-07-22T09:48:04.000Z",
+      "issuanceKeyId": "conviction-prod-2026-07",
+      "issuanceFingerprint": "sha256:5d7e9414ad8abadc8b7920f5a3a179e090d088c20ac91491a719c54135669133",
+      "orderId": "0xee83696bee42b89a4a25676f2bd1e959be73efbab8c17794f952c990074d6d9e",
+      "marketConditionId": "0xbb4d51e6364066d92eb6f9b8413dd7193de70966736044463b205834805a1f3b",
+      "outcome": "YES",
+      "outcomeTokenId": "10991849228756847439673778874175365458450913336396982752046655649803657501964",
+      "wallet": "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+      "bounds": {
+        "requestedBudgetRaw": "1100000",
+        "maximumOrderPrincipalRaw": "1080000",
+        "maximumFeeRaw": "0",
+        "maximumTotalDebitRaw": "1080000",
+        "maxPrice": "0.12"
+      },
+      "fill": {
+        "actualSpendRaw": "1079999",
+        "actualOrderPrincipalRaw": "1079999",
+        "actualFeeRaw": "0",
+        "actualTotalDebitRaw": "1079999",
+        "actualSharesRaw": "9818180",
+        "averagePriceCeiling": "0.11",
+        "allInAveragePriceCeiling": "0.11"
+      },
+      "checks": {
+        "canonicalIntentHash": true,
+        "selectedOutcomeToken": true,
+        "orderPrincipalWithinMaximum": true,
+        "venueFeeWithinMaximum": true,
+        "totalDebitWithinMaximum": true,
+        "averagePriceWithinMaximum": true,
+        "receiptSettlementMatched": true,
+        "trustedIssuerSignature": true,
+        "settlementInsideSignedWindow": true,
+        "settlementBlockMatched": true,
+        "marketConditionTokensMatched": true
+      },
+      "verificationMode": "signed-intent-window",
+      "temporalBinding": true
+    }
+  },
+  "positionPassportHash": "0xd9bcf8a986927b264a8192f1609122d4d6248953b83532bab94a87cbcd4e15d1"
+}

@@ -40,7 +40,8 @@ test("public receipt verification is guarded before its RPC work", async () => {
       transactionHash: `0x${"1".repeat(64)}`,
       orderId: `0x${"2".repeat(64)}`,
       intentHash: `0x${"3".repeat(64)}`,
-      intent: { version: "conviction-intent-v3" },
+      intent: { version: "conviction-intent-v4" },
+      issuance: { version: "conviction-issuance-v1" },
     },
   };
   const first = responseRecorder();
@@ -53,4 +54,26 @@ test("public receipt verification is guarded before its RPC work", async () => {
   assert.equal(second.statusCode, 429);
   assert.equal(JSON.parse(second.body).error.code, "rate_limited");
   assert.equal(calls, 1);
+});
+
+test("public receipt verification rejects unsigned legacy intents before RPC work", async () => {
+  let calls = 0;
+  const handler = createReceiptHandler({
+    async verifyImpl() { calls += 1; return { ok: true }; },
+  });
+  const response = responseRecorder();
+  await handler({
+    method: "POST",
+    headers: { "x-forwarded-for": "192.0.2.11" },
+    body: {
+      transactionHash: `0x${"1".repeat(64)}`,
+      orderId: `0x${"2".repeat(64)}`,
+      intentHash: `0x${"3".repeat(64)}`,
+      intent: { version: "conviction-intent-v3" },
+      allowUnsigned: true,
+    },
+  }, response);
+  assert.equal(response.statusCode, 422);
+  assert.equal(JSON.parse(response.body).error.code, "unsigned_intent_not_allowed");
+  assert.equal(calls, 0);
 });

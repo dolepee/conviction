@@ -45,10 +45,12 @@ test("normalizes a freshly reverified source position", async () => {
 });
 
 test("labels legacy source positions as retrospective", async () => {
+  let receivedOptions;
   const result = await verifySourcePosition({ ...SOURCE, intent: { version: "conviction-intent-v3" }, issuance: undefined }, {
     trustedIssuers: new Map(),
-    async verifyImpl() { return VERIFIED; },
+    async verifyImpl(_transactionHash, options) { receivedOptions = options; return VERIFIED; },
   });
+  assert.equal(receivedOptions.allowUnsigned, true);
   assert.equal(result.intentVersion, "conviction-intent-v3");
   assert.equal(result.verificationMode, "retrospective");
 });

@@ -71,7 +71,7 @@ export const NATIVE_OKX_EXECUTION_HASH = sha256(NATIVE_OKX_EXECUTION);
 // digest-pinned darwin-arm64 and linux-x64 Polymarket runtimes. Discovery code
 // lives in the later merchant release, avoiding a self-referential source pin.
 export const EXECUTOR_RELEASE = deepFreeze({
-  version: "conviction-executor-release-v4",
+  version: "conviction-executor-release-v6",
   custody: "buyer-wallet-local",
   preferredModeByAction: {
     OPEN: NATIVE_OKX_EXECUTION.mode,
@@ -83,7 +83,7 @@ export const EXECUTOR_RELEASE = deepFreeze({
   source: {
     protocol: "git",
     repository: "https://github.com/dolepee/conviction.git",
-    commit: "67ec7939b9182ac2a9f3984632881e8052f1ac0d",
+    commit: "ee01aba1c249fc02cb1d2c2075eb081b825dfcd5",
     skillPath: "skills/conviction-executor/SKILL.md",
   },
   requirements: {

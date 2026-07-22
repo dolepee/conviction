@@ -29,6 +29,7 @@ export async function verifySourcePosition(
       orderId,
       issuance: sourcePosition.issuance,
       trustedIssuers,
+      allowUnsigned: sourcePosition.intent.version !== "conviction-intent-v4",
     },
     { ...(rpcUrl ? { rpcUrl } : {}), fetchImpl },
   );

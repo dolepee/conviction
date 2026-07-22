@@ -46,6 +46,18 @@ try {
     });
   }
 
+  const cardHelper = await readFile(join(root, "skills/conviction-executor/scripts/conviction-card.mjs"), "utf8");
+  const helperTest = run(process.execPath, ["--test", "test/conviction-card-helper.test.mjs"], { cwd: root });
+  if (
+    !helperTest.includes("fail 0") ||
+    !cardHelper.includes("function executorDiscoveryMatches") ||
+    !cardHelper.includes("executor_discovery_mismatch")
+  ) {
+    throw Object.assign(new Error("Pinned executor did not pass its signed discovery-substitution gate"), {
+      code: "executor_discovery_guard_mismatch",
+    });
+  }
+
   let runtime = null;
   if (install) {
     run("npm", ["ci"], { cwd: root });
@@ -63,6 +75,7 @@ try {
     skillPath: EXECUTOR_RELEASE.source.skillPath,
     executorReleaseHash: EXECUTOR_RELEASE_HASH,
     negativeDecimal: decimalProbe.negative,
+    executorDiscoveryGuard: true,
     runtimeBinarySha256: runtime?.binarySha256 || null,
   })}\n`);
 } finally {

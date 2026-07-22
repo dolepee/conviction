@@ -140,6 +140,10 @@ function signedProofFixture() {
     intentHash: issued.intentHash,
     issuance: issued.issuance,
     trustedIssuers,
+    conditionTokenIds: {
+      YES: LIVE_MARKET_SNAPSHOT.yesTokenId,
+      NO: LIVE_MARKET_SNAPSHOT.noTokenId,
+    },
     orderId: LIVE_EXPECTED_FILL.orderId,
   });
   return { card: issued, proof, trustedIssuers };
@@ -332,5 +336,22 @@ test("validates the canonical post-fill proof against its original card", () => 
   assert.throws(
     () => validateProof(card, mutated, { trustedIssuers }),
     (error) => error.code === "proof_card_mismatch",
+  );
+});
+
+test("rejects a signed proof that omits issuer assurance or CTF token binding", () => {
+  const { card, proof, trustedIssuers } = signedProofFixture();
+  const missingAssurance = clone(proof);
+  delete missingAssurance.assurance;
+  assert.throws(
+    () => validateProof(card, missingAssurance, { trustedIssuers }),
+    (error) => error.code === "proof_assurance_mismatch",
+  );
+  const missingMarketBinding = clone(proof);
+  delete missingMarketBinding.positionProof.checks.marketConditionTokensMatched;
+  missingMarketBinding.positionProofHash = sha256(missingMarketBinding.positionProof);
+  assert.throws(
+    () => validateProof(card, missingMarketBinding, { trustedIssuers }),
+    (error) => error.code === "proof_assurance_mismatch",
   );
 });

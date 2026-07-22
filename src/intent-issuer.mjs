@@ -6,7 +6,7 @@ import {
   verify as verifyBytes,
 } from "node:crypto";
 
-import { canonicalJson, sha256 } from "./canonical.mjs";
+import { assertCanonicalSigningValue, canonicalJson, sha256 } from "./canonical.mjs";
 import { invariant } from "./errors.mjs";
 
 const INTENT_HASH_RE = /^0x[0-9a-f]{64}$/;
@@ -101,6 +101,7 @@ export function createIntentIssuer({ keyId: keyIdValue, privateKey, now = Date.n
   const issuer = publicRecord(keyId, privateKeyObject);
 
   function issue(compilation) {
+    assertCanonicalSigningValue(compilation?.intent);
     const intentHash = String(compilation?.intentHash || "").toLowerCase();
     invariant(INTENT_HASH_RE.test(intentHash), "invalid_intent_hash", "Compiled intent hash is invalid");
     invariant(
@@ -128,6 +129,7 @@ export function createIntentIssuer({ keyId: keyIdValue, privateKey, now = Date.n
       issuedAt,
       expiresAt,
     };
+    assertCanonicalSigningValue(payload);
     const signature = signBytes(null, Buffer.from(canonicalJson(payload)), privateKeyObject)
       .toString("base64url");
     return {
@@ -205,6 +207,7 @@ export function verifyIntentIssuance({
   trustedIssuers,
   settledAt,
 }) {
+  assertCanonicalSigningValue(intent);
   const intentHash = String(intentHashValue || "").toLowerCase();
   invariant(INTENT_HASH_RE.test(intentHash), "invalid_intent_hash", "Intent hash is invalid");
   invariant(sha256(intent) === intentHash, "intent_hash_mismatch", "Intent does not match its canonical hash");
@@ -228,6 +231,7 @@ export function verifyIntentIssuance({
     { keyId },
   );
   const signature = strictBase64Url(issuance?.signature, "Issuance signature");
+  assertCanonicalSigningValue(issuancePayload(issuance));
   invariant(
     verifyBytes(
       null,

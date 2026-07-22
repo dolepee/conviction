@@ -1,4 +1,4 @@
-import { ConvictionError } from "../src/errors.mjs";
+import { ConvictionError, invariant } from "../src/errors.mjs";
 import { trustedIssuerRegistryFromEnvironment } from "../src/intent-issuer.mjs";
 import { createPublicApiGuard, PublicApiError } from "../src/public-api-guard.mjs";
 import { fetchAndVerifyPosition } from "../src/receipt-verifier.mjs";
@@ -31,13 +31,20 @@ export function createReceiptHandler({
     try {
       const body = request.body && typeof request.body === "object" ? request.body : {};
       const verify = verifyImpl ?? fetchAndVerifyPosition;
-      const result = await publicGuard.run(request, () => verify(body.transactionHash, {
-        intent: body.intent,
-        intentHash: body.intentHash,
-        orderId: body.orderId,
-        issuance: body.issuance,
-        trustedIssuers: resolvedTrustedIssuers,
-      }));
+      const result = await publicGuard.run(request, () => {
+        invariant(
+          body.intent?.version === "conviction-intent-v4" && body.issuance && typeof body.issuance === "object",
+          "unsigned_intent_not_allowed",
+          "Public position verification requires a Conviction-issued v4 intent",
+        );
+        return verify(body.transactionHash, {
+          intent: body.intent,
+          intentHash: body.intentHash,
+          orderId: body.orderId,
+          issuance: body.issuance,
+          trustedIssuers: resolvedTrustedIssuers,
+        });
+      });
       return send(response, 200, result);
     } catch (error) {
       if (error instanceof PublicApiError) {
