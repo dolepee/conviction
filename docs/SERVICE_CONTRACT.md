@@ -92,6 +92,7 @@ Send the paid manager or free manager preview:
 
 Rules:
 
+- `action` is mandatory and must explicitly select CLOSE (`close`, with case normalized by the API); missing, blank, or unknown actions fail before any market, source, or position lookup.
 - `market`, `outcome`, and `wallet` must identify the same standard V2 position as the independently reverified OPEN source.
 - `shares` is an exact positive whole-share quantity. It cannot exceed either the source fill or the seller's freshly observed balance.
 - `minPrice` is the lowest acceptable sale price, must align to the market tick, and must produce at least 1 pUSD of cent-aligned gross proceeds.
@@ -141,7 +142,7 @@ Send the paid manager or free manager preview:
 
 Rules:
 
-- `action` must be exactly `take_profit`; omission selects legacy-compatible `close`, so public callers should always send it explicitly.
+- `action` is mandatory and must explicitly select TAKE_PROFIT (`take_profit`, with case normalized by the API); missing, blank, or unknown actions fail before any market, source, or position lookup.
 - `market`, `outcome`, `wallet`, and `sourcePosition` must resolve to the same independently reverified standard V2 position.
 - `shares` must be positive whole shares, meet the market's resting-order minimum, not exceed the verified source or fresh wallet balance, and have no selected-token SELL reservation.
 - `targetPrice` must be in `(0, 1)`, align to the current market tick, produce cent-aligned full-fill proceeds, and be strictly above the freshly observed best bid so the order cannot cross on placement.

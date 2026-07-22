@@ -19,7 +19,7 @@ import { verifySourcePosition } from "../src/source-position.mjs";
 export const MANAGE_QUOTE_TTL_MS = 300_000;
 
 function normalizeManagerAction(value) {
-  const action = String(value || "close").trim().toUpperCase();
+  const action = String(value ?? "").trim().toUpperCase();
   if (action !== "CLOSE" && action !== "TAKE_PROFIT") {
     throw new ConvictionError(
       "unsupported_manager_action",

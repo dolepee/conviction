@@ -65,6 +65,7 @@ test("free manager preview re-verifies the OPEN source and returns no executable
     method: "POST",
     headers: { "x-forwarded-for": "192.0.2.8" },
     body: {
+      action: "close",
       market: LIVE_MARKET_SNAPSHOT.slug,
       outcome: "yes",
       shares: "5",
@@ -138,7 +139,7 @@ test("free manager preview dispatches TAKE_PROFIT and remains non-executable", a
   assert.deepEqual(calls.map((entry) => entry[0]).sort(), ["market", "position", "source"]);
 });
 
-test("free manager preview rejects an unknown action before any upstream lookup", async () => {
+test("free manager preview rejects missing, blank, and unknown actions before any upstream lookup", async () => {
   let upstreamCalls = 0;
   const handler = createManagePreviewHandler({
     trustedIssuers: new Map(),
@@ -146,12 +147,12 @@ test("free manager preview rejects an unknown action before any upstream lookup"
     async verifySourceImpl() { upstreamCalls += 1; return source(); },
     async fetchPositionImpl() { upstreamCalls += 1; return {}; },
   });
-  const response = responseRecorder();
-
-  await handler({ method: "POST", headers: {}, body: { action: "sell_everything" } }, response);
-
-  assert.equal(response.statusCode, 422);
-  assert.equal(JSON.parse(response.body).error.code, "unsupported_manager_action");
+  for (const body of [{}, { action: "" }, { action: "   " }, { action: "sell_everything" }]) {
+    const response = responseRecorder();
+    await handler({ method: "POST", headers: {}, body }, response);
+    assert.equal(response.statusCode, 422);
+    assert.equal(JSON.parse(response.body).error.code, "unsupported_manager_action");
+  }
   assert.equal(upstreamCalls, 0);
 });
 

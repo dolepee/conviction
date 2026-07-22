@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import { strictlyPostdatesConfirmationSecond } from "../src/acceptance-timing.mjs";
 import { runOpenJourney } from "../src/buyer-orchestrator.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
@@ -274,8 +275,10 @@ if (mode === "live") {
         trustedIssuers,
       });
       const walletOk = position.ok && position.positionProof.wallet.toLowerCase() === required.buyerWallet.toLowerCase();
-      const settledAfterConfirmation = Date.parse(position.positionProof.settledAt) >=
-        Math.floor(Number(r.confirmation.confirmedAt) / 1_000) * 1_000;
+      const settledAfterConfirmation = strictlyPostdatesConfirmationSecond(
+        position.positionProof.settledAt,
+        r.confirmation.confirmedAt,
+      );
       record("3", "Fresh Polygon fill lands in the pinned buyer wallet", walletOk && settledAfterConfirmation ? "PASS" : "FAIL", r.settlementTx);
       const proofOk = position.positionProofHash === r.positionProofHash &&
         position.positionPassport?.version === "conviction-position-passport-v1" &&

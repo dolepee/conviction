@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import { evaluateTakeProfitAcceptanceTiming } from "../src/acceptance-timing.mjs";
 import { runTakeProfitJourney } from "../src/buyer-orchestrator.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
@@ -24,6 +25,7 @@ import {
   SERVICE_PAYEE,
 } from "../src/service-payment.mjs";
 import { validateArmedTakeProfitJournal } from "../src/take-profit-lifecycle.mjs";
+import { evaluateTakeProfitConsentBinding } from "../src/take-profit-acceptance.mjs";
 import { fetchAndVerifyX402Payment } from "../src/x402-payment-verifier.mjs";
 import { validateTakeProfitCard } from "../skills/conviction-executor/scripts/conviction-take-profit-card.mjs";
 
@@ -389,9 +391,11 @@ if (mode === "live") {
 
     let card;
     let source;
+    let journal;
     try {
       card = validateTakeProfitCard(report.card, { trustedIssuers, allowExpired: true });
       source = await verifySourcePosition(sourcePosition, { trustedIssuers });
+      journal = JSON.parse(readFileSync(report.journalPath, "utf8"));
     } catch {}
     const events = Array.isArray(report.events) ? report.events : [];
     const eventTypes = events.map((event) => event.type);
@@ -406,10 +410,29 @@ if (mode === "live") {
     const paidIndex = eventTypes.indexOf("payment_verified");
     const confirmIndex = eventTypes.indexOf("trade_confirmed");
     const submitIndex = eventTypes.indexOf("take_profit_submitted");
+    const confirmedEvents = events.filter((event) => event.type === "trade_confirmed");
+    const confirmedEvent = confirmedEvents[0];
     let consentOk = false;
     try {
+      const consentBinding = evaluateTakeProfitConsentBinding({
+        journal,
+        reportCard: report.card,
+        validatedCard: card,
+        independentPaymentProof: payment?.proof,
+        reportPaymentTx: report.paymentProof?.transactionHash,
+        reportConfirmationCount: report.confirmation?.count,
+        reportConfirmedAt: report.confirmation?.confirmedAt,
+        confirmedEventCount: confirmedEvents.length,
+        confirmedEventAt: confirmedEvent?.at,
+        expectedPayer: required.paymentPayer,
+        expectedPayee: SERVICE_PAYEE,
+        expectedAsset: SERVICE_ASSET,
+        expectedAmountAtomic: POSITION_MANAGER_SERVICE.priceAtomic,
+      });
       consentOk = Boolean(card && source && displayed && report.confirmation?.count === 1 && report.ordersPlaced === 1 &&
+        confirmedEvents.length === 1 && report.confirmation.confirmedAt === confirmedEvent?.at &&
         JSON.stringify(eventTypes) === JSON.stringify(expectedSequence) && paidIndex >= 0 && paidIndex < confirmIndex && confirmIndex < submitIndex &&
+        consentBinding.ok &&
         card.wallet === required.sellerWallet && card.outcome === required.side &&
         BigInt(card.bounds.sharesRaw) === parseDecimal(required.shares, 6, "shares") &&
         parseDecimal(card.bounds.targetPrice, 6, "target") === parseDecimal(required.targetPrice, 6, "target") &&
@@ -426,19 +449,33 @@ if (mode === "live") {
 
     let armed;
     let snapshot;
+    let timing;
     try {
-      const journal = JSON.parse(readFileSync(report.journalPath, "utf8"));
       armed = validateArmedTakeProfitJournal(journal, { trustedIssuers });
       snapshot = await fetchExactOrder({
         signerAddress: armed.signerAddress, depositWallet: armed.depositWallet,
         orderId: armed.orderId, outcomeTokenId: armed.outcomeTokenId,
       });
       const order = snapshot.order;
+      timing = evaluateTakeProfitAcceptanceTiming({
+        paymentBlockTimestamp: payment?.proof?.blockTimestamp,
+        orderCreatedAt: order.createdAt,
+        orderFetchedAt: snapshot.fetchedAt,
+        reportConfirmedAt: report.confirmation?.confirmedAt,
+        journalConfirmedAt: journal.tradeConsent?.confirmedAt,
+        cardCapturedAt: card?.intent?.snapshot?.capturedAt,
+        cardExpiresAt: card?.expiresAt,
+        localPaidAt: report.timings?.paidAt,
+        localProvedAt: report.timings?.provedAt,
+        recordedLocalPaymentToProofMs: report.timings?.paymentToProofMs,
+      });
       const orderOk = order.status === "LIVE" && order.id === armed.orderId && order.market === armed.marketConditionId &&
         order.assetId === armed.outcomeTokenId && order.side === "SELL" && order.orderType === "GTD" &&
         parsePolymarketShareAtoms(order.originalSize, "original size") === armed.exactSharesRaw &&
         parsePolymarketShareAtoms(order.sizeMatched, "matched size") === 0n &&
-        parseDecimal(order.price, 6, "order price") === armed.targetPriceRaw;
+        parseDecimal(order.price, 6, "order price") === armed.targetPriceRaw &&
+        timing.confirmationBound && timing.orderAfterConfirmation && timing.insideCardWindow &&
+        timing.orderAfterPayment && timing.fetchAfterOrder;
       record("3", "One post-only GTD SELL is ARMED for the pinned seller wallet", orderOk ? "PASS" : "FAIL", armed.orderId);
       const proofOk = report.status === "ARMED" && report.orderId === armed.orderId &&
         report.restingOrderProof?.verificationSource === "authenticated-polymarket-clob" && report.restingOrderProof?.onChain === false &&
@@ -449,11 +486,13 @@ if (mode === "live") {
       record("4", "Authenticated ARMED proof and passport return in the same journey", "FAIL", "independent validation failed");
     }
 
-    const paidAt = Number(report.timings?.paidAt);
-    const provedAt = Number(report.timings?.provedAt);
-    const elapsed = provedAt - paidAt;
-    const fast = Number.isFinite(elapsed) && elapsed >= 0 && elapsed < 120_000 && elapsed === Number(report.timings?.paymentToProofMs);
-    record("6", "Payment-to-ARMED-proof journey finishes under two minutes", fast ? "PASS" : "FAIL", `${(elapsed / 1_000).toFixed(1)}s`);
+    const chainMs = timing?.chainPaymentToArmedMs;
+    const localMs = timing?.localPaymentToProofMs;
+    const fast = timing?.ok === true;
+    const timingDetail = Number.isFinite(chainMs) && Number.isFinite(localMs)
+      ? `${(localMs / 1_000).toFixed(1)}s local / ${(chainMs / 1_000).toFixed(1)}s independent`
+      : "independent timing unavailable";
+    record("6", "Payment-to-ARMED-proof journey finishes under two minutes", fast ? "PASS" : "FAIL", timingDetail);
   }
 }
 

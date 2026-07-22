@@ -853,8 +853,27 @@ export async function runTakeProfitJourney({
   );
   const tradeConsent = await confirm("trade", { request, validated, preview, dryRun });
   confirmationCount += 1;
-  requireValue(tradeConsent === true, "trade_not_confirmed", "Buyer declined the bounded TAKE_PROFIT placement");
-  const confirmed = mark("trade_confirmed");
+  const structuredConsent = tradeConsent && typeof tradeConsent === "object" ? tradeConsent : null;
+  requireValue(
+    tradeConsent === true || structuredConsent?.accepted === true,
+    "trade_not_confirmed",
+    "Buyer declined the bounded TAKE_PROFIT placement",
+  );
+  let confirmed;
+  if (structuredConsent) {
+    const confirmedAt = Number(structuredConsent.confirmedAt);
+    const observedAfterConsent = now();
+    requireValue(
+      Number.isSafeInteger(confirmedAt) && confirmedAt >= events.at(-1).at &&
+        confirmedAt <= observedAfterConsent && confirmedAt < Date.parse(validated.expiresAt),
+      "invalid_confirmation_time",
+      "Buyer confirmation timestamp is invalid or outside the signed placement window",
+    );
+    confirmed = { sequence: events.length + 1, type: "trade_confirmed", at: confirmedAt };
+    events.push(confirmed);
+  } else {
+    confirmed = mark("trade_confirmed");
+  }
 
   const nextClobSecondAt = (Math.floor(confirmed.at / 1_000) + 1) * 1_000;
   await adapters.waitUntil(nextClobSecondAt);

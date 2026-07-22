@@ -1650,17 +1650,24 @@ export async function runTakeProfitCancelCli(options, {
   }
 }
 
-function paymentDisplay(event, options) {
+export function formatTakeProfitPaymentDisplay(event, options) {
   const requirement = event.challenge?.decoded?.accepts?.[0] || {};
-  stdout.write([
-    "\nConviction Position Manager payment:",
+  return [
+    "\nConviction Position Manager payment via **OKX Agent Payments Protocol**:",
+    `  Product: ${POSITION_MANAGER_SERVICE.serviceName}`,
     `  Amount: ${POSITION_MANAGER_SERVICE.priceDisplay} (${requirement.amount} atomic USD₮0)`,
     `  Network: ${requirement.network}`,
+    `  Asset: USD₮0 (${requirement.asset})`,
     `  From: ${options.paymentPayer}`,
     `  To: ${requirement.payTo}`,
+    `  Resource: ${event.challenge?.decoded?.resource?.url}`,
     "  This payment does not authorize the Polygon order.",
     "",
-  ].join("\n"));
+  ].join("\n");
+}
+
+function paymentDisplay(event, options) {
+  stdout.write(formatTakeProfitPaymentDisplay(event, options));
 }
 
 function tradeDisplay(event, latestReadiness) {
@@ -1802,19 +1809,21 @@ export async function runTakeProfitCli(options, {
     const answer = await readline.question("Type `confirm live mode` to place this one bounded TAKE_PROFIT order: ");
     const accepted = answer.trim() === "confirm live mode";
     if (accepted) {
+      const confirmedAt = now();
       state.tradeConsent = {
         version: "conviction-take-profit-consent-v1",
         intentHash: context.validated.intentHash,
         executionArgvHash: sha256(context.validated.executionCard.argv),
         paymentTx: state.paymentTx,
         replayKey: state.replayKey,
-        confirmedAt: new Date(now()).toISOString(),
+        confirmedAt: new Date(confirmedAt).toISOString(),
         placementExpiresAt: context.validated.expiresAt,
         venueExpiresAt: context.validated.bounds.venueExpiresAt,
       };
       await persist("trade_confirmed");
+      return { accepted: true, confirmedAt };
     }
-    return accepted;
+    return false;
   };
 
   const ensureTradingMode = async () => {

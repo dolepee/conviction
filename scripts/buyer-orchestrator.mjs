@@ -2127,6 +2127,7 @@ async function main() {
     : undefined;
   const journeyRequest = closeMode
     ? {
+        action: "close",
         market: options.market,
         outcome: options.side,
         shares: options.shares,
@@ -2142,6 +2143,7 @@ async function main() {
       };
   const requestBody = closeMode
     ? {
+        action: "close",
         market: options.market,
         outcome: options.side.toLowerCase(),
         shares: options.shares,
@@ -2160,6 +2162,7 @@ async function main() {
   checkpoint.mode = options.command;
   checkpoint.request = closeMode
     ? {
+        action: "close",
         market: options.market,
         outcome: options.side,
         shares: options.shares,

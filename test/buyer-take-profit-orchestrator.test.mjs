@@ -337,6 +337,36 @@ test("take-profit journey pays, confirms, waits, places once, and returns an aut
   assert.equal(trade.bounds.completedPayment.transactionHash, PAYMENT_TX);
 });
 
+test("take-profit journey preserves the CLI's exact consent timestamp in its report event", async () => {
+  const f = fixture();
+  let consentAt;
+  const result = await run(f, {
+    confirm: async (kind) => {
+      if (kind === "payment") return true;
+      consentAt = f.now();
+      return { accepted: true, confirmedAt: consentAt };
+    },
+  });
+
+  const event = result.events.find((entry) => entry.type === "trade_confirmed");
+  assert.equal(result.confirmation.confirmedAt, consentAt);
+  assert.equal(result.timings.confirmedAt, consentAt);
+  assert.equal(event.at, consentAt);
+});
+
+test("take-profit journey rejects a structured consent timestamp from the future", async () => {
+  const f = fixture();
+  await assert.rejects(
+    run(f, {
+      confirm: async (kind) => kind === "payment"
+        ? true
+        : { accepted: true, confirmedAt: Date.parse("2030-01-01T00:04:59.000Z") },
+    }),
+    (error) => error?.code === "invalid_confirmation_time",
+  );
+  assert.equal(f.executionCalls(), 0);
+});
+
 test("a maker fill between POST acknowledgement and the first exact fetch returns a recoverable binding without retrying", async () => {
   const f = fixture({
     exactOrderMutation: (snapshot) => ({

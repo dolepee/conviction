@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   attachTakeProfitFillProof,
   claimTakeProfitReservation,
+  formatTakeProfitPaymentDisplay,
   parseTakeProfitArgs,
   requirePinnedTakeProfitExecutionReadiness,
   requireTakeProfitLaunchWindow,
@@ -21,6 +22,30 @@ const WALLET = "0x2222222222222222222222222222222222222222";
 const CONDITION = `0x${"a".repeat(64)}`;
 const TOKEN = "123456789";
 const HASH = (digit) => `0x${digit.repeat(64)}`;
+
+test("TAKE_PROFIT human payment display names the protocol and exact payment resource", () => {
+  const asset = "0x3333333333333333333333333333333333333333";
+  const payee = "0x4444444444444444444444444444444444444444";
+  const resource = "https://conviction-bay.vercel.app/api/manage";
+  const display = formatTakeProfitPaymentDisplay({
+    challenge: {
+      decoded: {
+        resource: { url: resource },
+        accepts: [{ amount: "100000", network: "eip155:196", asset, payTo: payee }],
+      },
+    },
+  }, { paymentPayer: PAYER });
+
+  assert.match(display, /Conviction Position Manager payment via \*\*OKX Agent Payments Protocol\*\*:/);
+  assert.match(display, /Product: Bounded Position Manager/);
+  assert.match(display, /Amount: 0\.10 USD₮0 \(100000 atomic USD₮0\)/);
+  assert.match(display, /Network: eip155:196/);
+  assert.match(display, new RegExp(`Asset: USD₮0 \\(${asset}\\)`));
+  assert.match(display, new RegExp(`From: ${PAYER}`));
+  assert.match(display, new RegExp(`To: ${payee}`));
+  assert.match(display, new RegExp(`Resource: ${resource.replaceAll(".", "\\.")}`));
+  assert.doesNotMatch(display, /secret|passphrase|authorization_header/i);
+});
 
 function argv(extra = []) {
   return [

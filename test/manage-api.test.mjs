@@ -120,6 +120,7 @@ function trackedManagerFacilitator() {
 
 function managerRequestBody() {
   return {
+    action: "close",
     market: LIVE_MARKET_SNAPSHOT.slug,
     outcome: "yes",
     shares: "5",
@@ -152,6 +153,7 @@ test("paid manager re-verifies source and holdings before compiling CLOSE", asyn
   await handler({
     method: "POST",
     body: {
+      action: "close",
       market: LIVE_MARKET_SNAPSHOT.slug,
       outcome: "yes",
       shares: "5",
@@ -171,7 +173,7 @@ test("paid manager re-verifies source and holdings before compiling CLOSE", asyn
   assert.equal(MANAGE_QUOTE_TTL_MS, 300_000);
 });
 
-test("paid manager dispatches TAKE_PROFIT without changing the CLOSE default", async () => {
+test("paid manager dispatches both explicit CLOSE and TAKE_PROFIT actions", async () => {
   const calls = [];
   const handler = createManageHandler({
     issueIntentImpl(compilation) { return { ...compilation, issued: true }; },
@@ -220,7 +222,7 @@ test("paid manager dispatches TAKE_PROFIT without changing the CLOSE default", a
   assert.deepEqual(calls.map((entry) => entry[0]).sort(), ["market", "position", "source"]);
 });
 
-test("paid manager rejects an unknown action before any upstream lookup", async () => {
+test("paid manager rejects missing, blank, and unknown actions before any upstream lookup", async () => {
   let upstreamCalls = 0;
   const handler = createManageHandler({
     issueIntentImpl(compilation) { return compilation; },
@@ -229,13 +231,48 @@ test("paid manager rejects an unknown action before any upstream lookup", async 
     async verifySourceImpl() { upstreamCalls += 1; return source(); },
     async fetchPositionImpl() { upstreamCalls += 1; return position(); },
   });
-  const response = responseRecorder();
-
-  await handler({ method: "POST", body: { action: "sell_everything" } }, response);
-
-  assert.equal(response.statusCode, 422);
-  assert.equal(JSON.parse(response.body).error.code, "unsupported_manager_action");
+  for (const body of [{}, { action: "" }, { action: "   " }, { action: "sell_everything" }]) {
+    const response = responseRecorder();
+    await handler({ method: "POST", body }, response);
+    assert.equal(response.statusCode, 422);
+    assert.equal(JSON.parse(response.body).error.code, "unsupported_manager_action");
+  }
   assert.equal(upstreamCalls, 0);
+});
+
+test("a verified manager authorization with no action is not settled", async () => {
+  const facilitator = trackedManagerFacilitator();
+  let upstreamCalls = 0;
+  const manageHandler = createManageHandler({
+    issueIntentImpl(compilation) { return compilation; },
+    trustedIssuers: new Map(),
+    async resolveMarketImpl() { upstreamCalls += 1; return LIVE_MARKET_SNAPSHOT; },
+    async verifySourceImpl() { upstreamCalls += 1; return source(); },
+    async fetchPositionImpl() { upstreamCalls += 1; return position(); },
+  });
+  const app = createManageApp({
+    OKX_API_KEY: "test-api-key",
+    OKX_SECRET_KEY: "test-secret-key",
+    OKX_PASSPHRASE: "test-passphrase",
+  }, {
+    facilitatorClient: facilitator.client,
+    logger: { error() {} },
+    manageHandler,
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/manage`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "payment-signature": paidManagerHeader() },
+      body: JSON.stringify({}),
+    });
+    assert.equal(response.status, 422);
+    assert.equal((await response.json()).error.code, "unsupported_manager_action");
+    assert.equal(response.headers.get("payment-response"), null);
+  });
+  assert.equal(upstreamCalls, 0);
+  assert.equal(facilitator.calls.verify, 1);
+  assert.equal(facilitator.calls.settle, 0);
 });
 
 test("paid manager refetches one transiently stale Polygon position without weakening the freshness bound", async () => {
@@ -264,6 +301,7 @@ test("paid manager refetches one transiently stale Polygon position without weak
   await handler({
     method: "POST",
     body: {
+      action: "close",
       market: LIVE_MARKET_SNAPSHOT.slug,
       outcome: "yes",
       shares: "5",
@@ -300,6 +338,7 @@ test("paid manager remains fail-closed when the refetched Polygon position is st
   await handler({
     method: "POST",
     body: {
+      action: "close",
       market: LIVE_MARKET_SNAPSHOT.slug,
       outcome: "yes",
       shares: "5",
@@ -332,6 +371,7 @@ test("paid manager does not retry a non-staleness compiler rejection", async () 
   await handler({
     method: "POST",
     body: {
+      action: "close",
       market: LIVE_MARKET_SNAPSHOT.slug,
       outcome: "yes",
       shares: "5",

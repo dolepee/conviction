@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+import { strictlyPostdatesConfirmationSecond } from "../src/acceptance-timing.mjs";
 import { runCloseJourney } from "../src/buyer-orchestrator.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
 import { fetchAndVerifyClose } from "../src/exit-receipt-verifier.mjs";
@@ -291,6 +292,7 @@ async function probeManagePreview(required, sourcePosition) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      action: "close",
       market: required.market,
       outcome: required.side.toLowerCase(),
       shares: required.shares,
@@ -589,15 +591,16 @@ if (mode === "live") {
         trustedIssuers,
         expectedReceiptRequest,
       });
-      const confirmedAt = Number(report.confirmation?.confirmedAt);
-      const secondResolutionBoundary = Math.floor(confirmedAt / 1_000) * 1_000;
       const settlementOk = close.ok === true &&
         close.closeProof.wallet === required.sellerWallet &&
         BigInt(close.closeProof.fill.actualSharesRaw) === parseDecimal(required.shares, 6, "shares") &&
         close.closeProof.outcome === required.side &&
         close.closeProof.transactionHash === report.settlementTx.toLowerCase() &&
         close.closeProof.orderId === report.orderId.toLowerCase() &&
-        Date.parse(close.closeProof.settledAt) >= secondResolutionBoundary;
+        strictlyPostdatesConfirmationSecond(
+          close.closeProof.settledAt,
+          report.confirmation?.confirmedAt,
+        );
       record("3", "Exact FOK SELL settles from the pinned seller wallet", settlementOk ? "PASS" : "FAIL", report.settlementTx);
       const proofOk = independentlyValidated.closeProofHash === report.closeProofHash &&
         independentlyValidated.closePassportHash === report.closePassportHash &&

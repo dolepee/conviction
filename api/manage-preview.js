@@ -14,7 +14,7 @@ function send(response, status, body) {
 }
 
 function normalizeManagerAction(value) {
-  const action = String(value || "close").trim().toUpperCase();
+  const action = String(value ?? "").trim().toUpperCase();
   if (action !== "CLOSE" && action !== "TAKE_PROFIT") {
     throw new ConvictionError(
       "unsupported_manager_action",
