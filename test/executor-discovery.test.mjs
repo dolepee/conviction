@@ -90,6 +90,19 @@ test("new cards bind discovery into the signed intent and fail on substitution",
   assert.equal(card.nextStep.nativeOkx.agentInvokesTool, true);
   assert.equal(card.nextStep.nativeOkx.convictionInstallRequired, false);
   assert.equal(card.nextStep.nativeOkx.proof.endpoint, "https://conviction-bay.vercel.app/api/receipt");
+  assert.equal(card.nextStep.nativeOkx.proof.method, "POST");
+  assert.equal(card.nextStep.nativeOkx.proof.pointerFormat, "rfc6901");
+  assert.equal(card.nextStep.nativeOkx.proof.pluginResultContract.pointers.status, "/data/status");
+  assert.equal(card.nextStep.nativeOkx.proof.pluginResultContract.expected.status, "matched");
+  assert.equal(card.nextStep.nativeOkx.proof.pluginResultContract.expected.transactionHashCount, 1);
+  assert.deepEqual(card.nextStep.nativeOkx.proof.requestBodyMap, {
+    transactionHash: { source: "pluginResult", pointer: "/data/tx_hashes/0" },
+    orderId: { source: "pluginResult", pointer: "/data/order_id" },
+    intentHash: { source: "paidCard", pointer: "/intentHash" },
+    intent: { source: "paidCard", pointer: "/intent" },
+    issuance: { source: "paidCard", pointer: "/issuance" },
+  });
+  assert.equal(card.nextStep.nativeOkx.proof.returnProofInSameConversation, true);
 
   const substituted = structuredClone(card);
   substituted.nextStep.nativeOkx.program = "untrusted-plugin";
@@ -98,6 +111,10 @@ test("new cards bind discovery into the signed intent and fail on substitution",
   const fallbackSubstitution = structuredClone(card);
   fallbackSubstitution.nextStep.fallback.source.commit = "0".repeat(40);
   assert.equal(executorDiscoveryMatches(fallbackSubstitution, "OPEN"), false);
+
+  const proofMappingSubstitution = structuredClone(card);
+  proofMappingSubstitution.nextStep.nativeOkx.proof.requestBodyMap.transactionHash.pointer = "/untrustedTx";
+  assert.equal(executorDiscoveryMatches(proofMappingSubstitution, "OPEN"), false);
 });
 
 test("historical cards without discovery remain verifiable but cannot claim cold discovery", () => {
@@ -111,6 +128,8 @@ test("native OKX next steps bind action-specific proof handling without local co
   const close = executorNextStep("CLOSE");
   const takeProfit = executorNextStep("TAKE_PROFIT");
   assert.equal(close.nativeOkx.proof.endpoint, "https://conviction-bay.vercel.app/api/close-receipt");
+  assert.equal(close.nativeOkx.proof.requestBodyMap.transactionHash.pointer, "/data/tx_hashes/0");
+  assert.equal(close.nativeOkx.proof.returnProofInSameConversation, true);
   assert.equal(takeProfit.preferredMode, "pinned-conviction-executor");
   assert.equal(takeProfit.nativeOkx.available, false);
   assert.equal(takeProfit.nativeOkx.reason, "official_v0.7.0_gtd_transport_not_accepted");

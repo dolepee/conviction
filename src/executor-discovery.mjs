@@ -118,11 +118,46 @@ export const EXECUTOR_RELEASE = deepFreeze({
 export const EXECUTOR_RELEASE_HASH = sha256(EXECUTOR_RELEASE);
 
 function nativeProofFor(action) {
+  const common = {
+    method: "POST",
+    pointerFormat: "rfc6901",
+    pluginResultContract: {
+      pointers: {
+        success: "/ok",
+        dryRun: "/dry_run",
+        status: "/data/status",
+        orderId: "/data/order_id",
+        transactionHashes: "/data/tx_hashes",
+      },
+      expected: {
+        success: true,
+        dryRun: false,
+        status: "matched",
+        transactionHashCount: 1,
+      },
+    },
+    requestBodyMap: {
+      transactionHash: { source: "pluginResult", pointer: "/data/tx_hashes/0" },
+      orderId: { source: "pluginResult", pointer: "/data/order_id" },
+      intentHash: { source: "paidCard", pointer: "/intentHash" },
+      intent: { source: "paidCard", pointer: "/intent" },
+      issuance: { source: "paidCard", pointer: "/issuance" },
+    },
+    returnProofInSameConversation: true,
+  };
   if (action === "OPEN") {
-    return { endpoint: "https://conviction-bay.vercel.app/api/receipt", kind: "verified-position-proof" };
+    return {
+      ...common,
+      endpoint: "https://conviction-bay.vercel.app/api/receipt",
+      kind: "verified-position-proof",
+    };
   }
   if (action === "CLOSE") {
-    return { endpoint: "https://conviction-bay.vercel.app/api/close-receipt", kind: "verified-close-proof" };
+    return {
+      ...common,
+      endpoint: "https://conviction-bay.vercel.app/api/close-receipt",
+      kind: "verified-close-proof",
+    };
   }
   throw Object.assign(new Error("Native OKX proof is unavailable for this action"), {
     code: "native_okx_action_unsupported",
@@ -133,7 +168,7 @@ export function executorNextStep(action) {
   const expectedAction = String(action || "").toUpperCase();
   const nativeSupported = NATIVE_OKX_EXECUTION.supportedActions.includes(expectedAction);
   return deepFreeze({
-    version: "conviction-executor-next-step-v2",
+    version: "conviction-executor-next-step-v3",
     action: expectedAction,
     descriptorUrl: EXECUTOR_DISCOVERY_URL,
     executorReleaseHash: EXECUTOR_RELEASE_HASH,
@@ -180,7 +215,7 @@ export function executorDiscoveryMatches(card, action) {
   return sha256(intentExecutor) === EXECUTOR_RELEASE_HASH &&
     sha256(topLevelExecutor) === EXECUTOR_RELEASE_HASH &&
     executionCard?.executorReleaseHash === EXECUTOR_RELEASE_HASH &&
-    nextStep?.version === "conviction-executor-next-step-v2" &&
+    nextStep?.version === "conviction-executor-next-step-v3" &&
     nextStep?.action === expectedAction &&
     nextStep?.descriptorUrl === EXECUTOR_DISCOVERY_URL &&
     nextStep?.executorReleaseHash === EXECUTOR_RELEASE_HASH &&
