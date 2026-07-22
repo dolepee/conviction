@@ -47,6 +47,7 @@ import {
   settleExecutionLock,
   summarizeOpenSellReservations,
   validatePaymentChallenge,
+  verifyStoredPaymentTransactionClaim,
   verifyJournalLockOwnership,
   withStateReleaseMutex,
   writeReconciliationJournal,
@@ -1271,6 +1272,13 @@ async function loadRawLifecycleContext(options, { stateDirectory = STATE_DIRECTO
     readFile(options.issuerRegistry, "utf8"),
   ]);
   const journal = JSON.parse(journalText);
+  if (journal.paymentTx != null || journal.paymentProof != null || journal.paidCard != null) {
+    await verifyStoredPaymentTransactionClaim({
+      state: journal,
+      service: POSITION_MANAGER_SERVICE,
+      stateDirectory,
+    });
+  }
   const trustedDocument = JSON.parse(trustedText);
   const trustedIssuers = trustedIssuerRegistry(trustedDocument?.issuers || trustedDocument);
   fail(trustedIssuers.size > 0, "missing_trusted_issuer", "Pinned issuer registry is empty");
@@ -2493,6 +2501,8 @@ export async function runTakeProfitCli(options, {
     paymentAuthorization: null,
     paymentTx: null,
     paymentProof: null,
+    paymentClaimPath: null,
+    paymentClaimHash: null,
     paidCard: null,
     intentHash: null,
     tradeConsent: null,
@@ -2741,6 +2751,11 @@ export async function runTakeProfitCli(options, {
     validateTakeProfitDryRun: (card, result, validationOptions) => validateTakeProfitPluginPreview(card, result, validationOptions),
     waitUntil: sleepUntil,
     execute: async (argv) => {
+      await verifyStoredPaymentTransactionClaim({
+        state,
+        service: POSITION_MANAGER_SERVICE,
+        stateDirectory,
+      });
       try {
         await claimExecutionLock({
           journal,

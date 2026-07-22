@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile as fsWriteFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, unlink, writeFile as fsWriteFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import { sha256 } from "../src/canonical.mjs";
 import {
   claimCloseReplayLock,
   claimExecutionLock,
+  claimVerifiedPaymentTransaction,
   closeReplayKey,
   fetchEip3009AuthorizationState,
   normalizeOpenOrders,
@@ -34,6 +35,7 @@ import {
   settleExecutionLock,
   summarizeOpenSellReservations,
   validatePaymentChallenge,
+  verifyStoredPaymentTransactionClaim,
   waitForStrictlyPostConfirmationSecond,
   writeReconciliationJournal,
 } from "../scripts/buyer-orchestrator.mjs";
@@ -1062,32 +1064,34 @@ test("locked CLOSE execution rechecks the active wallet, balance, approval, and 
 test("CLOSE reconciliation releases only an expired unconfirmed card's replay lock", async () => {
   const directory = await mkdtemp(join(tmpdir(), "conviction-reconcile-test-"));
   const journal = join(directory, "journey.json");
-  const replayLock = join(directory, `close-${"a".repeat(64)}.lock.json`);
-  const replayKey = `0x${"a".repeat(64)}`;
   const paymentTx = `0x${"f".repeat(64)}`;
+  const fixture = paidResponseFixture({ mode: "close", journal });
   try {
     const state = {
-      mode: "close",
+      ...fixture.state,
       stage: "payment_verified",
       reconciliationRequired: true,
-      paymentPayer: "0x1111111111111111111111111111111111111111",
       paymentTx,
       paymentProof: exactServicePaymentProof({ paymentTx }),
       paidServiceResponse: { status: 200, paymentResponsePresent: true },
       paidCard: { fixture: true },
       executionArgvHash: null,
-      replayKey,
-      replayLockPath: replayLock,
       executionLockPath: null,
+      paymentClaimPath: null,
+      paymentClaimHash: null,
     };
     await Promise.all([
       writeFile(journal, JSON.stringify(state)),
-      writeFile(replayLock, JSON.stringify({
-        version: "conviction-close-replay-lock-v1",
-        replayKey,
-        journalPath: journal,
-      })),
+      writeFile(fixture.replayLockPath, JSON.stringify(fixture.lock)),
     ]);
+    const claimed = await claimVerifiedPaymentTransaction({
+      state,
+      paymentProof: state.paymentProof,
+      service: POSITION_MANAGER_SERVICE,
+    });
+    state.paymentClaimPath = claimed.file;
+    state.paymentClaimHash = claimed.claimHash;
+    await writeFile(journal, JSON.stringify(state));
     const result = await reconcileCloseJournal({
       file: journal,
       trustedIssuers: new Map(),
@@ -1097,7 +1101,10 @@ test("CLOSE reconciliation releases only an expired unconfirmed card's replay lo
     });
     assert.equal(result.status, "expired_unexecuted_reconciled");
     assert.equal(result.reconciliationRequired, false);
-    assert.deepEqual((await readdir(directory)).sort(), ["journey.json"]);
+    assert.deepEqual((await readdir(directory)).sort(), [
+      "journey.json",
+      `payment-${paymentTx.slice(2)}.lock.json`,
+    ]);
     const updated = JSON.parse(await readFile(journal, "utf8"));
     assert.equal(updated.replayLockPath, null);
     assert.equal(updated.executionLockPath, null);
@@ -1829,6 +1836,119 @@ test("one verified X Layer payment transaction can promote only one paid journey
     assert.equal(claim.replayKey, first.state.replayKey);
     assert.equal(claim.authorizationNonce, first.state.paymentAuthorization.nonce);
     assert.equal(claim.paymentProofHash, sha256(proof));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a post-publication journal failure retains the global payment claim and blocks replay", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-payment-post-publish-failure-"));
+  const paymentTx = `0x${"f".repeat(64)}`;
+  const response = new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: { "payment-response": Buffer.from(JSON.stringify({ transaction: paymentTx })).toString("base64") },
+  });
+  const proof = exactServicePaymentProof({ paymentTx });
+  const firstJournal = join(directory, "first.json");
+  const secondJournal = join(directory, "second.json");
+  const first = paidResponseFixture({ mode: "close", journal: firstJournal });
+  const second = paidResponseFixture({ mode: "close", journal: secondJournal });
+  try {
+    await Promise.all([
+      writeFile(firstJournal, `${JSON.stringify(first.state, null, 2)}\n`),
+      writeFile(secondJournal, `${JSON.stringify(second.state, null, 2)}\n`),
+    ]);
+    const paidFirst = await persistSuccessfulPaidServiceResponse({
+      state: first.state,
+      response,
+      json: { ok: true, intentHash: `0x${"d".repeat(64)}` },
+      paymentResponseRaw: response.headers.get("payment-response"),
+      writeState: (next) => writeReconciliationJournal(next, { directory, file: firstJournal }),
+    });
+    const paidSecond = await persistSuccessfulPaidServiceResponse({
+      state: second.state,
+      response,
+      json: { ok: true, intentHash: `0x${"e".repeat(64)}` },
+      paymentResponseRaw: response.headers.get("payment-response"),
+      writeState: (next) => writeReconciliationJournal(next, { directory, file: secondJournal }),
+    });
+    await assert.rejects(
+      persistVerifiedPaidServicePayment({
+        state: first.state,
+        paid: paidFirst,
+        paymentProof: proof,
+        service: POSITION_MANAGER_SERVICE,
+        writeState: async (next) => {
+          await writeReconciliationJournal(next, { directory, file: firstJournal });
+          throw Object.assign(new Error("simulated post-publication crash"), { code: "simulated_post_publish_crash" });
+        },
+      }),
+      (error) => error?.code === "simulated_post_publish_crash" && error?.paymentClaimRetained === true,
+    );
+    const durableFirst = JSON.parse(await readFile(firstJournal, "utf8"));
+    assert.equal(durableFirst.stage, "payment_verified");
+    await access(durableFirst.paymentClaimPath);
+    await assert.rejects(
+      persistVerifiedPaidServicePayment({
+        state: second.state,
+        paid: paidSecond,
+        paymentProof: proof,
+        service: POSITION_MANAGER_SERVICE,
+        writeState: (next) => writeReconciliationJournal(next, { directory, file: secondJournal }),
+      }),
+      (error) => error?.code === "payment_transaction_replayed",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("paid authority requires the exact owner-only payment claim at every later use", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-payment-claim-integrity-"));
+  const journal = join(directory, "journey.json");
+  const fixture = paidResponseFixture({ mode: "close", journal });
+  const paymentTx = `0x${"f".repeat(64)}`;
+  const response = new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: { "payment-response": Buffer.from(JSON.stringify({ transaction: paymentTx })).toString("base64") },
+  });
+  try {
+    await writeFile(journal, `${JSON.stringify(fixture.state, null, 2)}\n`);
+    const paid = await persistSuccessfulPaidServiceResponse({
+      state: fixture.state,
+      response,
+      json: { ok: true, intentHash: `0x${"d".repeat(64)}` },
+      paymentResponseRaw: response.headers.get("payment-response"),
+      writeState: (next) => writeReconciliationJournal(next, { directory, file: journal }),
+    });
+    await persistVerifiedPaidServicePayment({
+      state: fixture.state,
+      paid,
+      paymentProof: exactServicePaymentProof({ paymentTx }),
+      service: POSITION_MANAGER_SERVICE,
+      writeState: (next) => writeReconciliationJournal(next, { directory, file: journal }),
+    });
+    const claimPath = fixture.state.paymentClaimPath;
+    const exactClaim = await readFile(claimPath, "utf8");
+    await verifyStoredPaymentTransactionClaim({ state: fixture.state, service: POSITION_MANAGER_SERVICE, stateDirectory: directory });
+
+    await writeFile(claimPath, `${exactClaim.trim()}  \n`);
+    await assert.rejects(
+      verifyStoredPaymentTransactionClaim({ state: fixture.state, service: POSITION_MANAGER_SERVICE, stateDirectory: directory }),
+      (error) => error?.code === "payment_claim_missing_or_mismatched",
+    );
+    await writeFile(claimPath, exactClaim);
+    await chmod(claimPath, 0o644);
+    await assert.rejects(
+      verifyStoredPaymentTransactionClaim({ state: fixture.state, service: POSITION_MANAGER_SERVICE, stateDirectory: directory }),
+      (error) => error?.code === "payment_claim_missing_or_mismatched",
+    );
+    await chmod(claimPath, 0o600);
+    await unlink(claimPath);
+    await assert.rejects(
+      verifyStoredPaymentTransactionClaim({ state: fixture.state, service: POSITION_MANAGER_SERVICE, stateDirectory: directory }),
+      (error) => error?.code === "payment_claim_missing_or_mismatched",
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

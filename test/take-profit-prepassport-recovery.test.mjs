@@ -10,6 +10,7 @@ import { createIntentIssuer } from "../src/intent-issuer.mjs";
 import { compileTakeProfitIntent } from "../src/take-profit-intent-compiler.mjs";
 import {
   claimExecutionLock,
+  claimVerifiedPaymentTransaction,
   persistSuccessfulPaidServiceResponse,
   persistVerifiedPaidServicePayment,
   releaseReconciledLocks,
@@ -191,7 +192,18 @@ function prePassportJournal() {
     signerAddress: PAYER,
     depositWallet: WALLET,
     paymentRequestedAt: "2026-07-21T02:00:10.000Z",
-    paymentAuthorization: { redacted: true },
+    paymentAuthorization: {
+      version: "conviction-x402-authorization-v1",
+      scheme: "exact-eip3009",
+      network: "eip155:196",
+      asset: SERVICE_ASSET,
+      from: PAYER,
+      to: SERVICE_PAYEE,
+      value: POSITION_MANAGER_SERVICE.priceAtomic,
+      validAfter: "0",
+      validBefore: String(NOW / 1_000 + 120),
+      nonce: `0x${"9".repeat(64)}`,
+    },
     paymentTx: PAYMENT_TX,
     paidServiceResponse: { status: 200, paymentResponsePresent: true },
     paymentProof: {
@@ -367,6 +379,19 @@ async function diskFixture({
   const canonicalJournalPath = await realpath(journalPath);
   journal.journalPath = canonicalJournalPath;
   journal.reservationLockPath = await realpath(journal.reservationLockPath);
+  if (journal.paymentTx != null || journal.paymentProof != null || journal.paidCard != null) {
+    const canonicalPaymentState = structuredClone(journal);
+    canonicalPaymentState.paymentProof = structuredClone(prePassportJournal().paymentProof);
+    const claimed = await claimVerifiedPaymentTransaction({
+      state: canonicalPaymentState,
+      paymentProof: canonicalPaymentState.paymentProof,
+      service: POSITION_MANAGER_SERVICE,
+      directory: stateDirectory,
+    });
+    journal.paymentClaimPath = claimed.file;
+    journal.paymentClaimHash = claimed.claimHash;
+    await writeTakeProfitState(journal, { directory: stateDirectory, file: canonicalJournalPath });
+  }
   if (withExecutionLock) {
     await claimExecutionLock({
         journal: canonicalJournalPath,

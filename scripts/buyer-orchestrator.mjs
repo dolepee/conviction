@@ -2222,9 +2222,6 @@ function exactStoredServicePayment(state, service) {
   const proof = asObject(state?.paymentProof);
   const paymentTx = String(state?.paymentTx || "");
   const coreMatches = exactServicePaymentProof(state, proof, paymentTx, service);
-  const legacyClaimless = !Object.hasOwn(state || {}, "paymentClaimPath") &&
-    !Object.hasOwn(state || {}, "paymentClaimHash");
-  if (coreMatches && legacyClaimless) return proof;
   let expectedClaim;
   try {
     expectedClaim = paymentTransactionClaim(state, proof, service);
@@ -2241,6 +2238,64 @@ function exactStoredServicePayment(state, service) {
     return null;
   }
   return proof;
+}
+
+export async function verifyStoredPaymentTransactionClaim({
+  state,
+  service,
+  stateDirectory = dirname(String(state?.journalPath || "")),
+  statImpl = stat,
+} = {}) {
+  const proof = exactStoredServicePayment(state, service);
+  if (!proof) {
+    throw Object.assign(new Error("Stored paid journey has no exact payment transaction claim"), {
+      code: "payment_claim_missing_or_mismatched",
+    });
+  }
+  const expected = paymentTransactionClaim(state, proof, service);
+  let claimDirectory = resolve(stateDirectory);
+  try { claimDirectory = realpathSync(claimDirectory); } catch {}
+  const expectedPath = safeStatePath(
+    join(claimDirectory, `payment-${expected.transactionHash.slice(2)}.lock.json`),
+    "payment claim",
+    claimDirectory,
+  );
+  if (state.paymentClaimPath !== expectedPath || state.paymentClaimHash !== sha256(expected)) {
+    throw Object.assign(new Error("Stored payment transaction claim binding is invalid"), {
+      code: "payment_claim_missing_or_mismatched",
+      details: {
+        expectedPath,
+        actualPath: state.paymentClaimPath,
+        expectedHash: sha256(expected),
+        actualHash: state.paymentClaimHash,
+      },
+    });
+  }
+  let text;
+  try {
+    [text] = await Promise.all([
+      readFile(expectedPath, "utf8"),
+      ownerOnlyStateFile(expectedPath, "Payment transaction claim", { statImpl }),
+    ]);
+  } catch (cause) {
+    throw Object.assign(new Error("Stored payment transaction claim is missing or unsafe"), {
+      code: "payment_claim_missing_or_mismatched",
+      cause,
+    });
+  }
+  let stored;
+  try { stored = JSON.parse(text); } catch (cause) {
+    throw Object.assign(new Error("Stored payment transaction claim is not valid JSON"), {
+      code: "payment_claim_missing_or_mismatched",
+      cause,
+    });
+  }
+  if (text !== `${JSON.stringify(expected, null, 2)}\n` || sha256(stored) !== sha256(expected)) {
+    throw Object.assign(new Error("Stored payment transaction claim differs from the paid journey"), {
+      code: "payment_claim_missing_or_mismatched",
+    });
+  }
+  return Object.freeze({ file: expectedPath, claim: expected, claimHash: sha256(expected) });
 }
 
 export async function persistVerifiedPaidServicePayment({
@@ -2296,8 +2351,35 @@ export async function persistVerifiedPaidServicePayment({
         code: "payment_proof_mismatch",
       });
     }
+    await verifyStoredPaymentTransactionClaim({ state: verified, service });
     await writeState(verified);
   } catch (error) {
+    let durableReachedTarget = error?.journalWriteReachedTarget === true;
+    let durableTarget = null;
+    if (!durableReachedTarget) {
+      try {
+        const [text] = await Promise.all([
+          readFile(claimed.claim.journalPath, "utf8"),
+          ownerOnlyStateFile(claimed.claim.journalPath, "Reconciliation journal"),
+        ]);
+        const parsed = JSON.parse(text);
+        const expected = structuredClone(verified);
+        expected.journalRevision = journalRevision(verified) + 1;
+        if (sha256(parsed) === sha256(verified) || sha256(parsed) === sha256(expected)) {
+          durableReachedTarget = true;
+          durableTarget = parsed;
+        }
+      } catch {}
+    }
+    if (durableReachedTarget || error?.preserveSourceJournal === true) {
+      if (durableTarget) replaceRecord(state, durableTarget);
+      else if (error?.journalWriteReachedTarget === true) replaceRecord(state, verified);
+      error.preserveSourceJournal = true;
+      error.paymentClaimRetained = true;
+      error.paymentClaimPath = claimed.file;
+      error.paymentClaimHash = claimed.claimHash;
+      throw error;
+    }
     try {
       await releasePaymentClaimImpl(claimed);
     } catch (cleanupError) {
@@ -3227,6 +3309,21 @@ export async function reconcileOpenJournal({
       code: "invalid_reconciliation_journal",
     });
   }
+  if (state.paymentTx != null || state.paymentProof != null || state.paidCard != null) {
+    try {
+      await verifyStoredPaymentTransactionClaim({ state, service: POSITION_CARD_SERVICE, stateDirectory });
+    } catch (error) {
+      if (error?.code !== "payment_claim_missing_or_mismatched") throw error;
+      return {
+        ok: true,
+        status: "manual_reconciliation_required",
+        reason: "payment_verification_missing_or_mismatched",
+        reconciliationRequired: true,
+        journalPath: journal,
+        stage: state.stage,
+      };
+    }
+  }
 
   if (isRecoverablePaymentAuthorizationState(state)) {
     if (state.replayKey !== openReplayKey({ request: state.request, buyerWallet: state.buyerWallet })) {
@@ -3551,6 +3648,21 @@ export async function reconcileCloseJournal({
   const state = JSON.parse(await readFile(journal, "utf8"));
   if (state?.mode !== "close") {
     throw Object.assign(new Error("Journal is not a Conviction CLOSE journey"), { code: "invalid_reconciliation_journal" });
+  }
+  if (state.paymentTx != null || state.paymentProof != null || state.paidCard != null) {
+    try {
+      await verifyStoredPaymentTransactionClaim({ state, service: POSITION_MANAGER_SERVICE, stateDirectory });
+    } catch (error) {
+      if (error?.code !== "payment_claim_missing_or_mismatched") throw error;
+      return {
+        ok: true,
+        status: "manual_reconciliation_required",
+        reason: "payment_verification_missing_or_mismatched",
+        reconciliationRequired: true,
+        journalPath: journal,
+        stage: state.stage,
+      };
+    }
   }
 
   let reason;
@@ -4150,6 +4262,11 @@ export async function resumePaidCloseJournal({
   await resumePendingStateRelease({ journal, stateDirectory });
   const state = JSON.parse(await readFile(journal, "utf8"));
   requireExactResumeCheckpoint(state, journal);
+  await verifyStoredPaymentTransactionClaim({
+    state,
+    service: POSITION_MANAGER_SERVICE,
+    stateDirectory,
+  });
   requireDistinctPaymentPayer(state.paymentPayer);
   const request = resumeRequest(state);
   const expectedReplayKey = closeReplayKey({ request, sellerWallet: state.buyerWallet });
@@ -5048,6 +5165,11 @@ async function main() {
     validateDryRun: async (card, dryRun, validationOptions) => validatePluginPreview(card, dryRun, validationOptions),
     validateCloseDryRun: async (card, dryRun, validationOptions) => validateClosePluginPreview(card, dryRun, validationOptions),
     execute: async (argv) => {
+      await verifyStoredPaymentTransactionClaim({
+        state: checkpoint,
+        service,
+        stateDirectory: journalDirectory,
+      });
       await claimExecutionLock({
         journal: journalPath,
         state: checkpoint,
