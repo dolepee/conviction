@@ -22,12 +22,15 @@ export function parseDecimal(value, decimals, label) {
 
 export function formatDecimal(rawValue, decimals) {
   const raw = BigInt(rawValue);
+  const negative = raw < 0n;
+  const absolute = negative ? -raw : raw;
   const scale = 10n ** BigInt(decimals);
-  const whole = raw / scale;
-  const fraction = String(raw % scale)
+  const whole = absolute / scale;
+  const fraction = String(absolute % scale)
     .padStart(decimals, "0")
     .replace(/0+$/, "");
-  return fraction ? `${whole}.${fraction}` : String(whole);
+  const formatted = fraction ? `${whole}.${fraction}` : String(whole);
+  return negative ? `-${formatted}` : formatted;
 }
 
 export function parseHexUint(value, label = "hex value") {
@@ -38,4 +41,3 @@ export function parseHexUint(value, label = "hex value") {
   }
   return BigInt(value);
 }
-
