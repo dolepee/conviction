@@ -88,6 +88,9 @@ assert.ok(app.includes('postJson("/api/preview"'), "wallet-free preview is not c
 assert.ok(app.includes('postJson("/api/intent"'), "final compiler UI is not connected to intent API");
 assert.ok(app.includes('postJson("/api/receipt"'), "receipt verification is not connected");
 assert.ok(app.includes("artifact.issuance"), "receipt verification omits the issuer signature");
+assert.ok(app.includes("Select a paid Conviction-issued v4 dossier"), "receipt verifier does not require a paid signed dossier");
+assert.doesNotMatch(app, /Create a signed v4 card above or select its issued intent dossier/, "receipt verifier advertises an unusable unsigned-card path");
+assert.ok(html.includes('Signed v4 intent dossier <span class="required">Required</span>'), "receipt verifier dossier input is not required");
 assert.ok(app.includes('payload.assurance === "issuer-signed"'), "receipt UI does not branch on cryptographic assurance");
 assert.ok(app.includes('setAttribute("aria-invalid", "true")'), "invalid fields are not identified");
 assert.ok(app.includes('setAttribute("aria-errormessage", statusId)'), "field errors are not associated with status text");
@@ -194,8 +197,8 @@ assert.equal(sha256(signedOpenProof.positionPassport), signedOpenProof.positionP
 assert.ok(Object.values(signedOpenProof.positionProof.checks).every(Boolean));
 assert.equal(signedOpenProof.positionProof.checks.marketConditionTokensMatched, true);
 assert.equal(liveAcceptance.version, "conviction-live-acceptance-pack-v2");
-assert.equal(liveAcceptance.currentProductionVersion, "0.4.8");
-assert.equal(liveAcceptance.currentProductionReleaseTag, "v0.4.8");
+assert.equal(liveAcceptance.currentProductionVersion, "0.4.9");
+assert.equal(liveAcceptance.currentProductionReleaseTag, "v0.4.9");
 assert.ok(
   liveAcceptance.limitations.some((item) => /nonzero-fee verification path.*unproven/i.test(item)),
   "live acceptance pack must disclose that a nonzero-fee settlement remains unproven",
