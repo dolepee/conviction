@@ -4,6 +4,8 @@ Conviction has exactly two paid products. OPEN turns an explicit user thesis int
 
 The OPEN routes are free `POST /api/preview`, paid `POST /api/service` at `0.05 USD₮0`, and proof-only `POST /api/receipt`. Both manager actions use free `POST /api/manage-preview` and paid `POST /api/manage` at `0.10 USD₮0`; the request's explicit `action` selects `close` or `take_profit`. CLOSE proof uses `POST /api/close-receipt`. TAKE_PROFIT immediately returns an authenticated initial order binding: zero-match `LIVE` becomes `ARMED`, while a first-fetch match or venue-state transition becomes a recoverable submitted-order binding pending reconciliation and any required Polygon proof. Its buyer-side journal then supports read-only status, independent Polygon fill proof, and exact-order cancellation. The public web app remains an OPEN preview/manual verifier; the repository-backed buyer agent/CLI runs the complete action without asking the user to type plugin commands.
 
+For every paid action, the buyer runtime keeps the merchant body and `PAYMENT-RESPONSE` authorization-only until it independently verifies the exact X Layer receipt. Before promoting the card, it atomically creates an owner-only permanent claim keyed by the payment transaction and bound to the journal, replay key, EIP-3009 nonce, service, payer, amount, and proof hash. An already-claimed transaction fails closed and cannot promote a second journey; claim files are replay records and are never released as execution locks.
+
 ## OPEN request
 
 Send JSON:

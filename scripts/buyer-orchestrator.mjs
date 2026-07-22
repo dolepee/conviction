@@ -84,6 +84,8 @@ const checkpoint = {
   paidCard: null,
   liveResult: null,
   paymentProof: null,
+  paymentClaimPath: null,
+  paymentClaimHash: null,
   paymentRequestedAt: null,
   paymentAuthorization: null,
   paidServiceResponse: null,
@@ -2086,25 +2088,155 @@ const EXACT_PAYMENT_CHECKS = Object.freeze([
   "exactAmount",
 ]);
 
+function paymentTransactionClaim(state, paymentProof, service) {
+  const transactionHash = String(paymentProof?.transactionHash || "").toLowerCase();
+  let journal = resolve(String(state?.journalPath || ""));
+  try { journal = realpathSync(journal); } catch {}
+  const replayKey = String(state?.replayKey || "").toLowerCase();
+  const authorization = validateStoredPaymentAuthorization(state?.paymentAuthorization, {
+    paymentPayer: state?.paymentPayer,
+    service,
+  });
+  if (
+    !HASH_RE.test(transactionHash) || !HASH_RE.test(replayKey) ||
+    !journal || !HASH_RE.test(String(authorization?.nonce || ""))
+  ) {
+    throw Object.assign(new Error("Verified payment claim identity is invalid"), {
+      code: "invalid_payment_claim",
+    });
+  }
+  return Object.freeze({
+    version: "conviction-payment-transaction-claim-v1",
+    transactionHash,
+    journalPath: journal,
+    replayKey,
+    authorizationNonce: authorization.nonce,
+    paymentAuthorizationHash: sha256(authorization),
+    paymentProofHash: sha256(paymentProof),
+    serviceResource: service.resource,
+    payer: String(state.paymentPayer).toLowerCase(),
+    payee: SERVICE_PAYEE,
+    asset: SERVICE_ASSET,
+    amountAtomic: service.priceAtomic,
+  });
+}
+
+export async function claimVerifiedPaymentTransaction({
+  state,
+  paymentProof,
+  service,
+  directory = dirname(String(state?.journalPath || "")),
+  durablePublishImpl = writeDurableAtomicFile,
+} = {}) {
+  const claim = paymentTransactionClaim(state, paymentProof, service);
+  if (!exactServicePaymentProof(state, asObject(paymentProof), claim.transactionHash, service)) {
+    throw Object.assign(new Error("Independent x402 proof differs from the exact paid service"), {
+      code: "payment_proof_mismatch",
+    });
+  }
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
+  try { directory = realpathSync(directory); } catch { directory = resolve(directory); }
+  if (directory !== dirname(claim.journalPath)) {
+    throw Object.assign(new Error("Payment transaction claim directory differs from its journal"), {
+      code: "invalid_payment_claim_directory",
+    });
+  }
+  const file = safeStatePath(
+    join(directory, `payment-${claim.transactionHash.slice(2)}.lock.json`),
+    "payment claim",
+    directory,
+  );
+  const text = `${JSON.stringify(claim, null, 2)}\n`;
+  try {
+    await durablePublishImpl(file, text, { mode: 0o600, noReplace: true });
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw Object.assign(
+        new Error("This X Layer payment transaction is already claimed by another paid journey"),
+        { code: "payment_transaction_replayed", details: { paymentClaimPath: file } },
+      );
+    }
+    let published = false;
+    try {
+      const [existing] = await Promise.all([
+        readFile(file, "utf8"),
+        ownerOnlyStateFile(file, "Payment transaction claim"),
+      ]);
+      published = existing === text;
+    } catch {}
+    if (error?.atomicPublishCompleted === true || published) {
+      throw Object.assign(new Error("Payment transaction claim publication is ambiguous"), {
+        code: "payment_claim_ambiguous",
+        cause: error,
+        preserveSourceJournal: true,
+        paymentClaimPath: file,
+        paymentClaimHash: sha256(claim),
+      });
+    }
+    throw error;
+  }
+  return Object.freeze({ file, claim, claimHash: sha256(claim), text });
+}
+
+async function releaseFailedPaymentTransactionClaim(claimed, {
+  directory = dirname(String(claimed?.file || "")),
+} = {}) {
+  return withStateReleaseMutex(directory, async (mutexLease) => {
+    const file = safeStatePath(claimed?.file, "payment claim", directory);
+    const [current] = await Promise.all([
+      readFile(file, "utf8"),
+      ownerOnlyStateFile(file, "Payment transaction claim"),
+    ]);
+    if (current !== claimed?.text || sha256(JSON.parse(current)) !== claimed?.claimHash) {
+      throw Object.assign(new Error("Payment transaction claim changed before rollback"), {
+        code: "payment_claim_rollback_mismatch",
+      });
+    }
+    await mutexLease.unlinkExact(file, current);
+    mutexLease.assertAlive();
+  });
+}
+
+function exactServicePaymentProof(state, proof, paymentTx, service) {
+  const response = asObject(state?.paidServiceResponse);
+  const paymentPayer = String(state?.paymentPayer || "");
+  return Boolean(
+    service && typeof service === "object" && DECIMAL_UINT_RE.test(String(service.priceAtomic || "")) &&
+    Number.isInteger(response?.status) && response.status >= 200 && response.status < 300 &&
+    response.paymentResponsePresent === true &&
+    HASH_RE.test(paymentTx) && paymentTx === paymentTx.toLowerCase() &&
+    ADDRESS_RE.test(paymentPayer) && paymentPayer === paymentPayer.toLowerCase() &&
+    proof?.version === "conviction-x402-payment-v1" && proof.chainId === 196 &&
+    proof.transactionHash === paymentTx && proof.payer === paymentPayer &&
+    proof.payee === SERVICE_PAYEE && proof.asset === SERVICE_ASSET &&
+    proof.amountAtomic === service.priceAtomic &&
+    DECIMAL_UINT_RE.test(String(proof.blockNumber || "")) &&
+    HASH_RE.test(String(proof.blockHash || "")) &&
+    DECIMAL_UINT_RE.test(String(proof.blockTimestamp || "")) &&
+    EXACT_PAYMENT_CHECKS.every((field) => proof.checks?.[field] === true)
+  );
+}
+
 function exactStoredServicePayment(state, service) {
   const proof = asObject(state?.paymentProof);
-  const response = asObject(state?.paidServiceResponse);
   const paymentTx = String(state?.paymentTx || "");
-  const paymentPayer = String(state?.paymentPayer || "");
+  const coreMatches = exactServicePaymentProof(state, proof, paymentTx, service);
+  const legacyClaimless = !Object.hasOwn(state || {}, "paymentClaimPath") &&
+    !Object.hasOwn(state || {}, "paymentClaimHash");
+  if (coreMatches && legacyClaimless) return proof;
+  let expectedClaim;
+  try {
+    expectedClaim = paymentTransactionClaim(state, proof, service);
+  } catch {
+    return null;
+  }
+  let claimDirectory = resolve(dirname(String(state.journalPath)));
+  try { claimDirectory = realpathSync(claimDirectory); } catch {}
   if (
-    !service || typeof service !== "object" || !DECIMAL_UINT_RE.test(String(service.priceAtomic || "")) ||
-    !Number.isInteger(response?.status) || response.status < 200 || response.status >= 300 ||
-    response.paymentResponsePresent !== true ||
-    !HASH_RE.test(paymentTx) || paymentTx !== paymentTx.toLowerCase() ||
-    !ADDRESS_RE.test(paymentPayer) || paymentPayer !== paymentPayer.toLowerCase() ||
-    proof?.version !== "conviction-x402-payment-v1" || proof.chainId !== 196 ||
-    proof.transactionHash !== paymentTx || proof.payer !== paymentPayer ||
-    proof.payee !== SERVICE_PAYEE || proof.asset !== SERVICE_ASSET ||
-    proof.amountAtomic !== service.priceAtomic ||
-    !DECIMAL_UINT_RE.test(String(proof.blockNumber || "")) ||
-    !HASH_RE.test(String(proof.blockHash || "")) ||
-    !DECIMAL_UINT_RE.test(String(proof.blockTimestamp || "")) ||
-    !EXACT_PAYMENT_CHECKS.every((field) => proof.checks?.[field] === true)
+    !coreMatches ||
+    state.paymentClaimPath !== join(claimDirectory, `payment-${paymentTx.slice(2)}.lock.json`) ||
+    state.paymentClaimHash !== sha256(expectedClaim)
   ) {
     return null;
   }
@@ -2118,6 +2250,8 @@ export async function persistVerifiedPaidServicePayment({
   service,
   writeState = writeReconciliationJournal,
   ambiguousStage = "paid_request_settlement_ambiguous",
+  claimPaymentImpl = claimVerifiedPaymentTransaction,
+  releasePaymentClaimImpl = releaseFailedPaymentTransactionClaim,
 } = {}) {
   const card = asObject(paid?.card);
   const paymentTx = String(paid?.paymentTx || "").toLowerCase();
@@ -2127,7 +2261,8 @@ export async function persistVerifiedPaidServicePayment({
     !HASH_RE.test(String(card.intentHash || "")) || state.stage !== ambiguousStage ||
     (ambiguousStage !== "paid_request_settlement_ambiguous" && ambiguousStage !== "paid_request_ambiguous") ||
     state.reconciliationRequired !== true || state.paidCard != null || state.paymentTx != null ||
-    state.paymentProof != null || state.executionArgvHash != null || state.orderId != null ||
+    state.paymentProof != null || state.paymentClaimPath != null || state.paymentClaimHash != null ||
+    state.executionArgvHash != null || state.orderId != null ||
     state.settlementTx != null
   ) {
     throw Object.assign(new Error("Verified paid service response cannot be committed from this state"), {
@@ -2135,26 +2270,48 @@ export async function persistVerifiedPaidServicePayment({
     });
   }
 
-  // Also bind the verified transfer to the exact authorization metadata that
-  // reserved this replay identity. The helper below is deliberately reused by
-  // reconciliation so persisted proof and release authority have one shape.
-  validateStoredPaymentAuthorization(state.paymentAuthorization, {
-    paymentPayer: state.paymentPayer,
-    service,
-  });
+  // A receipt proves that one exact transfer occurred, but the merchant header
+  // does not prove that it belongs to only this journal. Claim the transaction
+  // hash durably before promoting the card so one PAYMENT-RESPONSE cannot pay
+  // two overlapping journeys. The claim also binds this journal's authorization
+  // nonce, replay identity, service, payer, and independently verified proof.
+  if (!exactServicePaymentProof(state, asObject(paymentProof), paymentTx, service)) {
+    throw Object.assign(new Error("Independent x402 proof differs from the exact paid service"), {
+      code: "payment_proof_mismatch",
+    });
+  }
+  const claimed = await claimPaymentImpl({ state, paymentProof, service });
   const verified = structuredClone(state);
   verified.stage = "payment_verified";
   verified.paymentTx = paymentTx;
   verified.intentHash = card.intentHash;
   verified.paidCard = card;
   verified.paymentProof = structuredClone(paymentProof);
+  verified.paymentClaimPath = claimed.file;
+  verified.paymentClaimHash = claimed.claimHash;
   verified.reconciliationRequired = true;
-  if (!exactStoredServicePayment(verified, service)) {
-    throw Object.assign(new Error("Independent x402 proof differs from the exact paid service"), {
-      code: "payment_proof_mismatch",
-    });
+  try {
+    if (!exactStoredServicePayment(verified, service)) {
+      throw Object.assign(new Error("Independent x402 proof differs from the exact paid service"), {
+        code: "payment_proof_mismatch",
+      });
+    }
+    await writeState(verified);
+  } catch (error) {
+    try {
+      await releasePaymentClaimImpl(claimed);
+    } catch (cleanupError) {
+      throw Object.assign(new Error("Verified payment claim could not be rolled back after journal failure"), {
+        code: "payment_claim_rollback_failed",
+        cause: error,
+        cleanupError: cleanupError?.code || "payment_claim_cleanup_failed",
+        preserveSourceJournal: true,
+        paymentClaimPath: claimed.file,
+        paymentClaimHash: claimed.claimHash,
+      });
+    }
+    throw error;
   }
-  await writeState(verified);
   replaceRecord(state, verified);
   return state.paymentProof;
 }
@@ -2348,12 +2505,15 @@ function safeStatePath(value, kind, stateDirectory = journalDirectory) {
     ? name.endsWith(".json") && !name.endsWith(".lock.json")
     : kind === "replay lock"
       ? /^(?:open|close)-[0-9a-f]{64}\.lock\.json$/.test(name)
+      : kind === "payment claim"
+        ? /^payment-[0-9a-f]{64}\.lock\.json$/.test(name)
       : kind === "reservation lock"
         ? /^take-profit-[0-9a-f]{64}\.lock\.json$/.test(name)
         : kind === "lock"
           ? name === "polymarket-execution.lock.json" ||
             name === releaseLockBasename ||
             /^(?:open|close)-[0-9a-f]{64}\.lock\.json$/.test(name) ||
+            /^payment-[0-9a-f]{64}\.lock\.json$/.test(name) ||
             /^take-profit-[0-9a-f]{64}\.lock\.json$/.test(name)
           : name === "polymarket-execution.lock.json";
   if (!valid) {

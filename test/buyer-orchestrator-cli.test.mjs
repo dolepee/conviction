@@ -1754,7 +1754,81 @@ test("independently verified payment atomically promotes the in-memory card into
     assert.equal(durable.paymentTx, paymentTx);
     assert.deepEqual(durable.paidCard, card);
     assert.deepEqual(durable.paymentProof, proof);
+    assert.match(durable.paymentClaimPath, /payment-[0-9a-f]{64}\.lock\.json$/);
+    assert.match(durable.paymentClaimHash, /^0x[0-9a-f]{64}$/);
+    assert.equal((await stat(durable.paymentClaimPath)).mode & 0o777, 0o600);
     assert.deepEqual(durable.paidServiceResponse, { status: 200, paymentResponsePresent: true });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("one verified X Layer payment transaction can promote only one paid journey", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "conviction-payment-transaction-replay-"));
+  const paymentTx = `0x${"f".repeat(64)}`;
+  const response = new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      "payment-response": Buffer.from(JSON.stringify({ transaction: paymentTx })).toString("base64"),
+    },
+  });
+  const proof = exactServicePaymentProof({ paymentTx });
+  const firstJournal = join(directory, "first.json");
+  const secondJournal = join(directory, "second.json");
+  const first = paidResponseFixture({ mode: "close", journal: firstJournal });
+  const second = paidResponseFixture({ mode: "close", journal: secondJournal });
+  try {
+    await Promise.all([
+      writeFile(firstJournal, `${JSON.stringify(first.state, null, 2)}\n`),
+      writeFile(secondJournal, `${JSON.stringify(second.state, null, 2)}\n`),
+    ]);
+    const paidFirst = await persistSuccessfulPaidServiceResponse({
+      state: first.state,
+      response,
+      json: { ok: true, intentHash: `0x${"d".repeat(64)}` },
+      paymentResponseRaw: response.headers.get("payment-response"),
+      writeState: (next) => writeReconciliationJournal(next, { directory, file: firstJournal }),
+    });
+    const paidSecond = await persistSuccessfulPaidServiceResponse({
+      state: second.state,
+      response,
+      json: { ok: true, intentHash: `0x${"e".repeat(64)}` },
+      paymentResponseRaw: response.headers.get("payment-response"),
+      writeState: (next) => writeReconciliationJournal(next, { directory, file: secondJournal }),
+    });
+    await persistVerifiedPaidServicePayment({
+      state: first.state,
+      paid: paidFirst,
+      paymentProof: proof,
+      service: POSITION_MANAGER_SERVICE,
+      writeState: (next) => writeReconciliationJournal(next, { directory, file: firstJournal }),
+    });
+    await assert.rejects(
+      persistVerifiedPaidServicePayment({
+        state: second.state,
+        paid: paidSecond,
+        paymentProof: proof,
+        service: POSITION_MANAGER_SERVICE,
+        writeState: (next) => writeReconciliationJournal(next, { directory, file: secondJournal }),
+      }),
+      (error) => error?.code === "payment_transaction_replayed",
+    );
+    const [durableFirst, durableSecond] = await Promise.all([
+      readFile(firstJournal, "utf8").then(JSON.parse),
+      readFile(secondJournal, "utf8").then(JSON.parse),
+    ]);
+    assert.equal(durableFirst.stage, "payment_verified");
+    assert.equal(durableFirst.paymentTx, paymentTx);
+    assert.equal(durableSecond.stage, "paid_request_settlement_ambiguous");
+    assert.equal(durableSecond.paymentTx, null);
+    assert.equal(durableSecond.paidCard, null);
+    assert.equal(durableSecond.paymentProof ?? null, null);
+    const claim = JSON.parse(await readFile(durableFirst.paymentClaimPath, "utf8"));
+    assert.equal(claim.transactionHash, paymentTx);
+    assert.equal(claim.journalPath, await realpath(firstJournal));
+    assert.equal(claim.replayKey, first.state.replayKey);
+    assert.equal(claim.authorizationNonce, first.state.paymentAuthorization.nonce);
+    assert.equal(claim.paymentProofHash, sha256(proof));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

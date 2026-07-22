@@ -83,6 +83,8 @@ The free OPEN preview, final public OPEN card, and paid OPEN endpoint use the sa
 request receives a standard payment challenge. Invalid compile requests are not
 settled, and a successful response is withheld if settlement fails.
 
+Before a paid card gains authority, the buyer runtime independently verifies the X Layer receipt and creates an owner-only durable claim for that exact payment transaction, bound to the journey's authorization nonce, replay identity, service, payer, amount, and proof. One transaction can authorize only one journey. These `payment-*.lock.json` claims are permanent replay records; never delete them to force a retry.
+
 Before deploying seller credentials, verify that the key is payment-enabled,
 then verify the deployed v0.4 health manifest and both exact bare x402
 challenges:
