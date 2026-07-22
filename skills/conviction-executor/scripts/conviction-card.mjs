@@ -44,6 +44,27 @@ function record(value, label) {
   return value;
 }
 
+function executorDiscoveryMatches(card, action) {
+  const expectedAction = String(action || "").toUpperCase();
+  const intentExecutor = card?.intent?.executor;
+  const topLevelExecutor = card?.executor;
+  const executionCard = card?.executionCard;
+  const nextStep = card?.nextStep;
+  if (!intentExecutor || !topLevelExecutor || !executionCard || !nextStep) return false;
+  const releaseHash = sha256(intentExecutor);
+  const entrypoint = intentExecutor?.entrypoints?.[expectedAction];
+  return sha256(topLevelExecutor) === releaseHash &&
+    executionCard.executorReleaseHash === releaseHash &&
+    nextStep.action === expectedAction &&
+    nextStep.executorReleaseHash === releaseHash &&
+    nextStep.preferredMode === intentExecutor?.preferredModeByAction?.[expectedAction] &&
+    nextStep.fallback?.mode === intentExecutor?.fallbackMode &&
+    sha256(nextStep.fallback?.source) === sha256(intentExecutor?.source) &&
+    sha256(nextStep.fallback?.entrypoint) === sha256(entrypoint) &&
+    nextStep.requiresBuyerLocalExecution === true &&
+    nextStep.requiresSeparateTradeConfirmation === true;
+}
+
 function parseDocument(input, label) {
   if (Buffer.isBuffer(input)) input = input.toString("utf8");
   if (typeof input !== "string") return record(input, label);
@@ -148,6 +169,11 @@ export function validateCard(input, {
     signedV4 || (allowLegacyV3 && intent.version === "conviction-intent-v3"),
     "invalid_card",
     "A signed Conviction intent v4 card is required",
+  );
+  fail(
+    !signedV4 || executorDiscoveryMatches(card, "OPEN"),
+    "executor_discovery_mismatch",
+    "Position card executor discovery is missing or substituted",
   );
   fail(HASH_RE.test(card.intentHash), "invalid_intent_hash", "Intent hash must be a 32-byte hash");
   const intentHash = lower(card.intentHash);

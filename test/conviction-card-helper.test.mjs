@@ -35,6 +35,36 @@ function clone(value) {
 function signedSample() {
   const wrapper = clone(SAMPLE);
   const response = wrapper.response;
+  const executor = {
+    version: "conviction-executor-test-v1",
+    preferredModeByAction: { OPEN: "native-okx-agentic-wallet" },
+    fallbackMode: "pinned-conviction-executor",
+    source: {
+      protocol: "git",
+      repository: "https://github.com/dolepee/conviction.git",
+      commit: "67ec7939b9182ac2a9f3984632881e8052f1ac0d",
+      skillPath: "skills/conviction-executor/SKILL.md",
+    },
+    entrypoints: {
+      OPEN: { program: "node", argv: ["scripts/buyer-orchestrator.mjs", "open"] },
+    },
+  };
+  const executorReleaseHash = sha256(executor);
+  response.intent.executor = executor;
+  response.executor = executor;
+  response.nextStep = {
+    action: "OPEN",
+    executorReleaseHash,
+    preferredMode: executor.preferredModeByAction.OPEN,
+    fallback: {
+      mode: executor.fallbackMode,
+      source: executor.source,
+      entrypoint: executor.entrypoints.OPEN,
+    },
+    requiresBuyerLocalExecution: true,
+    requiresSeparateTradeConfirmation: true,
+  };
+  response.executionCard.executorReleaseHash = executorReleaseHash;
   response.intent.version = "conviction-intent-v4";
   response.intent.order.feeEnforcement = "signed-order-bounds-plus-post-settlement-verification";
   const expiresAt = new Date(Date.parse(response.intent.snapshot.capturedAt) + 300_000).toISOString();
@@ -119,6 +149,12 @@ function signedProofFixture() {
     quoteTtlMs: 300_000,
     intentVersion: "conviction-intent-v4",
   });
+  compilation.intent.executor = clone(SIGNED_SAMPLE.response.intent.executor);
+  compilation.executor = clone(SIGNED_SAMPLE.response.executor);
+  compilation.nextStep = clone(SIGNED_SAMPLE.response.nextStep);
+  compilation.executionCard.executorReleaseHash =
+    SIGNED_SAMPLE.response.executionCard.executorReleaseHash;
+  compilation.intentHash = sha256(compilation.intent);
   const issue = createIntentIssuer({
     keyId: "conviction-proof-test-2026-07",
     privateKey: ISSUER_PRIVATE_KEY,
@@ -187,6 +223,13 @@ test("fails closed on hash, chain, venue, token, wallet, budget, depth, expiry, 
       trustedIssuers: TRUSTED_ISSUERS,
     }),
     (error) => error.code === "expired_card",
+  );
+
+  const substitutedExecutor = clone(SIGNED_SAMPLE);
+  substitutedExecutor.response.nextStep.fallback.source.commit = "0".repeat(40);
+  assert.throws(
+    () => validateCard(substitutedExecutor, { now: SAMPLE_NOW, trustedIssuers: TRUSTED_ISSUERS }),
+    (error) => error.code === "executor_discovery_mismatch",
   );
 });
 
