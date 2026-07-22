@@ -470,18 +470,35 @@ export async function claimExecutionLock({
   journal,
   directory = journalDirectory,
   file = executionLockFile,
+  releaseFile = join(directory, "polymarket-execution.release.lock.json"),
 } = {}) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
+  const releaseInProgress = async () => {
+    try {
+      await readFile(releaseFile, "utf8");
+      return true;
+    } catch (error) {
+      if (error?.code === "ENOENT") return false;
+      throw error;
+    }
+  };
+  if (await releaseInProgress()) {
+    throw Object.assign(
+      new Error("A Conviction execution lock is being reconciled; retry only after that release finishes"),
+      { code: "execution_release_in_progress", details: { executionReleaseLockPath: releaseFile } },
+    );
+  }
+  const lock = {
+    version: "conviction-polymarket-execution-lock-v1",
+    pid: process.pid,
+    journalPath: journal,
+    claimedAt: new Date().toISOString(),
+  };
   let handle;
   try {
     handle = await open(file, "wx", 0o600);
-    await handle.writeFile(`${JSON.stringify({
-      version: "conviction-polymarket-execution-lock-v1",
-      pid: process.pid,
-      journalPath: journal,
-      claimedAt: new Date().toISOString(),
-    }, null, 2)}\n`);
+    await handle.writeFile(`${JSON.stringify(lock, null, 2)}\n`);
   } catch (error) {
     if (error?.code === "EEXIST") {
       throw Object.assign(
@@ -492,6 +509,18 @@ export async function claimExecutionLock({
     throw error;
   } finally {
     await handle?.close();
+  }
+  if (await releaseInProgress()) {
+    try {
+      const current = JSON.parse(await readFile(file, "utf8"));
+      if (sha256(current) === sha256(lock)) await unlink(file);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    throw Object.assign(
+      new Error("A Conviction execution-lock release raced this claim; no execution may start"),
+      { code: "execution_release_in_progress", details: { executionReleaseLockPath: releaseFile } },
+    );
   }
   return file;
 }

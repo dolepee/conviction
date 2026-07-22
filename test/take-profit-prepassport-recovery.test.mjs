@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { access, chmod, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import test from "node:test";
 import { sha256 } from "../src/canonical.mjs";
 import { createIntentIssuer } from "../src/intent-issuer.mjs";
 import { compileTakeProfitIntent } from "../src/take-profit-intent-compiler.mjs";
+import { claimExecutionLock, releaseReconciledLocks } from "../scripts/buyer-orchestrator.mjs";
 import {
   recoverPrePassportTakeProfitJournal,
   claimTakeProfitReservation,
@@ -328,9 +329,14 @@ test("recovery accepts a post-submit expired card only for an exact order create
   );
 });
 
-async function diskFixture({ mode = 0o600, journal = prePassportJournal() } = {}) {
-  const stateDirectory = await mkdtemp(join(tmpdir(), "conviction-prepassport-state-"));
-  await chmod(stateDirectory, 0o700);
+async function diskFixture({
+  mode = 0o600,
+  journal = prePassportJournal(),
+  withExecutionLock = Boolean(journal.executionLockPath),
+} = {}) {
+  const createdStateDirectory = await mkdtemp(join(tmpdir(), "conviction-prepassport-state-"));
+  await chmod(createdStateDirectory, 0o700);
+  const stateDirectory = await realpath(createdStateDirectory);
   const journalPath = join(stateDirectory, "recovery-take-profit.json");
   const issuerRegistry = join(stateDirectory, "trusted-issuers.json");
   journal.journalPath = journalPath;
@@ -340,14 +346,32 @@ async function diskFixture({ mode = 0o600, journal = prePassportJournal() } = {}
     directory: stateDirectory,
   });
   await writeTakeProfitState(journal, { directory: stateDirectory, file: journalPath });
-  await chmod(journalPath, mode);
+  const canonicalJournalPath = await realpath(journalPath);
+  journal.journalPath = canonicalJournalPath;
+  journal.reservationLockPath = await realpath(journal.reservationLockPath);
+  journal.executionLockPath = withExecutionLock
+    ? await claimExecutionLock({
+        journal: canonicalJournalPath,
+        directory: stateDirectory,
+        file: join(stateDirectory, "polymarket-execution.lock.json"),
+      })
+    : null;
+  await writeTakeProfitState(journal, { directory: stateDirectory, file: canonicalJournalPath });
+  await chmod(canonicalJournalPath, mode);
   await writeFile(issuerRegistry, `${JSON.stringify({ issuers: trustedIssuers }, null, 2)}\n`, { mode: 0o600 });
-  return { stateDirectory, journalPath, issuerRegistry, reservationLockPath: journal.reservationLockPath };
+  return {
+    stateDirectory,
+    journalPath: canonicalJournalPath,
+    issuerRegistry: await realpath(issuerRegistry),
+    reservationLockPath: journal.reservationLockPath,
+    executionLockPath: journal.executionLockPath || join(stateDirectory, "polymarket-execution.lock.json"),
+  };
 }
 
-test("reconcile-tp persists pre-passport recovery, fetches the exact order once, and retains the live ARMED lock", async () => {
+test("reconcile-tp persists exact ARMED recovery before releasing only its owner-verified global lock", async () => {
   const fixture = await diskFixture();
   let exactFetches = 0;
+  let writes = 0;
   const result = await runTakeProfitReconcileCli({
     journal: fixture.journalPath,
     issuerRegistry: fixture.issuerRegistry,
@@ -365,18 +389,443 @@ test("reconcile-tp persists pre-passport recovery, fetches the exact order once,
       });
       return orderSnapshot();
     },
+    writeState: async (journal, options) => {
+      writes += 1;
+      if (writes === 1) {
+        assert.equal(journal.stage, "armed");
+        assert.equal(journal.reconciliationRequired, true);
+        assert.equal(journal.executionLockPath, fixture.executionLockPath);
+        await access(fixture.executionLockPath);
+      }
+      return writeTakeProfitState(journal, options);
+    },
+    releaseLocks: async (journal, options) => {
+      assert.deepEqual(options.fields, ["executionLockPath"]);
+      assert.equal(journal.reservationLockPath, fixture.reservationLockPath);
+      await assert.rejects(
+        claimExecutionLock({
+          journal: join(fixture.stateDirectory, "racing-close.json"),
+          directory: fixture.stateDirectory,
+          file: fixture.executionLockPath,
+        }),
+        (error) => error?.code === "execution_release_in_progress",
+      );
+      return releaseReconciledLocks(journal, options);
+    },
   });
 
   assert.equal(exactFetches, 1);
+  assert.equal(writes, 2);
   assert.equal(result.status, "ARMED");
-  assert.equal(result.reconciliationRequired, true);
-  assert.equal(result.executionLockReleased, false);
+  assert.equal(result.reconciliationRequired, false);
+  assert.equal(result.executionLockReleased, true);
   const persisted = JSON.parse(await readFile(fixture.journalPath, "utf8"));
   assert.equal(persisted.stage, "armed");
   assert.equal(persisted.takeProfitPassport.status, "ARMED");
   assert.equal(persisted.prePassportRecovery.noPaymentOrPlacementPerformed, true);
-  assert.equal(persisted.executionLockPath, "/private/state/polymarket-execution.lock.json");
+  assert.match(persisted.prePassportRecovery.executionLockReleasedAt, /^2026-07-21T02:00:14\.000Z$/);
+  assert.equal(persisted.executionLockPath, null);
+  assert.equal(persisted.reservationLockPath, fixture.reservationLockPath);
+  assert.equal(persisted.reconciliationRequired, false);
   assert.equal(persisted.paymentTx, PAYMENT_TX);
+  await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+  await access(fixture.reservationLockPath);
+});
+
+test("a crash after passport persistence but before unlink retains both locks and retries without another placement", async () => {
+  const fixture = await diskFixture();
+  let exactFetches = 0;
+  let releases = 0;
+  await assert.rejects(
+    runTakeProfitReconcileCli({
+      journal: fixture.journalPath,
+      issuerRegistry: fixture.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: fixture.stateDirectory,
+      now: () => Date.parse(FETCHED_AT),
+      fetchExactOrderImpl: async () => {
+        exactFetches += 1;
+        return orderSnapshot();
+      },
+      releaseLocks: async () => {
+        releases += 1;
+        const persisted = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+        assert.equal(persisted.stage, "armed");
+        assert.equal(persisted.reconciliationRequired, true);
+        await access(fixture.executionLockPath);
+        await access(fixture.reservationLockPath);
+        throw Object.assign(new Error("simulated crash before unlink"), { code: "simulated_pre_unlink_crash" });
+      },
+    }),
+    (error) => error?.code === "simulated_pre_unlink_crash",
+  );
+  assert.equal(releases, 1);
+  await access(fixture.executionLockPath);
+  await access(fixture.reservationLockPath);
+  const durable = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  assert.equal(durable.takeProfitPassport.status, "ARMED");
+  assert.equal(durable.prePassportRecovery.executionLockReleasedAt, undefined);
+
+  const retried = await runTakeProfitReconcileCli({
+    journal: fixture.journalPath,
+    issuerRegistry: fixture.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: fixture.stateDirectory,
+    now: () => Date.parse(FETCHED_AT),
+    fetchExactOrderImpl: async () => {
+      exactFetches += 1;
+      return orderSnapshot();
+    },
+  });
+  assert.equal(exactFetches, 2);
+  assert.equal(retried.status, "ARMED");
+  assert.equal(retried.reconciliationRequired, false);
+  await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+  await access(fixture.reservationLockPath);
+});
+
+test("a crash after unlink but before final journal write retries idempotently and retains the reservation", async () => {
+  const fixture = await diskFixture();
+  let writes = 0;
+  await assert.rejects(
+    runTakeProfitReconcileCli({
+      journal: fixture.journalPath,
+      issuerRegistry: fixture.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: fixture.stateDirectory,
+      now: () => Date.parse(FETCHED_AT),
+      fetchExactOrderImpl: async () => orderSnapshot(),
+      writeState: async (journal, options) => {
+        writes += 1;
+        if (writes === 2) {
+          await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+          throw Object.assign(new Error("simulated crash before final journal write"), { code: "simulated_post_unlink_crash" });
+        }
+        return writeTakeProfitState(journal, options);
+      },
+    }),
+    (error) => error?.code === "simulated_post_unlink_crash",
+  );
+  assert.equal(writes, 2);
+  const durable = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  assert.equal(durable.takeProfitPassport.status, "ARMED");
+  assert.equal(durable.executionLockPath, fixture.executionLockPath);
+  assert.equal(durable.reconciliationRequired, true);
+  await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+  await access(fixture.reservationLockPath);
+
+  const retried = await runTakeProfitReconcileCli({
+    journal: fixture.journalPath,
+    issuerRegistry: fixture.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: fixture.stateDirectory,
+    now: () => Date.parse(FETCHED_AT),
+    fetchExactOrderImpl: async () => orderSnapshot(),
+  });
+  assert.equal(retried.status, "ARMED");
+  assert.equal(retried.reconciliationRequired, false);
+  const reconciled = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  assert.equal(reconciled.executionLockPath, null);
+  assert.equal(reconciled.reservationLockPath, fixture.reservationLockPath);
+  await access(fixture.reservationLockPath);
+});
+
+test("reconcile safely reclaims only an exact dead-owner release guard", async () => {
+  for (const owner of ["dead", "live", "foreign"]) {
+    const fixture = await diskFixture();
+    await assert.rejects(
+      runTakeProfitReconcileCli({
+        journal: fixture.journalPath,
+        issuerRegistry: fixture.issuerRegistry,
+        json: true,
+      }, {
+        stateDirectory: fixture.stateDirectory,
+        now: () => Date.parse(FETCHED_AT),
+        fetchExactOrderImpl: async () => orderSnapshot(),
+        releaseLocks: async () => {
+          throw Object.assign(new Error("stop after release-guard acquisition"), { code: "simulated_guard_crash" });
+        },
+      }),
+      (error) => error?.code === "simulated_guard_crash",
+    );
+    const journal = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+    const guardPath = join(fixture.stateDirectory, "polymarket-execution.release.lock.json");
+    const staleGuard = {
+      version: "conviction-polymarket-execution-release-v1",
+      journalPath: owner === "foreign" ? join(fixture.stateDirectory, "foreign-take-profit.json") : fixture.journalPath,
+      expectedExecutionLockHash: journal.prePassportRecovery.executionLockHash,
+      pid: owner === "live" ? process.pid : 2_147_483_647,
+      claimedAt: "2026-07-21T02:00:13.000Z",
+    };
+    await writeFile(guardPath, `${JSON.stringify(staleGuard, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    if (owner === "dead") await unlink(fixture.executionLockPath);
+
+    if (owner !== "dead") {
+      await assert.rejects(
+        runTakeProfitReconcileCli({
+          journal: fixture.journalPath,
+          issuerRegistry: fixture.issuerRegistry,
+          json: true,
+        }, {
+          stateDirectory: fixture.stateDirectory,
+          now: () => Date.parse(FETCHED_AT),
+          fetchExactOrderImpl: async () => orderSnapshot(),
+        }),
+        (error) => error?.code === (owner === "live" ? "execution_release_in_progress" : "execution_release_guard_mismatch"),
+      );
+      assert.deepEqual(JSON.parse(await readFile(guardPath, "utf8")), staleGuard);
+      await access(fixture.executionLockPath);
+    } else {
+      const result = await runTakeProfitReconcileCli({
+        journal: fixture.journalPath,
+        issuerRegistry: fixture.issuerRegistry,
+        json: true,
+      }, {
+        stateDirectory: fixture.stateDirectory,
+        now: () => Date.parse(FETCHED_AT),
+        fetchExactOrderImpl: async () => orderSnapshot(),
+      });
+      assert.equal(result.reconciliationRequired, false);
+      await assert.rejects(access(guardPath), (error) => error?.code === "ENOENT");
+      await assert.rejects(access(fixture.executionLockPath), (error) => error?.code === "ENOENT");
+      await access(fixture.reservationLockPath);
+    }
+  }
+});
+
+test("resolved ARMED recovery clears an exact dead-owner guard left after its final journal write", async () => {
+  const fixture = await diskFixture();
+  await runTakeProfitReconcileCli({
+    journal: fixture.journalPath,
+    issuerRegistry: fixture.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: fixture.stateDirectory,
+    now: () => Date.parse(FETCHED_AT),
+    fetchExactOrderImpl: async () => orderSnapshot(),
+  });
+  const journal = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  assert.equal(journal.reconciliationRequired, false);
+  assert.equal(journal.executionLockPath, null);
+  const guardPath = join(fixture.stateDirectory, "polymarket-execution.release.lock.json");
+  await writeFile(guardPath, `${JSON.stringify({
+    version: "conviction-polymarket-execution-release-v1",
+    journalPath: fixture.journalPath,
+    expectedExecutionLockHash: journal.prePassportRecovery.executionLockHash,
+    pid: 2_147_483_647,
+    claimedAt: "2026-07-21T02:00:14.000Z",
+  }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+
+  const result = await runTakeProfitReconcileCli({
+    journal: fixture.journalPath,
+    issuerRegistry: fixture.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: fixture.stateDirectory,
+    now: () => Date.parse(FETCHED_AT),
+    fetchExactOrderImpl: async () => orderSnapshot({ order: { status: "CANCELED" } }),
+  });
+  assert.equal(result.status, "CANCELED");
+  assert.equal(result.reconciliationRequired, false);
+  await assert.rejects(access(guardPath), (error) => error?.code === "ENOENT");
+  const nextLock = await claimExecutionLock({
+    journal: join(fixture.stateDirectory, "next-operation.json"),
+    directory: fixture.stateDirectory,
+    file: fixture.executionLockPath,
+  });
+  assert.equal(nextLock, fixture.executionLockPath);
+  await unlink(nextLock);
+  await access(fixture.reservationLockPath);
+});
+
+test("a missing or substituted scoped reservation blocks global-lock release", async () => {
+  for (const substitution of ["missing", "foreign"]) {
+    const fixture = await diskFixture();
+    if (substitution === "missing") {
+      await unlink(fixture.reservationLockPath);
+    } else {
+      const lock = JSON.parse(await readFile(fixture.reservationLockPath, "utf8"));
+      lock.replayKey = `0x${"e".repeat(64)}`;
+      await writeFile(fixture.reservationLockPath, `${JSON.stringify(lock, null, 2)}\n`, { mode: 0o600 });
+    }
+    await assert.rejects(
+      runTakeProfitReconcileCli({
+        journal: fixture.journalPath,
+        issuerRegistry: fixture.issuerRegistry,
+        json: true,
+      }, {
+        stateDirectory: fixture.stateDirectory,
+        now: () => Date.parse(FETCHED_AT),
+        fetchExactOrderImpl: async () => orderSnapshot(),
+      }),
+      (error) => error?.code === "reservation_ownership_mismatch",
+    );
+    await access(fixture.executionLockPath);
+    assert.equal(JSON.parse(await readFile(fixture.journalPath, "utf8")).stage, "live_result_received");
+  }
+});
+
+test("a non-owner-only execution lock is never released", async () => {
+  const fixture = await diskFixture();
+  await chmod(fixture.executionLockPath, 0o644);
+  await assert.rejects(
+    runTakeProfitReconcileCli({
+      journal: fixture.journalPath,
+      issuerRegistry: fixture.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: fixture.stateDirectory,
+      now: () => Date.parse(FETCHED_AT),
+      fetchExactOrderImpl: async () => orderSnapshot(),
+    }),
+    (error) => error?.code === "unsafe_state_permissions",
+  );
+  await access(fixture.executionLockPath);
+  await access(fixture.reservationLockPath);
+});
+
+test("another execution-lock owner or generation is never removed", async () => {
+  const foreign = await diskFixture();
+  const foreignLock = JSON.parse(await readFile(foreign.executionLockPath, "utf8"));
+  foreignLock.journalPath = join(foreign.stateDirectory, "another-take-profit.json");
+  await writeFile(foreign.executionLockPath, `${JSON.stringify(foreignLock, null, 2)}\n`, { mode: 0o600 });
+  await assert.rejects(
+    runTakeProfitReconcileCli({
+      journal: foreign.journalPath,
+      issuerRegistry: foreign.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: foreign.stateDirectory,
+      now: () => Date.parse(FETCHED_AT),
+      fetchExactOrderImpl: async () => orderSnapshot(),
+    }),
+    (error) => error?.code === "lock_ownership_mismatch",
+  );
+  await access(foreign.executionLockPath);
+
+  const replaced = await diskFixture();
+  await assert.rejects(
+    runTakeProfitReconcileCli({
+      journal: replaced.journalPath,
+      issuerRegistry: replaced.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: replaced.stateDirectory,
+      now: () => Date.parse(FETCHED_AT),
+      fetchExactOrderImpl: async () => orderSnapshot(),
+      releaseLocks: async () => {
+        throw Object.assign(new Error("pause after passport persistence"), { code: "simulated_pre_unlink_crash" });
+      },
+    }),
+    (error) => error?.code === "simulated_pre_unlink_crash",
+  );
+  const replacement = JSON.parse(await readFile(replaced.executionLockPath, "utf8"));
+  replacement.pid += 1;
+  replacement.claimedAt = "2026-07-21T02:00:13.500Z";
+  await writeFile(replaced.executionLockPath, `${JSON.stringify(replacement, null, 2)}\n`, { mode: 0o600 });
+  await assert.rejects(
+    runTakeProfitReconcileCli({
+      journal: replaced.journalPath,
+      issuerRegistry: replaced.issuerRegistry,
+      json: true,
+    }, {
+      stateDirectory: replaced.stateDirectory,
+      now: () => Date.parse(FETCHED_AT),
+      fetchExactOrderImpl: async () => orderSnapshot(),
+    }),
+    (error) => error?.code === "lock_generation_mismatch",
+  );
+  assert.deepEqual(JSON.parse(await readFile(replaced.executionLockPath, "utf8")), replacement);
+  await access(replaced.reservationLockPath);
+});
+
+test("a later ambiguous cancel cannot reuse recovered ARMED release authority", async () => {
+  const fixture = await diskFixture();
+  await runTakeProfitReconcileCli({
+    journal: fixture.journalPath,
+    issuerRegistry: fixture.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: fixture.stateDirectory,
+    now: () => Date.parse(FETCHED_AT),
+    fetchExactOrderImpl: async () => orderSnapshot(),
+  });
+  const journal = JSON.parse(await readFile(fixture.journalPath, "utf8"));
+  journal.executionLockPath = await claimExecutionLock({
+    journal: fixture.journalPath,
+    directory: fixture.stateDirectory,
+    file: fixture.executionLockPath,
+  });
+  journal.reconciliationRequired = true;
+  journal.cancelConsent = { version: "conviction-take-profit-cancel-consent-v1" };
+  journal.cancelAttemptedAt = "2026-07-21T02:00:15.000Z";
+  await writeTakeProfitState(journal, { directory: fixture.stateDirectory, file: fixture.journalPath });
+
+  const result = await runTakeProfitReconcileCli({
+    journal: fixture.journalPath,
+    issuerRegistry: fixture.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: fixture.stateDirectory,
+    now: () => Date.parse(FETCHED_AT),
+    fetchExactOrderImpl: async () => orderSnapshot(),
+  });
+  assert.equal(result.status, "ARMED");
+  assert.equal(result.reconciliationRequired, true);
+  assert.equal(result.executionLockReleased, false);
+  await access(fixture.executionLockPath);
+});
+
+test("UNKNOWN and provisional matched recovery retain the global lock", async () => {
+  const unknownFixture = await diskFixture();
+  const unknown = await runTakeProfitReconcileCli({
+    journal: unknownFixture.journalPath,
+    issuerRegistry: unknownFixture.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: unknownFixture.stateDirectory,
+    now: () => Date.parse(FETCHED_AT),
+    fetchExactOrderImpl: async () => orderSnapshot({ order: { status: "MATCHED" } }),
+  });
+  assert.equal(unknown.status, "UNKNOWN");
+  assert.equal(unknown.executionLockReleased, false);
+  await access(unknownFixture.executionLockPath);
+
+  const matchedFixture = await diskFixture();
+  const matchedSnapshot = orderSnapshot({
+    order: { status: "MATCHED", sizeMatched: "1000000", associatedTrades: ["maker-trade-1"] },
+  });
+  const provisional = await runTakeProfitReconcileCli({
+    journal: matchedFixture.journalPath,
+    issuerRegistry: matchedFixture.issuerRegistry,
+    json: true,
+  }, {
+    stateDirectory: matchedFixture.stateDirectory,
+    now: () => Date.parse(FETCHED_AT),
+    fetchExactOrderImpl: async () => matchedSnapshot,
+    fetchTradeContributions: async () => ({ version: "conviction-polymarket-associated-trades-v1" }),
+    verifyAggregateFill: async () => ({
+      ok: true,
+      proofHash: `0x${"f".repeat(64)}`,
+      proof: {
+        version: "conviction-take-profit-fill-proof-v1",
+        status: "PARTIALLY_FILLED_ACTIVE_PROVISIONAL",
+        orderId: ORDER_ID,
+        wallet: WALLET,
+        outcomeTokenId: LIVE_MARKET_SNAPSHOT.yesTokenId,
+        exactOrderSnapshotHash: sha256(matchedSnapshot),
+        finality: { finalized: false },
+        lifecycle: { orderTerminal: false },
+      },
+    }),
+  });
+  assert.equal(provisional.status, "PARTIALLY_FILLED_ACTIVE_PROVISIONAL");
+  assert.equal(provisional.executionLockReleased, false);
+  await access(matchedFixture.executionLockPath);
 });
 
 test("reconcile-tp continues a first-fetch fill through independent proof and releases only finalized terminal ambiguity", async () => {

@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { mkdir, open, readFile, realpath, rename, stat, unlink, writeFile, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, stderr } from "node:process";
@@ -89,7 +89,8 @@ function usage() {
     "It places one post-only GTD order and returns an authenticated ARMED proof.",
     "`tp-status` automatically proves any matched shares from CLOB trades and Polygon receipts.",
     "`reconcile-tp` can recover only an exact order ID already persisted with a valid live result; it never pays or places again.",
-    "It cleans pre-order reservations only after authorization/card expiry and exact unused/unstarted proof.",
+    "It releases a recovered submit lock only after durably authenticating a zero-match ARMED order while retaining its scoped reservation.",
+    "It otherwise cleans pre-order reservations only after authorization/card expiry and exact unused/unstarted proof.",
   ].join("\n");
 }
 
@@ -1008,6 +1009,19 @@ async function loadReconcileContext(options, {
   });
   const currentText = await readFile(context.journalPath, "utf8");
   fail(currentText === context.journalText, "prepassport_journal_changed", "TAKE_PROFIT journal changed while its exact order was being recovered");
+  await validateTakeProfitReservationOwnership(context, recovery, {
+    stateDirectory: canonicalStateDirectory,
+    statImpl,
+  });
+  const executionLock = await inspectOwnerVerifiedRecoveredExecutionLock(context, {
+    stateDirectory: canonicalStateDirectory,
+    statImpl,
+  });
+  recovered.journal.executionLockPath = executionLock.path;
+  recovered.journal.prePassportRecovery.executionLockHash = executionLock.hash;
+  recovered.journal.prePassportRecovery.executionLockObservedMissing = executionLock.missing;
+  const unchangedText = await readFile(context.journalPath, "utf8");
+  fail(unchangedText === context.journalText, "prepassport_journal_changed", "TAKE_PROFIT journal changed before its recovered passport was persisted");
   await writeState(recovered.journal, { directory: canonicalStateDirectory, file: context.journalPath });
   return {
     ...context,
@@ -1130,6 +1144,280 @@ export function takeProfitReconciliationResolved(status) {
   return status?.orderTerminal === true && status?.settlementProofRequired === false;
 }
 
+function recoveredArmedPlacementState(context, status) {
+  const journal = context?.journal;
+  const binding = context?.binding;
+  const recovery = journal?.prePassportRecovery;
+  const exactRecoveredArmedJournal = (
+    recovery?.version === "conviction-take-profit-prepassport-recovery-v1" &&
+    recovery.noPaymentOrPlacementPerformed === true &&
+    (recovery.executionLockHash === null || HASH_RE.test(String(recovery.executionLockHash || ""))) &&
+    recovery.orderId === binding?.orderId && recovery.intentHash === binding?.intentHash &&
+    recovery.confirmedAt === journal?.tradeConsent?.confirmedAt &&
+    recovery.initialOrderSnapshotHash === journal?.initialOrderSnapshotHash &&
+    recovery.initialOrderSnapshotHash === sha256(journal?.initialOrderSnapshot) &&
+    journal?.stage === "armed" && journal?.status === "ARMED" &&
+    binding?.initialStatus === "ARMED" && binding?.initialMatchedRaw === 0n
+  );
+  if (!exactRecoveredArmedJournal) return null;
+  if (
+    recovery.executionLockReleasedAt != null && journal.executionLockPath == null &&
+    journal.reconciliationRequired === false
+  ) return "resolved";
+  const exactCurrentArmed = (
+    status?.version === "conviction-take-profit-status-v1" && status.status === "ARMED" &&
+    status.takeProfitPassportHash === binding.passportHash &&
+    status.restingOrderProofHash === binding.proofHash &&
+    status.order?.id === binding.orderId && status.order?.matchedSharesRaw === "0" &&
+    status.orderTerminal === false && status.settlementProofRequired === false
+  );
+  const cancelFields = [
+    "cancelConsent",
+    "cancelAttemptedAt",
+    "cancelExecutionArgv",
+    "cancelResult",
+    "cancelOutcome",
+    "cancelError",
+  ];
+  return exactCurrentArmed && recovery.executionLockReleasedAt == null && journal.reconciliationRequired === true &&
+    cancelFields.every((field) => journal[field] == null)
+    ? "pending"
+    : null;
+}
+
+async function inspectOwnerVerifiedRecoveredExecutionLock(context, {
+  stateDirectory,
+  statImpl = stat,
+} = {}) {
+  await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
+  const declared = context.journal.executionLockPath;
+  if (!declared) return Object.freeze({ path: null, hash: null, missing: true });
+
+  const root = await realpath(resolve(stateDirectory));
+  const expected = join(root, "polymarket-execution.lock.json");
+  let canonicalDeclared;
+  try {
+    canonicalDeclared = join(await realpath(dirname(resolve(String(declared)))), basename(String(declared)));
+  } catch {
+    fail(false, "lock_ownership_mismatch", "Recovered TAKE_PROFIT execution-lock directory cannot be verified");
+  }
+  fail(canonicalDeclared === expected, "lock_ownership_mismatch", "Recovered TAKE_PROFIT points to another execution lock");
+
+  let lockStat;
+  try {
+    lockStat = await statImpl(expected);
+  } catch (error) {
+    if (error?.code === "ENOENT") return Object.freeze({ path: expected, hash: null, missing: true });
+    throw error;
+  }
+  const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
+  fail(lockStat.isFile() && (lockStat.mode & 0o077) === 0, "unsafe_state_permissions", "Recovered TAKE_PROFIT execution lock must be owner-only");
+  if (expectedUid !== null) {
+    fail(lockStat.uid === expectedUid, "unsafe_state_owner", "Recovered TAKE_PROFIT execution lock must belong to the current OS user");
+  }
+  let lock;
+  try {
+    lock = JSON.parse(await readFile(expected, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return Object.freeze({ path: expected, hash: null, missing: true });
+    fail(false, "lock_ownership_mismatch", "Recovered TAKE_PROFIT execution lock cannot be authenticated");
+  }
+  fail(
+    lock?.version === "conviction-polymarket-execution-lock-v1" &&
+      lock?.journalPath === context.journalPath,
+    "lock_ownership_mismatch",
+    "Recovered TAKE_PROFIT execution lock belongs to another journey",
+  );
+  return Object.freeze({ path: expected, hash: sha256(lock), missing: false });
+}
+
+async function claimRecoveredExecutionReleaseGuard(context, {
+  stateDirectory,
+  expectedExecutionLockHash,
+  now = Date.now,
+  statImpl = stat,
+} = {}) {
+  const file = join(stateDirectory, "polymarket-execution.release.lock.json");
+  const guard = {
+    version: "conviction-polymarket-execution-release-v1",
+    journalPath: context.journalPath,
+    expectedExecutionLockHash,
+    pid: process.pid,
+    claimedAt: new Date(now()).toISOString(),
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let handle;
+    try {
+      handle = await open(file, "wx", 0o600);
+      await handle.writeFile(`${JSON.stringify(guard, null, 2)}\n`);
+      await handle.close();
+      handle = null;
+      break;
+    } catch (error) {
+      await handle?.close();
+      if (error?.code !== "EEXIST") throw error;
+
+      let guardStat;
+      let existingText;
+      try {
+        [guardStat, existingText] = await Promise.all([statImpl(file), readFile(file, "utf8")]);
+      } catch (readError) {
+        if (readError?.code === "ENOENT" && attempt === 0) continue;
+        throw readError;
+      }
+      const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
+      fail(guardStat.isFile() && (guardStat.mode & 0o077) === 0, "unsafe_state_permissions", "Execution-release guard must be owner-only");
+      if (expectedUid !== null) {
+        fail(guardStat.uid === expectedUid, "unsafe_state_owner", "Execution-release guard must belong to the current OS user");
+      }
+      let existing;
+      try { existing = JSON.parse(existingText); } catch {
+        fail(false, "execution_release_guard_mismatch", "Existing execution-release guard is invalid");
+      }
+      const claimedAt = String(existing?.claimedAt || "");
+      const claimedAtMs = Date.parse(claimedAt);
+      fail(
+        existing?.version === "conviction-polymarket-execution-release-v1" &&
+          existing?.journalPath === context.journalPath &&
+          existing?.expectedExecutionLockHash === expectedExecutionLockHash &&
+          Number.isSafeInteger(existing?.pid) && existing.pid > 0 &&
+          Number.isFinite(claimedAtMs) && new Date(claimedAtMs).toISOString() === claimedAt,
+        "execution_release_guard_mismatch",
+        "Existing execution-release guard belongs to another reconciliation",
+      );
+      let ownerAlive = true;
+      try {
+        process.kill(existing.pid, 0);
+      } catch (processError) {
+        ownerAlive = processError?.code !== "ESRCH";
+      }
+      if (ownerAlive || attempt > 0) {
+        throw Object.assign(new Error("Another execution-lock reconciliation is already in progress"), {
+          code: "execution_release_in_progress",
+          details: { executionReleaseLockPath: file },
+        });
+      }
+      const unchangedText = await readFile(file, "utf8");
+      fail(unchangedText === existingText, "execution_release_guard_mismatch", "Execution-release guard changed during stale-owner recovery");
+      try {
+        await unlink(file);
+      } catch (unlinkError) {
+        if (unlinkError?.code !== "ENOENT") throw unlinkError;
+      }
+    }
+  }
+  return async () => {
+    let current;
+    try {
+      current = JSON.parse(await readFile(file, "utf8"));
+    } catch {
+      fail(false, "execution_release_guard_mismatch", "Execution-release guard disappeared or became invalid");
+    }
+    fail(
+      sha256(current) === sha256(guard),
+      "execution_release_guard_mismatch",
+      "Execution-release guard belongs to another reconciliation",
+    );
+    await unlink(file);
+  };
+}
+
+async function settleRecoveredArmedPlacement({
+  context,
+  status,
+  stateDirectory,
+} = {}, {
+  now = Date.now,
+  releaseLocks = releaseReconciledLocks,
+  writeState = writeTakeProfitState,
+  statImpl = stat,
+} = {}) {
+  const placementState = recoveredArmedPlacementState(context, status);
+  if (!placementState) return null;
+  if (placementState === "resolved") {
+    await requireOwnerOnlyRecoveryState(context.journalPath, stateDirectory, { statImpl });
+    const releaseGuard = await claimRecoveredExecutionReleaseGuard(context, {
+      stateDirectory,
+      expectedExecutionLockHash: context.journal.prePassportRecovery.executionLockHash,
+      now,
+      statImpl,
+    });
+    await releaseGuard();
+    const lifecycleRequiresFollowUp = status?.status !== "ARMED" && !takeProfitReconciliationResolved(status);
+    return Object.freeze({
+      ...status,
+      journalPath: context.journalPath,
+      reconciliationRequired: lifecycleRequiresFollowUp,
+      executionLockReleased: false,
+    });
+  }
+
+  const currentText = await readFile(context.journalPath, "utf8");
+  fail(currentText === context.journalText, "prepassport_journal_changed", "Recovered ARMED journal changed before execution-lock release");
+  const releaseGuard = await claimRecoveredExecutionReleaseGuard(context, {
+    stateDirectory,
+    expectedExecutionLockHash: context.journal.prePassportRecovery.executionLockHash,
+    now,
+    statImpl,
+  });
+  try {
+    const reservationPath = await validateTakeProfitReservationOwnership(context, {
+      journal: context.journal,
+      replayKey: context.journal.replayKey,
+    }, {
+      stateDirectory,
+      statImpl,
+    });
+    const reservationText = await readFile(reservationPath, "utf8");
+    const observedLock = await inspectOwnerVerifiedRecoveredExecutionLock(context, { stateDirectory, statImpl });
+    fail(
+      observedLock.missing || observedLock.hash === context.journal.prePassportRecovery.executionLockHash,
+      "lock_generation_mismatch",
+      "Recovered TAKE_PROFIT execution lock is from another operation",
+    );
+    fail(
+      context.journal.prePassportRecovery.executionLockHash !== null || observedLock.missing,
+      "lock_generation_mismatch",
+      "A new execution lock appeared after the recovered TAKE_PROFIT snapshot",
+    );
+    const declaredLock = Boolean(context.journal.executionLockPath);
+    if (observedLock.path) context.journal.executionLockPath = observedLock.path;
+    const reservationLockPath = context.journal.reservationLockPath;
+    await releaseLocks(context.journal, {
+      stateDirectory,
+      journal: context.journalPath,
+      fields: ["executionLockPath"],
+    });
+    fail(
+      context.journal.reservationLockPath === reservationLockPath,
+      "reservation_ownership_mismatch",
+      "Recovered ARMED reconciliation cannot alter its TAKE_PROFIT reservation",
+    );
+    fail(
+      await readFile(reservationPath, "utf8") === reservationText,
+      "reservation_ownership_mismatch",
+      "Recovered ARMED reconciliation changed its TAKE_PROFIT reservation",
+    );
+    const unchangedText = await readFile(context.journalPath, "utf8");
+    fail(unchangedText === context.journalText, "prepassport_journal_changed", "Recovered ARMED journal changed while releasing its execution lock");
+
+    const reconciledAt = new Date(now()).toISOString();
+    context.journal.latestLifecycleStatus = "ARMED";
+    context.journal.reconciliationRequired = false;
+    context.journal.reconciledAt = reconciledAt;
+    context.journal.prePassportRecovery.executionLockReleasedAt = reconciledAt;
+    await writeState(context.journal, { directory: stateDirectory, file: context.journalPath });
+    return Object.freeze({
+      ...status,
+      journalPath: context.journalPath,
+      reconciliationRequired: false,
+      executionLockReleased: declaredLock,
+    });
+  } finally {
+    await releaseGuard();
+  }
+}
+
 export async function settleTakeProfitReconciliation({
   context,
   status,
@@ -1138,7 +1426,19 @@ export async function settleTakeProfitReconciliation({
   now = Date.now,
   releaseLocks = releaseReconciledLocks,
   writeState = writeTakeProfitState,
+  statImpl = stat,
 } = {}) {
+  const recoveredArmed = await settleRecoveredArmedPlacement({
+    context,
+    status,
+    stateDirectory,
+  }, {
+    now,
+    releaseLocks,
+    writeState,
+    statImpl,
+  });
+  if (recoveredArmed) return recoveredArmed;
   if (!takeProfitReconciliationResolved(status)) {
     return Object.freeze({
       ...status,
@@ -1227,6 +1527,7 @@ export async function runTakeProfitReconcileCli(options, {
     now,
     releaseLocks,
     writeState,
+    statImpl,
   });
 }
 
