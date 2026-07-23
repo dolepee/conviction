@@ -9,10 +9,11 @@ export default function handler(request, response) {
   return response.status(200).json({
     ok: true,
     product: "Conviction",
-    version: "0.4.14",
+    version: "0.4.15",
     execution: "non-custodial",
     executorDiscovery: "/api/executor",
     buyerReadiness: "/api/readiness",
+    openCardRefresh: "/api/refresh",
     payment: {
       network: SERVICE_NETWORK,
       asset: SERVICE_ASSET,
@@ -32,8 +33,9 @@ export default function handler(request, response) {
     },
     firstUse: {
       depositWalletSetupMayBeRequired: true,
-      finiteEoaOpenAvailable: true,
-      approvalModel: "OPEN supports a finite pUSD EOA approval; deposit-wallet setup still uses 2 reusable pUSD allowances + 3 reusable CTF operator approvals",
+      finiteEoaOpenAvailable: false,
+      finiteEoaOpenStatus: "disabled-after-live-maker-rejection",
+      approvalModel: "Only already-ready buyer-controlled deposit wallets are chargeable; new setup uses 2 reusable pUSD allowances + 3 reusable CTF operator approvals",
       convictionCanBypassWalletPolicy: false,
     },
   });

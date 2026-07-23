@@ -341,7 +341,7 @@ export function compileIntent(request, market, options = {}) {
     rationale,
     snapshot: bounded.snapshot,
     exposure: bounded.exposure,
-    ...(intentVersion === "conviction-intent-v4"
+    ...(intentVersion === "conviction-intent-v4" && request.executionMode === "eoa"
       ? {
           walletPreparation: finiteEoaOpenPreparation({
             wallet,

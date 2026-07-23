@@ -56,11 +56,9 @@ test("public executor discovery prefers native OKX execution without a Convictio
   assert.equal(output.body.preferredExecution.tradingTool.release.tag, "plugins/polymarket-plugin@0.7.0");
   assert.deepEqual(output.body.preferredExecution.tradingTool.tradingModesByAction.OPEN, [
     "deposit-wallet",
-    "eoa-finite-approval",
   ]);
-  assert.equal(output.body.preferredExecution.tradingTool.finiteEoaOpen.finiteApprovalRequired, true);
-  assert.equal(output.body.preferredExecution.tradingTool.finiteEoaOpen.unlimitedApprovalForbidden, true);
-  assert.equal(output.body.preferredExecution.tradingTool.finiteEoaOpen.setApprovalForAllForbidden, true);
+  assert.equal(output.body.preferredExecution.tradingTool.finiteEoaOpen.available, false);
+  assert.equal(output.body.preferredExecution.tradingTool.finiteEoaOpen.status, "disabled-after-live-maker-rejection");
   assert.equal(
     output.body.preferredExecution.tradingTool.artifactSha256["darwin-arm64"],
     "313197d4a5eb8c17b5f471febcbb13651e468f66ff77ec9eae15e856d9957cc0",
@@ -102,9 +100,8 @@ test("new cards bind discovery into the signed intent and fail on substitution",
   assert.equal(card.nextStep.nativeOkx.argvPointer, "$.executionCard.argv");
   assert.equal(card.nextStep.nativeOkx.agentInvokesTool, true);
   assert.equal(card.nextStep.nativeOkx.convictionInstallRequired, false);
-  assert.equal(card.nextStep.nativeOkx.finiteEoaOpen.signedPlanPointer, "$.intent.walletPreparation");
-  assert.deepEqual(card.nextStep.nativeOkx.finiteEoaOpen.executionArgvAppend, ["--mode", "eoa"]);
-  assert.deepEqual(card.nextStep.nativeOkx.finiteEoaOpen.forbiddenExecutionArgv, ["--approve"]);
+  assert.equal(card.nextStep.nativeOkx.finiteEoaOpen.available, false);
+  assert.equal(card.nextStep.nativeOkx.finiteEoaOpen.requiredMode, "deposit-wallet");
   assert.equal(card.nextStep.nativeOkx.proof.endpoint, "https://conviction-bay.vercel.app/api/receipt");
   assert.equal(card.nextStep.nativeOkx.proof.method, "POST");
   assert.equal(card.nextStep.nativeOkx.proof.pointerFormat, "rfc6901");

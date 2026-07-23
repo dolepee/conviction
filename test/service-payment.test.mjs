@@ -253,6 +253,12 @@ test("returns a standards-compliant unpaid challenge before compiling", async ()
     assert.equal(challenge.accepts[0].amount, SERVICE_PRICE_ATOMIC);
     assert.equal(challenge.accepts[0].asset, SERVICE_ASSET);
     assert.equal(challenge.accepts[0].payTo, SERVICE_PAYEE);
+    assert.equal(challenge.outputSchema.input.type, "http");
+    assert.equal(challenge.outputSchema.input.method, "POST");
+    assert.deepEqual(
+      challenge.outputSchema.input.body.required,
+      ["market", "outcome", "spend", "maxPrice", "wallet", "executionMode", "walletReadiness", "pluginPreview"],
+    );
   });
 });
 
@@ -694,6 +700,9 @@ test("the paid route bypasses public preview limits only after payment verificat
     async resolveMarketImpl() {
       return LIVE_MARKET_SNAPSHOT;
     },
+    async verifyExecutionWalletImpl() {
+      return { ok: true, executionMode: "deposit-wallet" };
+    },
   });
   const app = createServiceApp(TEST_ENVIRONMENT, {
     facilitatorClient: facilitator.client,
@@ -714,6 +723,39 @@ test("the paid route bypasses public preview limits only after payment verificat
         spend: "1.35",
         maxPrice: "0.27",
         wallet: "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+        executionMode: "deposit-wallet",
+        walletReadiness: {
+          ok: true,
+          accessible: true,
+          status: "deposit_wallet_ready",
+          wallet: {
+            eoa: "0x1111111111111111111111111111111111111111",
+            deposit_wallet: "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+          },
+        },
+        pluginPreview: {
+          ok: true,
+          dry_run: true,
+          data: {
+            clob_version: "V2",
+            collateral_token: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+            condition_id: LIVE_MARKET_SNAPSHOT.conditionId,
+            exchange_address: "0xE111180000d2663C0091e4f400237545B87B996B",
+            expires: null,
+            fee_rate_bps: 0,
+            limit_price: "0.27",
+            neg_risk: false,
+            note: "dry-run: order not submitted",
+            order_type: "FAK",
+            outcome: "yes",
+            post_only: false,
+            shares: "5",
+            side: "BUY",
+            token_id: LIVE_MARKET_SNAPSHOT.yesTokenId,
+            usdc_amount: "1.35",
+            usdc_requested: "1.35",
+          },
+        },
         rationale: "",
         ignoredPadding: "x".repeat(9_000),
       }),
@@ -727,4 +769,52 @@ test("the paid route bypasses public preview limits only after payment verificat
 
   assert.equal(facilitator.calls.verify, 1);
   assert.equal(facilitator.calls.settle, 1);
+});
+
+test("an EOA paid replay is refused without settlement before market or wallet RPC", async () => {
+  const facilitator = trackedFacilitator();
+  let upstreamCalls = 0;
+  const compileHandler = createPaidIntentHandler({
+    issueIntentImpl(compilation) { return compilation; },
+    async resolveMarketImpl() {
+      upstreamCalls += 1;
+      return LIVE_MARKET_SNAPSHOT;
+    },
+    async verifyExecutionWalletImpl() {
+      upstreamCalls += 1;
+      throw new Error("EOA mode must fail before RPC");
+    },
+  });
+  const app = createServiceApp(TEST_ENVIRONMENT, {
+    facilitatorClient: facilitator.client,
+    logger: quietLogger(),
+    compileHandler,
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/service`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "payment-signature": paidHeader(),
+      },
+      body: JSON.stringify({
+        market: LIVE_MARKET_SNAPSHOT.slug,
+        outcome: "YES",
+        spend: "1.35",
+        maxPrice: "0.27",
+        wallet: "0x1111111111111111111111111111111111111111",
+        executionMode: "eoa",
+        pluginPreview: {},
+      }),
+    });
+    assert.equal(response.status, 422);
+    const body = await response.json();
+    assert.equal(body.error.code, "maker_not_eligible");
+    assert.equal(body.error.details.paymentAllowed, false);
+    assert.equal(response.headers.get("payment-response"), null);
+  });
+  assert.equal(upstreamCalls, 0);
+  assert.equal(facilitator.calls.verify, 1);
+  assert.equal(facilitator.calls.settle, 0);
 });

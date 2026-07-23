@@ -48,6 +48,72 @@ export const POSITION_CARD_SERVICE = Object.freeze({
   previewHtml: "Use the free interactive OPEN preview on the Conviction home page.",
   previewHref: "/#try",
   previewLabel: "Open the free OPEN preview",
+  outputSchema: Object.freeze({
+    input: Object.freeze({
+      type: "http",
+      method: "POST",
+      bodyType: "json",
+      body: Object.freeze({
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        properties: Object.freeze({
+          market: Object.freeze({
+            type: "string",
+            description: "Polymarket event URL, slug, or condition ID.",
+          }),
+          outcome: Object.freeze({
+            type: "string",
+            enum: Object.freeze(["YES", "NO", "yes", "no"]),
+          }),
+          spend: Object.freeze({
+            type: "string",
+            description: "Fee-inclusive pUSD budget as a decimal string; minimum 1.",
+          }),
+          maxPrice: Object.freeze({
+            type: "string",
+            description: "Hard per-share price ceiling as a decimal string between 0 and 1.",
+          }),
+          wallet: Object.freeze({
+            type: "string",
+            pattern: "^0x[0-9a-fA-F]{40}$",
+            description: "Buyer-controlled, maker-eligible Polymarket deposit wallet.",
+          }),
+          executionMode: Object.freeze({
+            type: "string",
+            const: "deposit-wallet",
+            description: "OPEN is charged only for an already-ready deposit wallet.",
+          }),
+          walletReadiness: Object.freeze({
+            type: "object",
+            description: "Successful official polymarket-plugin quickstart output proving this exact ready deposit wallet.",
+          }),
+          pluginPreview: Object.freeze({
+            type: "object",
+            description: "Successful official polymarket-plugin v0.7.0 dry-run output for these exact bounds.",
+          }),
+          rationale: Object.freeze({
+            type: "string",
+            description: "Optional buyer-authored rationale, 20 to 500 characters when present.",
+          }),
+        }),
+        required: Object.freeze([
+          "market",
+          "outcome",
+          "spend",
+          "maxPrice",
+          "wallet",
+          "executionMode",
+          "walletReadiness",
+          "pluginPreview",
+        ]),
+        additionalProperties: false,
+      }),
+    }),
+    output: Object.freeze({
+      type: "json",
+      description: "Issuer-signed, wallet-bound Conviction OPEN card.",
+    }),
+  }),
 });
 
 export const POSITION_MANAGER_SERVICE = Object.freeze({
@@ -61,6 +127,73 @@ export const POSITION_MANAGER_SERVICE = Object.freeze({
   previewHtml: "Use the repository-backed buyer agent/CLI, or send the same JSON to <code>/api/manage-preview</code> for a free non-executable manager preview.",
   previewHref: "/#manage",
   previewLabel: "See Position Manager",
+  outputSchema: Object.freeze({
+    input: Object.freeze({
+      type: "http",
+      method: "POST",
+      bodyType: "json",
+      body: Object.freeze({
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        properties: Object.freeze({
+          action: Object.freeze({
+            type: "string",
+            enum: Object.freeze(["CLOSE", "TAKE_PROFIT", "close", "take_profit"]),
+          }),
+          market: Object.freeze({
+            type: "string",
+            description: "The same Polymarket URL, slug, or condition ID as the OPEN proof.",
+          }),
+          outcome: Object.freeze({
+            type: "string",
+            enum: Object.freeze(["YES", "NO", "yes", "no"]),
+          }),
+          wallet: Object.freeze({
+            type: "string",
+            pattern: "^0x[0-9a-fA-F]{40}$",
+            description: "Buyer-controlled wallet that owns the verified position.",
+          }),
+          shares: Object.freeze({
+            type: "string",
+            description: "Exact whole shares to manage.",
+          }),
+          minPrice: Object.freeze({
+            type: "string",
+            description: "Required for CLOSE: hard minimum sale price.",
+          }),
+          targetPrice: Object.freeze({
+            type: "string",
+            description: "Required for TAKE_PROFIT: post-only target price.",
+          }),
+          venueExpiresAt: Object.freeze({
+            type: "string",
+            description: "Required for TAKE_PROFIT: canonical UTC expiry.",
+          }),
+          sourcePosition: Object.freeze({
+            type: "object",
+            description: "Complete verified OPEN proof returned by Conviction.",
+          }),
+          rationale: Object.freeze({
+            type: "string",
+            description: "Optional buyer-authored rationale, 20 to 500 characters when present.",
+          }),
+        }),
+        required: Object.freeze([
+          "action",
+          "market",
+          "outcome",
+          "wallet",
+          "shares",
+          "sourcePosition",
+        ]),
+        additionalProperties: false,
+      }),
+    }),
+    output: Object.freeze({
+      type: "json",
+      description: "Issuer-signed CLOSE or TAKE_PROFIT card bound to a verified OPEN proof.",
+    }),
+  }),
 });
 
 export function requirePinnedServiceOrigin(value, service = POSITION_CARD_SERVICE) {
@@ -181,6 +314,9 @@ export function serviceRouteConfiguration(service = POSITION_CARD_SERVICE) {
       resource: service.resource,
       description: service.description,
       mimeType: "application/json",
+      extensions: {
+        outputSchema: service.outputSchema,
+      },
       customPaywallHtml: servicePaywallHtml(service),
       unpaidResponseBody: () => ({
         contentType: "application/json",
@@ -220,6 +356,17 @@ export function createPaymentGate(
     facilitatorClient ?? new OKXFacilitatorClient(credentials);
   const resourceServer = new x402ResourceServer(facilitator)
     .register(SERVICE_NETWORK, new ExactEvmScheme())
+    .registerExtension({
+      key: "outputSchema",
+      async enrichPaymentRequiredResponse(schema, context) {
+        // OKX A2MCP discovers paid-replay parameters from Bazaar's
+        // `outputSchema.input`. The current x402 SDK exposes extension hooks
+        // but does not yet model this Bazaar field, so enrich the top-level
+        // wire response consumed by current OKX clients.
+        context.paymentRequiredResponse.outputSchema = schema;
+        return schema;
+      },
+    })
     .onAfterSettle(async ({ result, requirements, transportContext }) => {
       try {
         const requestContext = transportContext?.request;

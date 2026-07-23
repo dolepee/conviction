@@ -86,7 +86,7 @@ test("compiles the canonical live order exactly", () => {
 });
 
 test("signed v4 OPEN binds the finite EOA preparation to its wallet and debit ceiling", () => {
-  const result = compileIntent(REQUEST, LIVE_MARKET_SNAPSHOT, {
+  const result = compileIntent({ ...REQUEST, executionMode: "eoa" }, LIVE_MARKET_SNAPSHOT, {
     now: NOW,
     intentVersion: "conviction-intent-v4",
   });
@@ -100,6 +100,15 @@ test("signed v4 OPEN binds the finite EOA preparation to its wallet and debit ce
   assert.deepEqual(preparation.execution.forbiddenArgv, ["--approve"]);
   assert.equal(preparation.outcomeTokenApprovalRequiredForBuy, false);
   assert.equal(preparation.cleanup.amountRaw, "0");
+});
+
+test("signed deposit-wallet OPEN omits the disabled finite-EOA preparation", () => {
+  const result = compileIntent(
+    { ...REQUEST, executionMode: "deposit-wallet" },
+    LIVE_MARKET_SNAPSHOT,
+    { now: NOW, intentVersion: "conviction-intent-v4" },
+  );
+  assert.equal(result.intent.walletPreparation, undefined);
 });
 
 test("previews the same economics without a wallet, rationale, intent hash, or execution card", () => {

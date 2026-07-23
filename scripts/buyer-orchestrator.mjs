@@ -401,7 +401,7 @@ function usage() {
     "  node scripts/buyer-orchestrator.mjs open --origin https://conviction-bay.vercel.app --market <slug-or-id>",
     "    --side YES|NO --budget <pUSD> --max-price <price>",
     "    --payment-payer <X-Layer-address> --buyer-wallet <Polygon-trading-wallet>",
-    "    --issuer-registry <issuers.json> [--trading-mode deposit-wallet|eoa] [--json]",
+    "    --issuer-registry <issuers.json> [--trading-mode deposit-wallet] [--json]",
     "",
     "  node scripts/buyer-orchestrator.mjs close --origin https://conviction-bay.vercel.app --market <slug-or-id>",
     "    --side YES|NO --shares <whole-shares> --min-price <price>",
@@ -426,8 +426,8 @@ function usage() {
 
 function normalizeOpenTradingMode(value) {
   const mode = String(value || "").trim().toLowerCase().replace(/_/g, "-");
-  if (mode !== "deposit-wallet" && mode !== "eoa") {
-    throw Object.assign(new Error("--trading-mode must be deposit-wallet or eoa"), { code: "invalid_argument" });
+  if (mode !== "deposit-wallet") {
+    throw Object.assign(new Error("--trading-mode must be deposit-wallet; direct EOA makers are not accepted by Polymarket V2"), { code: "maker_not_eligible" });
   }
   return mode;
 }
@@ -4671,18 +4671,16 @@ export function normalizePluginReadiness({
   const normalizedMode = selectedMode === "deposit-wallet"
     ? "deposit_wallet"
     : selectedMode;
-  const eoaWallet = String(findAddress(addresses, 137) || findAddress(addresses, 196) || "").toLowerCase();
   const depositWalletActive =
     normalizedMode === "deposit_wallet" &&
     (status === "active" || status === "deposit_wallet_ready");
-  const eoaActive = normalizedMode === "eoa";
-  const buyerWallet = eoaActive ? eoaWallet : depositWallet || "";
+  const buyerWallet = depositWallet || "";
 
   return {
     accessible:
       access?.data?.accessible === true &&
       data?.accessible !== false,
-    clobVersion: depositWalletActive || eoaActive ? "V2" : "",
+    clobVersion: depositWalletActive ? "V2" : "",
     currentMode: normalizedMode,
     paymentPayer: String(findAddress(addresses, 196) || "").toLowerCase(),
     buyerWallet,

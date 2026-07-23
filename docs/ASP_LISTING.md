@@ -1,6 +1,6 @@
 # Conviction ASP Listing and Target Catalog
 
-Status: Conviction ASP `#7034` submitted its final two-service catalog on 2026-07-22. The update transaction is `0x861be48333c6ec751ea615b4122816509cfe0679b92b555ffa5815824055cf60`; marketplace approval remains pending. Production v0.4.3 passed fresh controlled house OPEN, CLOSE, and TAKE_PROFIT gates. v0.4.14 adds finite-approval EOA OPEN preparation for first-time policy-constrained buyers: standard non-neg-risk V2 OPEN can approve only the signed pUSD debit ceiling, skip `setApprovalForAll`, then run the official plugin with `--mode eoa`. It preserves v0.4.13 readiness, v0.4.10 market lookup fix, v0.4.9 signed-proof runtime, issuer-signed public OPEN proofs, YES/NO CTF label binding, and immutable executor v6. The two submitted services, prices, endpoints, inputs, and descriptions do not change, so no additional marketplace edit is required.
+Status: Conviction ASP `#7034` is listed with the final two-service catalog submitted on 2026-07-22. The update transaction is `0x861be48333c6ec751ea615b4122816509cfe0679b92b555ffa5815824055cf60`. Production v0.4.15 keeps the submitted names, prices, endpoints, and outcome promise while making the paid machine contract stricter: exact A2MCP replay inputs, ready-deposit-wallet-only OPEN, official-plugin dry-run agreement before issuance, and a free payment-bound card refresh window.
 
 Registration transaction: `0x29fa8a07669fd30b3953e02c148dbb17827b179cd55058f2214bad0df4e78fa6`
 
@@ -31,11 +31,11 @@ Endpoint: `https://conviction-bay.vercel.app/api/service`
 Service description, exactly two lines:
 
 ```text
-Opens one bounded YES or NO position from the buyer wallet after one explicit trade confirmation. First-time OPEN can use finite EOA pUSD approval; every fill returns a verifiable Polygon proof.
+Opens one bounded YES or NO position from a ready buyer-controlled Polymarket deposit wallet after one explicit trade confirmation. Every fill returns a verifiable Polygon proof.
 Provide: market URL or slug, YES or NO, total pUSD budget of at least 1 pUSD, maximum price, buyer wallet, and optional rationale.
 ```
 
-Inputs: `market`, `outcome=yes|no`, `spend`, `maxPrice`, `wallet`, `rationale`.
+Inputs: `market`, `outcome=yes|no`, `spend`, `maxPrice`, `wallet`, `executionMode=deposit-wallet`, `walletReadiness`, `pluginPreview`, `rationale`.
 
 Not included: financial advice, outcome recommendations, signals, custody, recurring/autonomous trading, leverage, neg-risk/categorical markets, or guaranteed profit.
 

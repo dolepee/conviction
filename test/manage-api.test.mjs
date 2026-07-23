@@ -531,5 +531,11 @@ test("bare manager probes receive the distinct 0.10 challenge", async () => {
     assert.equal(response.headers.get("link"), '<https://conviction-bay.vercel.app/api/executor>; rel="service-desc"; type="application/json"');
     assert.equal(challenge.resource.url, MANAGE_SERVICE_RESOURCE);
     assert.equal(challenge.accepts[0].amount, MANAGE_SERVICE_PRICE_ATOMIC);
+    assert.equal(challenge.outputSchema.input.type, "http");
+    assert.equal(challenge.outputSchema.input.method, "POST");
+    assert.deepEqual(
+      challenge.outputSchema.input.body.required,
+      ["action", "market", "outcome", "wallet", "shares", "sourcePosition"],
+    );
   });
 });

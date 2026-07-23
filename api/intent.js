@@ -2,6 +2,13 @@ import { ConvictionError } from "../src/errors.mjs";
 import { compileIntent } from "../src/intent-compiler.mjs";
 import { resolveMarket } from "../src/market-client.mjs";
 import { createPublicApiGuard, PublicApiError } from "../src/public-api-guard.mjs";
+import {
+  requirePaidOpenExecutionMode,
+  verifyDepositWalletExecution,
+  verifyDepositWalletReadiness,
+  verifyOpenPluginPreview,
+} from "../src/open-execution-preflight.mjs";
+import { attachOpenRefreshContract } from "../src/open-card-refresh.mjs";
 
 export const PUBLIC_INTENT_QUOTE_TTL_MS = 300_000;
 
@@ -17,6 +24,7 @@ export function createIntentHandler({
   publicGuard = createPublicApiGuard(),
   resolveMarketImpl = resolveMarket,
   issueIntentImpl = undefined,
+  verifyExecutionWalletImpl = verifyDepositWalletExecution,
 } = {}) {
   return async function handler(request, response) {
     if (request.method !== "POST") {
@@ -26,9 +34,23 @@ export function createIntentHandler({
     try {
       const body = request.body && typeof request.body === "object" ? request.body : {};
       const compile = async () => {
-        const market = await resolveMarketImpl(body.market, { outcome: body.outcome });
+        let walletReadiness;
+        if (!publicAccess) {
+          requirePaidOpenExecutionMode(body);
+          walletReadiness = verifyDepositWalletReadiness(body.wallet, body.walletReadiness);
+        }
+        const [market] = await Promise.all([
+          resolveMarketImpl(body.market, { outcome: body.outcome }),
+          ...(publicAccess ? [] : [verifyExecutionWalletImpl(body.wallet, { owner: walletReadiness.owner })]),
+        ]);
         const compilation = compileIntent(body, market, compileOptions);
-        return issueIntentImpl ? await issueIntentImpl(compilation) : compilation;
+        if (!publicAccess) {
+          verifyOpenPluginPreview(compilation, body.pluginPreview, {
+            verifiedWallet: walletReadiness.wallet,
+          });
+        }
+        const delivered = issueIntentImpl ? await issueIntentImpl(compilation) : compilation;
+        return publicAccess ? delivered : attachOpenRefreshContract(delivered);
       };
       const result = publicAccess ? await publicGuard.run(request, compile) : await compile();
       return send(response, 200, result);
