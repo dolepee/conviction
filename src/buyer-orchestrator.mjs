@@ -155,10 +155,20 @@ function requireWallet(value, label) {
   return wallet;
 }
 
-function bindCardToRequest(validated, preview, request, buyerWallet) {
+function openPreviewMarket(previewInput) {
+  const preview = previewInput?.preview || previewInput;
+  const market = preview?.market || preview;
+  return Object.freeze({
+    conditionId: market?.conditionId,
+    outcomeTokenId: market?.outcomeTokenId,
+  });
+}
+
+function bindCardToRequest(validated, previewInput, request, buyerWallet) {
+  const preview = openPreviewMarket(previewInput);
   const intent = validated?.intent;
   requireValue(intent && validated?.bounds, "invalid_card", "Validated card is incomplete");
-  requireValue(validated.wallet === buyerWallet, "wallet_substitution", "Card buyer wallet differs from the active deposit wallet");
+  requireValue(validated.wallet === buyerWallet, "wallet_substitution", "Card buyer wallet differs from the active trading wallet");
   requireValue(validated.outcome === request.side, "outcome_substitution", "Card outcome differs from the requested side");
   requireValue(
     lower(intent.market?.conditionId) === lower(preview?.conditionId),
@@ -196,6 +206,56 @@ function requireReadiness(readiness, paymentPayer, buyerWallet, minimumDebitRaw 
       "Deposit wallet lacks enough pUSD for the bounded order",
     );
   }
+}
+
+function requireOpenReadiness(readiness, paymentPayer, buyerWallet, minimumDebitRaw = undefined) {
+  requireValue(readiness?.accessible === true, "venue_unavailable", "Prediction venue is unavailable in the buyer region");
+  requireValue(readiness?.clobVersion === "V2", "unsupported_venue", "Standard Polymarket V2 is required");
+  requireValue(
+    readiness?.currentMode === "deposit_wallet" || readiness?.currentMode === "eoa",
+    "wrong_trading_mode",
+    "OPEN requires deposit-wallet mode or finite-approval EOA mode",
+  );
+  requireValue(lower(readiness?.paymentPayer) === paymentPayer, "payment_wallet_mismatch", "Active X Layer payer differs from the requested payer");
+  requireValue(lower(readiness?.buyerWallet) === buyerWallet, "trading_wallet_mismatch", "Active Polygon trading wallet differs from the card wallet");
+  requireValue(lower(readiness?.tradingAddress) === buyerWallet, "trading_wallet_mismatch", "Polymarket trading address differs from the selected wallet");
+  if (minimumDebitRaw !== undefined) {
+    const debit = BigInt(minimumDebitRaw);
+    requireValue(
+      BigInt(readiness?.pUsdBalanceRaw ?? -1) >= debit,
+      "insufficient_trade_balance",
+      "Trading wallet lacks enough pUSD for the bounded order",
+    );
+    if (readiness?.currentMode === "eoa") {
+      requireValue(/^\d+$/.test(String(readiness?.pUsdAllowanceRaw || "")), "missing_finite_allowance", "Finite EOA pUSD allowance was not read before execution");
+      requireValue(
+        BigInt(readiness.pUsdAllowanceRaw) === debit,
+        "allowance_readback_mismatch",
+        "Finite EOA pUSD allowance differs from the signed debit ceiling",
+      );
+    }
+  }
+}
+
+function openExecutionArgv(validated, readiness) {
+  const base = validated?.executionCard?.argv;
+  requireValue(Array.isArray(base) && base.length > 0, "invalid_execution_card", "OPEN execution argv is missing");
+  if (readiness?.currentMode !== "eoa") return [...base];
+  const preparation = validated?.walletPreparation;
+  const append = preparation?.execution?.appendArgv;
+  const forbidden = new Set(preparation?.execution?.forbiddenArgv || []);
+  requireValue(
+    preparation?.tradingMode === "eoa" && Array.isArray(append) &&
+      JSON.stringify(append) === JSON.stringify(["--mode", "eoa"]),
+    "invalid_eoa_preparation",
+    "Signed EOA preparation is missing the exact execution mode",
+  );
+  requireValue(
+    base.every((entry) => !forbidden.has(String(entry))),
+    "invalid_eoa_preparation",
+    "Base OPEN argv contains a forbidden EOA argument",
+  );
+  return [...base, ...append];
 }
 
 export function bindCloseCardToRequest(validated, previewInput, request, sellerWallet) {
@@ -381,12 +441,26 @@ export async function runOpenJourney({
 
   await adapters.ensureTradingMode({ buyerWallet });
   const initialReadiness = await adapters.checkReadiness({ paymentPayer, buyerWallet });
-  requireReadiness(initialReadiness, paymentPayer, buyerWallet);
+  requireOpenReadiness(initialReadiness, paymentPayer, buyerWallet);
   mark("readiness_verified");
 
   const preview = await adapters.previewMarket(request);
-  requireValue(preview?.conditionId && preview?.outcomeTokenId, "invalid_preview", "Free preview did not resolve the selected market and outcome token");
-  mark("market_previewed", { conditionId: lower(preview.conditionId), outcomeTokenId: String(preview.outcomeTokenId) });
+  const previewMarket = openPreviewMarket(preview);
+  requireValue(previewMarket.conditionId && previewMarket.outcomeTokenId, "invalid_preview", "Free preview did not resolve the selected market and outcome token");
+  mark("market_previewed", { conditionId: lower(previewMarket.conditionId), outcomeTokenId: String(previewMarket.outcomeTokenId) });
+
+  let walletPreparation = null;
+  if (initialReadiness.currentMode === "eoa") {
+    requireValue(typeof adapters.prepareOpenWallet === "function", "invalid_adapter", "Missing adapter: prepareOpenWallet");
+    walletPreparation = await adapters.prepareOpenWallet({
+      request,
+      preview,
+      paymentPayer,
+      buyerWallet,
+      confirm,
+    });
+    mark("wallet_prepared", { mode: "eoa", planHash: walletPreparation?.planHash });
+  }
 
   const challenge = await adapters.requestPaymentChallenge({ request, buyerWallet });
   emit({ type: "payment_confirmation", challenge, request: { ...request, budgetRaw: undefined, maxPriceRaw: undefined } });
@@ -401,9 +475,18 @@ export async function runOpenJourney({
 
   let validated = await adapters.validateCard(paid.card, { trustedIssuers, now: now() });
   bindCardToRequest(validated, preview, request, buyerWallet);
+  if (initialReadiness.currentMode === "eoa") {
+    requireValue(
+      walletPreparation?.planHash &&
+        validated?.walletPreparation?.planHash === walletPreparation.planHash,
+      "wallet_preparation_mismatch",
+      "Paid card finite EOA preparation differs from the prepared wallet allowance",
+    );
+  }
+  let executionArgv = openExecutionArgv(validated, initialReadiness);
   mark("signed_card_verified", { intentHash: validated.intentHash });
 
-  const dryRun = await adapters.dryRun(validated.executionCard.argv);
+  const dryRun = await adapters.dryRun(executionArgv);
   await adapters.validateDryRun(paid.card, dryRun, { trustedIssuers, now: now() });
   mark("dry_run_verified");
 
@@ -425,6 +508,7 @@ export async function runOpenJourney({
       expiresAt: validated.expiresAt,
       wallet: validated.wallet,
       intentHash: validated.intentHash,
+      walletPreparation,
       issuerKeyId: validated.issuance?.keyId,
       issuedAt: validated.issuance?.issuedAt,
       completedPayment: {
@@ -439,7 +523,7 @@ export async function runOpenJourney({
     },
   });
   mark("bounds_presented");
-  const tradeConsent = await confirm("trade", { request, validated, preview, dryRun });
+  const tradeConsent = await confirm("trade", { request, validated, preview, dryRun, executionArgv });
   confirmationCount += 1;
   requireValue(
     tradeConsent === true || (tradeConsent && typeof tradeConsent === "object" && tradeConsent.accepted === true),
@@ -457,13 +541,14 @@ export async function runOpenJourney({
   validated = await adapters.validateCard(paid.card, { trustedIssuers, now: now() });
   bindCardToRequest(validated, preview, request, buyerWallet);
   const finalReadiness = await adapters.checkReadiness({ paymentPayer, buyerWallet });
-  requireReadiness(finalReadiness, paymentPayer, buyerWallet, validated.bounds.maximumTotalDebitRaw);
-  const finalDryRun = await adapters.dryRun(validated.executionCard.argv);
+  requireOpenReadiness(finalReadiness, paymentPayer, buyerWallet, validated.bounds.maximumTotalDebitRaw);
+  executionArgv = openExecutionArgv(validated, finalReadiness);
+  const finalDryRun = await adapters.dryRun(executionArgv);
   await adapters.validateDryRun(paid.card, finalDryRun, { trustedIssuers, now: now() });
   mark("pre_execution_verified");
 
   mark("execution_started");
-  const liveResult = await adapters.execute(validated.executionCard.argv);
+  const liveResult = await adapters.execute(executionArgv);
   ordersPlaced += 1;
   mark("order_submitted");
   const receiptRequest = await adapters.buildReceiptRequest(paid.card, liveResult, { trustedIssuers });

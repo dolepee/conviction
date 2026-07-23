@@ -114,10 +114,21 @@ test("buyer CLI accepts the release contract without pre-authorizing payment", (
   assert.equal(parsed.command, "open");
   assert.equal(parsed.side, "YES");
   assert.equal(parsed.json, true);
+  assert.equal(parsed.tradingMode, "deposit-wallet");
   assert.equal("confirmPayment" in parsed, false);
   assert.throws(
     () => parseArgs(BASE.map((value) => value === "https://conviction-bay.vercel.app" ? "https://attacker.example" : value)),
     (error) => error?.code === "untrusted_service_origin",
+  );
+});
+
+test("buyer CLI accepts finite-approval EOA mode for OPEN", () => {
+  const parsed = parseArgs([...BASE, "--trading-mode", "eoa"]);
+  assert.equal(parsed.command, "open");
+  assert.equal(parsed.tradingMode, "eoa");
+  assert.throws(
+    () => parseArgs([...BASE, "--trading-mode", "proxy"]),
+    (error) => error?.code === "invalid_argument",
   );
 });
 
@@ -555,6 +566,41 @@ test("buyer CLI normalizes the installed deposit-wallet quickstart shape", () =>
     buyerWallet: wallet,
     tradingAddress: wallet,
     pUsdBalanceRaw: "1120000",
+  });
+});
+
+test("buyer CLI normalizes a selected EOA OPEN shape", () => {
+  const payer = "0x1111111111111111111111111111111111111111";
+  const wallet = "0x2222222222222222222222222222222222222222";
+  const readiness = normalizePluginReadiness({
+    access: { ok: true, data: { accessible: true } },
+    addresses: {
+      ok: true,
+      data: {
+        xlayer: [{ chainIndex: "196", address: payer }],
+        polygon: [{ chainIndex: "137", address: wallet }],
+      },
+    },
+    quickstart: {
+      ok: true,
+      accessible: true,
+      status: "needs_setup",
+      wallet: { deposit_wallet: null },
+    },
+    selectedMode: "eoa",
+    pUsdBalanceRaw: "3575000",
+    pUsdAllowanceRaw: "3575000",
+  });
+
+  assert.deepEqual(readiness, {
+    accessible: true,
+    clobVersion: "V2",
+    currentMode: "eoa",
+    paymentPayer: payer,
+    buyerWallet: wallet,
+    tradingAddress: wallet,
+    pUsdBalanceRaw: "3575000",
+    pUsdAllowanceRaw: "3575000",
   });
 });
 

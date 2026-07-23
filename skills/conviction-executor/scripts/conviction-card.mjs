@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { sha256 } from "../../../src/canonical.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID } from "../../../src/constants.mjs";
 import { formatDecimal, parseDecimal } from "../../../src/decimal.mjs";
+import { finiteEoaOpenPreparationMatches } from "../../../src/eoa-open-preparation.mjs";
 import { executorDiscoveryMatches } from "../../../src/executor-discovery.mjs";
 import {
   trustedIssuerRegistry,
@@ -159,6 +160,13 @@ export function validateCard(input, {
   const intentHash = lower(card.intentHash);
   fail(sha256(intent) === intentHash, "intent_hash_mismatch", "Intent hash does not match canonical intent JSON");
   fail(Number(intent.chainId) === POLYGON_CHAIN_ID, "wrong_chain", "Position card is not for Polygon chain 137");
+  if (signedV4 && intent.walletPreparation !== undefined) {
+    fail(
+      finiteEoaOpenPreparationMatches(intent),
+      "eoa_preparation_mismatch",
+      "Signed finite-approval EOA preparation disagrees with the position card",
+    );
+  }
 
   fail(market.source === "polymarket", "invalid_venue", "Position card venue must be Polymarket");
   fail(CONDITION_ID_RE.test(market.conditionId || ""), "invalid_market", "Condition ID is invalid");
@@ -366,6 +374,7 @@ export function validateCard(input, {
       maxPrice: formatDecimal(maxPriceRaw, 6),
       feeBps,
     },
+    walletPreparation: intent.walletPreparation,
   };
 }
 

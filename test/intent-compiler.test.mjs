@@ -85,6 +85,23 @@ test("compiles the canonical live order exactly", () => {
   assert.equal(result.executionCard.maximumAuthorizedDebit, "1.35");
 });
 
+test("signed v4 OPEN binds the finite EOA preparation to its wallet and debit ceiling", () => {
+  const result = compileIntent(REQUEST, LIVE_MARKET_SNAPSHOT, {
+    now: NOW,
+    intentVersion: "conviction-intent-v4",
+  });
+  const preparation = result.intent.walletPreparation;
+  assert.equal(preparation.owner, REQUEST.wallet);
+  assert.equal(preparation.collateralToken, result.intent.market.collateral);
+  assert.equal(preparation.spender, result.intent.market.exchange);
+  assert.equal(preparation.approval.amountRaw, result.intent.order.maximumTotalDebitRaw);
+  assert.equal(preparation.approval.minimumRequiredRaw, result.intent.order.maximumOrderPrincipalRaw);
+  assert.deepEqual(preparation.execution.appendArgv, ["--mode", "eoa"]);
+  assert.deepEqual(preparation.execution.forbiddenArgv, ["--approve"]);
+  assert.equal(preparation.outcomeTokenApprovalRequiredForBuy, false);
+  assert.equal(preparation.cleanup.amountRaw, "0");
+});
+
 test("previews the same economics without a wallet, rationale, intent hash, or execution card", () => {
   const request = {
     market: REQUEST.market,

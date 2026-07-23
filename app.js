@@ -459,7 +459,7 @@ function renderCompiled(payload) {
         <a href="https://web3.okx.com/onchainos/plugins/detail/polymarket-plugin" target="_blank" rel="noreferrer">Official Polymarket plugin <span aria-hidden="true">↗</span></a>
         <a href="https://web3.okx.com/onchainos/dev-docs/home/install-your-agentic-wallet" target="_blank" rel="noreferrer">Agentic Wallet setup <span aria-hidden="true">↗</span></a>
       </div>
-      <p class="approval-warning"><strong>Approval warning:</strong> a new Polymarket deposit wallet may require the official five-approval setup, including broad token allowances. Your organization may block it. Use a dedicated low-balance wallet and review every approval.</p>
+      <p class="approval-warning"><strong>Approval warning:</strong> ready deposit-wallet buyers can use the standard gasless venue setup. First-time OPEN can instead use finite EOA mode: approve only the signed pUSD debit ceiling, no unlimited approval and no outcome-token operator approval.</p>
     </div>
   `;
 

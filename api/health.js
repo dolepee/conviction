@@ -9,7 +9,7 @@ export default function handler(request, response) {
   return response.status(200).json({
     ok: true,
     product: "Conviction",
-    version: "0.4.13",
+    version: "0.4.14",
     execution: "non-custodial",
     executorDiscovery: "/api/executor",
     buyerReadiness: "/api/readiness",
@@ -32,7 +32,8 @@ export default function handler(request, response) {
     },
     firstUse: {
       depositWalletSetupMayBeRequired: true,
-      approvalModel: "2 reusable pUSD allowances + 3 reusable CTF operator approvals",
+      finiteEoaOpenAvailable: true,
+      approvalModel: "OPEN supports a finite pUSD EOA approval; deposit-wallet setup still uses 2 reusable pUSD allowances + 3 reusable CTF operator approvals",
       convictionCanBypassWalletPolicy: false,
     },
   });

@@ -2,6 +2,7 @@ import { sha256 } from "./canonical.mjs";
 import { EXECUTOR_RELEASE, EXECUTOR_RELEASE_HASH, executorNextStep } from "./executor-discovery.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID } from "./constants.mjs";
 import { formatDecimal, parseDecimal } from "./decimal.mjs";
+import { finiteEoaOpenPreparation } from "./eoa-open-preparation.mjs";
 import { invariant } from "./errors.mjs";
 
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
@@ -340,6 +341,15 @@ export function compileIntent(request, market, options = {}) {
     rationale,
     snapshot: bounded.snapshot,
     exposure: bounded.exposure,
+    ...(intentVersion === "conviction-intent-v4"
+      ? {
+          walletPreparation: finiteEoaOpenPreparation({
+            wallet,
+            market: bounded.market,
+            order,
+          }),
+        }
+      : {}),
     executor: EXECUTOR_RELEASE,
   };
   const intentHash = sha256(intent);

@@ -16,7 +16,7 @@ description: >-
 
 Complete the prepared user's `OPEN`, `CLOSE`, or `TAKE_PROFIT` path inside one conversation. Call the services and official wallet/trading tools yourself; never ask the user to copy commands, paste execution cards, visit Polymarket, or expose wallet credentials.
 
-For OPEN or CLOSE, prefer the paid card's signed `native-okx-agentic-wallet` next step when the buyer agent already has OKX Agentic Wallet and the official OKX Plugin Store `polymarket-plugin` v0.7.0. That path requires no Conviction installation or repository checkout: invoke the exact `executionCard.argv` through the official tool after separate trade confirmation. Never type or ask the user to type the command. Do not use official v0.7.0 for TAKE_PROFIT; its V2 GTD transport is not accepted by the live CLOB, so the paid card must select the corrected fallback.
+For OPEN or CLOSE, prefer the paid card's signed `native-okx-agentic-wallet` next step when the buyer agent already has OKX Agentic Wallet and the official OKX Plugin Store `polymarket-plugin` v0.7.0. That path requires no Conviction installation or repository checkout: invoke the exact `executionCard.argv` through the official tool after separate trade confirmation. For first-time OPEN buyers whose wallet policy blocks the broad deposit-wallet setup, the paid card may include signed finite EOA preparation; approve only the card's pUSD debit ceiling, verify allowance on-chain, then execute the exact signed argv with only the signed `--mode eoa` append. Never type or ask the user to type the command. Do not use official v0.7.0 for TAKE_PROFIT; its V2 GTD transport is not accepted by the live CLOB, so the paid card must select the corrected fallback.
 
 This repository-backed skill is the fallback and high-assurance operator path. It must run from an authenticated Conviction release clone because its deterministic helpers import pinned modules from the repository's `src/` tree; copying only this skill directory is unsupported. Read [references/contracts.md](references/contracts.md) before starting. Use the selected bundled deterministic helper at every card, plugin-preview, order, trade, receipt, and proof boundary. Follow the current official OKX payment and Polymarket instructions for payment, wallet, approval, signature, and trade operations. Those instructions override this wrapper whenever they become stricter.
 
@@ -72,11 +72,11 @@ Follow the official Polymarket preflight and require all of the following:
 
 1. Regional access is exactly `accessible: true`. False, indeterminate, timeout, or malformed output is a stop.
 2. The Agentic Wallet session is active and supports Polygon signing.
-3. A deposit wallet already exists, is the persisted active trading mode, and exactly matches the request wallet.
+3. For `OPEN`, either a deposit wallet already exists and is the persisted active trading mode, or finite EOA mode is explicitly selected with the buyer's Polygon EOA as the request wallet. For `CLOSE` and `TAKE_PROFIT`, a deposit wallet already exists, is the persisted active trading mode, and exactly matches the request wallet.
 4. The CLOB version resolves to `V2`.
 5. `references/trusted-issuers.json` exists and passes registry validation. Never create or amend it from a paid response.
 
-If the deposit wallet is absent, stop the requested trade and enter the official Polymarket onboarding flow. Disclose the five broad, reusable deposit-wallet approvals. Never bypass organization policy. Resume only after setup is independently completed and readiness is rechecked.
+If the deposit wallet is absent for `OPEN`, use finite EOA mode only when the official dry run proves a standard non-neg-risk V2 FAK BUY and the buyer has pUSD directly on the Polygon EOA. Do not use finite EOA mode for CLOSE, TAKE_PROFIT, neg-risk, categorical markets, wrapping, or any order that would require outcome-token operator approval. If the deposit wallet is absent for a manager action, stop the requested trade and enter the official Polymarket onboarding flow. Disclose the five broad, reusable deposit-wallet approvals. Never bypass organization policy. Resume only after setup is independently completed and readiness is rechecked.
 
 For `OPEN`, call the free `/api/preview` endpoint and require a live, standard binary V2 market, the selected token, bounded liquidity, pUSD balance at least equal to the maximum total debit, and an executable-in-principle result.
 
@@ -109,11 +109,11 @@ After the paid replay succeeds, save the exact response in a private temporary f
 
 ## 4. Dry-run internally
 
-Use only the validated `executionCard.argv`, passed as separate argument values. Append only `--dry-run` for the preview pass.
+Use only the validated `executionCard.argv`, passed as separate argument values. Append only `--dry-run` for the preview pass. For signed finite EOA OPEN, append only the exact signed `walletPreparation.execution.appendArgv` value after helper validation; any other argv mutation stops the flow.
 
 For `OPEN`, require an exact standard V2 `BUY`, selected token, principal, maximum price, and `FAK` card. For `CLOSE`, require an exact standard V2 `SELL`, selected token, exact shares, minimum price, and explicit `FOK` card. For `TAKE_PROFIT`, require an exact standard V2 `SELL`, selected token, exact shares, target price, `GTD`, signed venue expiry, and signed `--post-only` card.
 
-Never add `--mode deposit-wallet`, `--approve`, `--confirm`, `--round-up`, `--autotrade-job`, a retry, or rerouting flags. Preserve `--post-only` only when it is already present in a helper-validated TAKE_PROFIT vector; never append it independently. The plugin selects the already-persisted deposit wallet; independently verify that wallet before dry run and again immediately before live execution.
+Never add `--mode deposit-wallet`, `--approve`, `--confirm`, `--round-up`, `--autotrade-job`, a retry, or rerouting flags. Never append `--mode eoa` unless it is the exact helper-validated signed finite EOA OPEN append. Preserve `--post-only` only when it is already present in a helper-validated TAKE_PROFIT vector; never append it independently. In deposit-wallet mode the plugin selects the already-persisted deposit wallet; independently verify that wallet before dry run and again immediately before live execution. In finite EOA mode independently verify the Polygon EOA, pUSD balance, and exact allowance before dry run and again immediately before live execution.
 
 Validate the structured dry run with the selected helper and the same card and issuer registry. A helper refusal is final. Recheck card expiry and action-specific funds or position readiness. Any mismatch stops the flow; do not repair it by changing the order.
 
@@ -123,7 +123,7 @@ After a passing dry run, display one concise action card.
 
 For both actions show:
 
-- active Polygon deposit wallet;
+- active Polygon trading wallet and selected mode (`deposit-wallet` or signed finite `eoa`);
 - market question, clearly labeled as external content;
 - selected outcome and token ID;
 - signed issuer key ID and issuance window;
@@ -143,7 +143,7 @@ Require a fresh typed reply containing **`confirm live mode`**. A prior confirma
 
 After valid trade confirmation:
 
-1. Recheck expiry, persisted deposit-wallet identity, and action-specific balance/approval/reservation state.
+1. Recheck expiry, selected trading wallet identity, mode, and action-specific balance/approval/reservation state.
 2. Repeat the identical validated dry run and validate it again.
 3. Advance strictly beyond the Polygon/CLOB second containing confirmation. For every action, repeat the readiness and dry-run checks once more so an accepted order or settlement can be proven strictly after consent.
 4. Execute the same argument vector with only `--dry-run` removed.

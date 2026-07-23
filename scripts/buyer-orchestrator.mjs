@@ -19,6 +19,7 @@ import {
 import { sha256 } from "../src/canonical.mjs";
 import { CONTRACTS, POLYGON_CHAIN_ID, POLYGON_RPC_URL } from "../src/constants.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
+import { finiteEoaOpenPreparation } from "../src/eoa-open-preparation.mjs";
 import { fetchAndVerifyClose } from "../src/exit-receipt-verifier.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchPositionSnapshot } from "../src/position-client.mjs";
@@ -399,8 +400,8 @@ function usage() {
     "Usage:",
     "  node scripts/buyer-orchestrator.mjs open --origin https://conviction-bay.vercel.app --market <slug-or-id>",
     "    --side YES|NO --budget <pUSD> --max-price <price>",
-    "    --payment-payer <X-Layer-address> --buyer-wallet <Polygon-deposit-wallet>",
-    "    --issuer-registry <issuers.json> [--json]",
+    "    --payment-payer <X-Layer-address> --buyer-wallet <Polygon-trading-wallet>",
+    "    --issuer-registry <issuers.json> [--trading-mode deposit-wallet|eoa] [--json]",
     "",
     "  node scripts/buyer-orchestrator.mjs close --origin https://conviction-bay.vercel.app --market <slug-or-id>",
     "    --side YES|NO --shares <whole-shares> --min-price <price>",
@@ -421,6 +422,14 @@ function usage() {
     "then displays the final signed bounds and requires exactly one",
     "interactive `confirm live mode` before it can submit the Polygon order.",
   ].join("\n");
+}
+
+function normalizeOpenTradingMode(value) {
+  const mode = String(value || "").trim().toLowerCase().replace(/_/g, "-");
+  if (mode !== "deposit-wallet" && mode !== "eoa") {
+    throw Object.assign(new Error("--trading-mode must be deposit-wallet or eoa"), { code: "invalid_argument" });
+  }
+  return mode;
 }
 
 export function parseArgs(argv) {
@@ -474,6 +483,7 @@ export function parseArgs(argv) {
         budget: take("--budget"),
         maxPrice: take("--max-price"),
         buyerWallet: take("--buyer-wallet").toLowerCase(),
+        tradingMode: normalizeOpenTradingMode(take("--trading-mode", false) || "deposit-wallet"),
       }
     : {
         ...common,
@@ -1908,6 +1918,7 @@ async function commandJson(file, args, label, {
   deadlineEpochMs,
   clock = Date.now,
   onStart = () => {},
+  allowConfirming = false,
 } = {}) {
   const commandStartedAt = Number(clock());
   const boundedTimeout = deadlineEpochMs === undefined
@@ -1938,6 +1949,7 @@ async function commandJson(file, args, label, {
     const parsed = (() => {
       try { return parseJsonOutput(error?.stdout, label); } catch { return null; }
     })();
+    if (allowConfirming && parsed?.confirming === true) return parsed;
     throw Object.assign(new Error(parsed?.error?.message || error?.message || `${label} failed`), {
       code: parsed?.error?.code || "tool_failed",
       details: parsed,
@@ -2026,6 +2038,7 @@ export async function persistBoundTradeConsent({
   state,
   mode,
   validated,
+  executionArgv = validated?.executionCard?.argv,
   now = Date.now,
   writeState = writeReconciliationJournal,
 } = {}) {
@@ -2037,7 +2050,7 @@ export async function persistBoundTradeConsent({
     (normalizedMode !== "open" && normalizedMode !== "close") ||
     !Number.isSafeInteger(confirmedAt) || !Number.isFinite(expiresAt) || confirmedAt >= expiresAt ||
     !HASH_RE.test(String(validated?.intentHash || "")) ||
-    !Array.isArray(validated?.executionCard?.argv) || validated.executionCard.argv.length === 0 ||
+    !Array.isArray(executionArgv) || executionArgv.length === 0 ||
     !HASH_RE.test(String(state.paymentTx || "")) || !HASH_RE.test(String(state.replayKey || "")) ||
     typeof writeState !== "function"
   ) {
@@ -2052,7 +2065,7 @@ export async function persistBoundTradeConsent({
       ? "conviction-close-trade-consent-v1"
       : "conviction-open-trade-consent-v1",
     intentHash: validated.intentHash,
-    executionArgvHash: sha256(validated.executionCard.argv),
+    executionArgvHash: sha256(executionArgv),
     paymentTx: state.paymentTx,
     replayKey: state.replayKey,
     confirmedAt: confirmedAtIso,
@@ -2597,13 +2610,52 @@ export async function fetchEip3009AuthorizationState(metadata, options = {}) {
 }
 
 function findAddress(addresses, chainIndex) {
-  return addresses?.data?.xlayer?.find((entry) => String(entry.chainIndex) === String(chainIndex))?.address;
+  const data = addresses?.data || addresses;
+  const direct = data?.xlayer?.find?.((entry) => String(entry.chainIndex) === String(chainIndex))?.address;
+  if (direct) return direct;
+  const stack = [data];
+  const seen = new Set();
+  while (stack.length) {
+    const value = stack.pop();
+    if (!value || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value);
+    if (
+      String(value.chainIndex) === String(chainIndex) &&
+      ADDRESS_RE.test(String(value.address || ""))
+    ) return value.address;
+    for (const child of Array.isArray(value) ? value : Object.values(value)) stack.push(child);
+  }
+  return undefined;
 }
 
 function depositWalletFromQuickstart(quickstart) {
   const data = quickstart?.data || quickstart;
   const address = data?.wallet?.deposit_wallet;
   return address ? String(address).toLowerCase() : null;
+}
+
+function effectiveOpenExecutionArgv(validated, tradingMode) {
+  const base = validated?.executionCard?.argv;
+  if (!Array.isArray(base) || base.length === 0) {
+    throw Object.assign(new Error("OPEN execution argv is missing"), { code: "invalid_execution_card" });
+  }
+  if (tradingMode !== "eoa") return [...base];
+  const append = validated?.walletPreparation?.execution?.appendArgv;
+  const forbidden = new Set(validated?.walletPreparation?.execution?.forbiddenArgv || []);
+  if (
+    validated?.walletPreparation?.tradingMode !== "eoa" ||
+    JSON.stringify(append) !== JSON.stringify(["--mode", "eoa"])
+  ) {
+    throw Object.assign(new Error("Signed EOA preparation is missing the exact execution mode"), {
+      code: "invalid_eoa_preparation",
+    });
+  }
+  if (base.some((entry) => forbidden.has(String(entry)))) {
+    throw Object.assign(new Error("OPEN argv contains a forbidden EOA argument"), {
+      code: "invalid_eoa_preparation",
+    });
+  }
+  return [...base, ...append];
 }
 
 function safeStatePath(value, kind, stateDirectory = journalDirectory) {
@@ -4610,6 +4662,7 @@ export function normalizePluginReadiness({
   quickstart,
   selectedMode,
   pUsdBalanceRaw,
+  pUsdAllowanceRaw,
 }) {
   const data = quickstart?.data || quickstart;
   const depositWallet = depositWalletFromQuickstart(quickstart);
@@ -4618,24 +4671,48 @@ export function normalizePluginReadiness({
   const normalizedMode = selectedMode === "deposit-wallet"
     ? "deposit_wallet"
     : selectedMode;
+  const eoaWallet = String(findAddress(addresses, 137) || findAddress(addresses, 196) || "").toLowerCase();
   const depositWalletActive =
     normalizedMode === "deposit_wallet" &&
     (status === "active" || status === "deposit_wallet_ready");
+  const eoaActive = normalizedMode === "eoa";
+  const buyerWallet = eoaActive ? eoaWallet : depositWallet || "";
 
   return {
     accessible:
       access?.data?.accessible === true &&
       data?.accessible !== false,
-    clobVersion: depositWalletActive ? "V2" : "",
+    clobVersion: depositWalletActive || eoaActive ? "V2" : "",
     currentMode: normalizedMode,
     paymentPayer: String(findAddress(addresses, 196) || "").toLowerCase(),
-    buyerWallet: depositWallet || "",
-    tradingAddress: String(explicitTradingAddress || depositWallet || "").toLowerCase(),
+    buyerWallet,
+    tradingAddress: String(explicitTradingAddress || buyerWallet || "").toLowerCase(),
     pUsdBalanceRaw,
+    ...(pUsdAllowanceRaw !== undefined ? { pUsdAllowanceRaw } : {}),
   };
 }
 
 async function polygonPusdBalanceRaw(wallet) {
+  const result = await polygonEthCall({
+    to: CONTRACTS.pUsd,
+    data: `0x70a08231${wallet.slice(2).padStart(64, "0")}`,
+    errorCode: "balance_rpc_error",
+    errorMessage: "Polygon balance RPC failed",
+  });
+  return BigInt(result).toString();
+}
+
+async function polygonPusdAllowanceRaw(owner, spender) {
+  const result = await polygonEthCall({
+    to: CONTRACTS.pUsd,
+    data: `0xdd62ed3e${owner.slice(2).padStart(64, "0")}${spender.slice(2).padStart(64, "0")}`,
+    errorCode: "allowance_rpc_error",
+    errorMessage: "Polygon allowance RPC failed",
+  });
+  return BigInt(result).toString();
+}
+
+async function polygonEthCall({ to, data, errorCode, errorMessage }) {
   const rpc = async (method, params) => {
     const response = await fetch(POLYGON_RPC_URL, {
       method: "POST",
@@ -4645,22 +4722,22 @@ async function polygonPusdBalanceRaw(wallet) {
     });
     const body = await response.json();
     if (!response.ok || body.error) {
-      throw Object.assign(new Error("Polygon balance RPC failed"), { code: "balance_rpc_error" });
+      throw Object.assign(new Error(errorMessage), { code: errorCode });
     }
     return body.result;
   };
   const chainHex = await rpc("eth_chainId", []);
   if (Number(BigInt(chainHex)) !== POLYGON_CHAIN_ID) {
-    throw Object.assign(new Error("Balance RPC is not Polygon chain 137"), { code: "wrong_balance_chain" });
+    throw Object.assign(new Error("RPC is not Polygon chain 137"), { code: "wrong_balance_chain" });
   }
   const result = await rpc("eth_call", [{
-    to: CONTRACTS.pUsd,
-    data: `0x70a08231${wallet.slice(2).padStart(64, "0")}`,
+    to,
+    data,
   }, "latest"]);
   if (!/^0x[0-9a-f]+$/i.test(result || "")) {
-    throw Object.assign(new Error("Could not read the deposit wallet's atomic pUSD balance"), { code: "balance_rpc_error" });
+    throw Object.assign(new Error(errorMessage), { code: errorCode });
   }
-  return BigInt(result).toString();
+  return result;
 }
 
 export function paymentTransaction(paymentResponse) {
@@ -4985,8 +5062,26 @@ async function main() {
     };
   const readline = createInterface({ input: stdin, output: options.json ? stderr : stdout });
   let paymentConsentUsed = false;
+  const requestedTradingMode = closeMode ? "deposit-wallet" : options.tradingMode;
   let selectedTradingMode = "";
   const confirm = async (kind, context = {}) => {
+    if (kind === "wallet_preparation") {
+      const plan = context.plan || {};
+      const confirming = context.confirming || {};
+      if (confirming.message) stdout.write(`\n${confirming.message}\n`);
+      stdout.write([
+        "\nPrepare finite EOA pUSD allowance:",
+        `  Wallet: ${plan.owner}`,
+        `  Token: ${plan.collateralToken}`,
+        `  Spender: ${plan.spender}`,
+        `  Amount: ${plan.approval?.amount} pUSD (${plan.approval?.amountRaw} raw)`,
+        `  Scope: ${plan.scope}`,
+        "  No unlimited approval and no setApprovalForAll.",
+        "",
+      ].join("\n"));
+      const answer = await readline.question("Type `Prepare test wallet` to approve this exact pUSD allowance: ");
+      return answer.trim() === "Prepare test wallet";
+    }
     if (kind === "payment") {
       if (paymentConsentUsed) return false;
       paymentConsentUsed = true;
@@ -5003,6 +5098,7 @@ async function main() {
         state: checkpoint,
         mode: closeMode ? "close" : "open",
         validated: context.validated,
+        executionArgv: context.executionArgv,
       });
     }
     return false;
@@ -5015,13 +5111,18 @@ async function main() {
       commandJson(polymarketPluginCommand(), ["quickstart"], "Polymarket readiness"),
     ]);
     const depositWallet = depositWalletFromQuickstart(quickstart);
-    const pUsdBalanceRaw = depositWallet ? await polygonPusdBalanceRaw(depositWallet) : "0";
+    const balanceWallet = requestedTradingMode === "eoa" ? options.buyerWallet : depositWallet;
+    const pUsdBalanceRaw = balanceWallet ? await polygonPusdBalanceRaw(balanceWallet) : "0";
+    const pUsdAllowanceRaw = requestedTradingMode === "eoa" && balanceWallet
+      ? await polygonPusdAllowanceRaw(balanceWallet, CONTRACTS.standardExchangeV2)
+      : undefined;
     latestReadiness = normalizePluginReadiness({
       access,
       addresses,
       quickstart,
       selectedMode: selectedTradingMode,
       pUsdBalanceRaw,
+      pUsdAllowanceRaw,
     });
     return latestReadiness;
   };
@@ -5042,12 +5143,12 @@ async function main() {
     ensureTradingMode: async () => {
       const switched = await commandJson(
         polymarketPluginCommand(),
-        ["switch-mode", "--mode", "deposit-wallet"],
+        ["switch-mode", "--mode", requestedTradingMode],
         "Polymarket trading-mode selection",
       );
       const result = switched?.data || switched;
-      if (result?.mode !== "deposit-wallet") {
-        throw Object.assign(new Error("Polymarket did not select DEPOSIT_WALLET mode"), {
+      if (result?.mode !== requestedTradingMode) {
+        throw Object.assign(new Error(`Polymarket did not select ${requestedTradingMode} mode`), {
           code: "wrong_trading_mode",
         });
       }
@@ -5055,6 +5156,71 @@ async function main() {
       return result;
     },
     checkReadiness: loadReadiness,
+    prepareOpenWallet: async ({ preview, buyerWallet, confirm: confirmPreparation }) => {
+      if (requestedTradingMode !== "eoa") return null;
+      const body = preview?.preview || preview;
+      const plan = finiteEoaOpenPreparation({
+        wallet: buyerWallet,
+        market: body?.market,
+        order: body?.order,
+      });
+      const scan = await commandJson(
+        plan.approval.securityScan.program,
+        plan.approval.securityScan.argv,
+        "Finite pUSD approval security scan",
+      );
+      const scanAction = String((scan?.data || scan)?.action || "").toLowerCase();
+      if (scanAction === "block") {
+        throw Object.assign(new Error("Security scan blocked the finite pUSD approval"), {
+          code: "approval_security_blocked",
+          details: scan,
+        });
+      }
+      const confirming = await commandJson(
+        plan.approval.submit.program,
+        plan.approval.submit.argv,
+        "Finite pUSD approval request",
+        { allowConfirming: true },
+      );
+      if (confirming?.confirming !== true) {
+        throw Object.assign(new Error("Wallet did not present a confirmation for the finite approval"), {
+          code: "approval_confirmation_missing",
+          details: confirming,
+        });
+      }
+      const accepted = await confirmPreparation("wallet_preparation", { plan, scan, confirming });
+      if (accepted !== true) {
+        throw Object.assign(new Error("Buyer declined the finite pUSD approval"), {
+          code: "wallet_preparation_not_confirmed",
+        });
+      }
+      const approved = await commandJson(
+        plan.approval.submit.program,
+        [...plan.approval.submit.argv, "--force"],
+        "Finite pUSD approval",
+      );
+      const allowanceRaw = await polygonPusdAllowanceRaw(plan.owner, plan.spender);
+      if (
+        BigInt(allowanceRaw) < BigInt(plan.allowanceReadback.minimumRaw) ||
+        BigInt(allowanceRaw) > BigInt(plan.allowanceReadback.maximumRaw)
+      ) {
+        throw Object.assign(new Error("Finite pUSD allowance readback is outside the signed bounds"), {
+          code: "allowance_readback_mismatch",
+          details: {
+            allowanceRaw,
+            minimumRaw: plan.allowanceReadback.minimumRaw,
+            maximumRaw: plan.allowanceReadback.maximumRaw,
+          },
+        });
+      }
+      return {
+        ok: true,
+        mode: "eoa",
+        planHash: plan.planHash,
+        allowanceRaw,
+        transactionHash: String((approved?.data || approved)?.txHash || (approved?.data || approved)?.transactionHash || ""),
+      };
+    },
     checkCloseReadiness: async ({ outcomeTokenId }) => {
       const [readiness, position] = await Promise.all([
         loadReadiness(),
@@ -5095,6 +5261,7 @@ async function main() {
         });
       }
       return {
+        preview: json.preview,
         conditionId: json.preview.market.conditionId,
         outcomeTokenId: json.preview.market.outcomeTokenId,
       };
@@ -5248,11 +5415,11 @@ async function main() {
         await waitForStrictlyPostConfirmationSecond(checkpoint.tradeConfirmedAt);
         const reasserted = await commandJson(
           polymarketPluginCommand(),
-          ["switch-mode", "--mode", "deposit-wallet"],
+          ["switch-mode", "--mode", requestedTradingMode],
           "Final Polymarket trading-mode selection",
         );
-        if ((reasserted?.data || reasserted)?.mode !== "deposit-wallet") {
-          throw Object.assign(new Error("Polymarket did not preserve DEPOSIT_WALLET mode before CLOSE"), {
+        if ((reasserted?.data || reasserted)?.mode !== requestedTradingMode) {
+          throw Object.assign(new Error(`Polymarket did not preserve ${requestedTradingMode} mode before execution`), {
             code: "wrong_trading_mode",
           });
         }
@@ -5300,11 +5467,11 @@ async function main() {
         } else {
           const lockedReadiness = await loadReadiness();
           if (
-            lockedReadiness.currentMode !== "deposit_wallet" ||
+            lockedReadiness.currentMode !== (requestedTradingMode === "eoa" ? "eoa" : "deposit_wallet") ||
             lockedReadiness.buyerWallet !== tradingWallet ||
             lockedReadiness.tradingAddress !== tradingWallet
           ) {
-            throw Object.assign(new Error("Active deposit wallet changed immediately before OPEN"), {
+            throw Object.assign(new Error("Active trading wallet changed immediately before OPEN"), {
               code: "trading_wallet_mismatch",
             });
           }
@@ -5330,7 +5497,7 @@ async function main() {
           requireExecutionLaunchWindow(lockedCard);
           if (
             lockedCard.intentHash !== checkpoint.tradeConsent?.intentHash ||
-            sha256(lockedCard.executionCard.argv) !== checkpoint.tradeConsent?.executionArgvHash
+            sha256(effectiveOpenExecutionArgv(lockedCard, requestedTradingMode)) !== checkpoint.tradeConsent?.executionArgvHash
           ) {
             throw Object.assign(new Error("Locked OPEN differs from the confirmed order"), {
               code: "trade_consent_mismatch",
@@ -5353,7 +5520,10 @@ async function main() {
             ? validateCloseCard(checkpoint.paidCard, { trustedIssuers: pinnedRegistry, now: Date.now() })
             : validateCard(checkpoint.paidCard, { trustedIssuers: pinnedRegistry, now: Date.now() });
           const launchWindow = requireExecutionLaunchWindow(launchCard);
-          if (sha256(launchCard.executionCard.argv) !== checkpoint.executionArgvHash) {
+          const launchArgv = closeMode
+            ? launchCard.executionCard.argv
+            : effectiveOpenExecutionArgv(launchCard, requestedTradingMode);
+          if (sha256(launchArgv) !== checkpoint.executionArgvHash) {
             throw Object.assign(new Error("Live order differs from the persisted bounded execution"), {
               code: "trade_consent_mismatch",
             });
