@@ -7,7 +7,7 @@ export const OPEN_SERVICE_PRICE_ATOMIC = "50000";
 export const DEFAULT_OPEN_BUDGET_RAW = "1250000";
 
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
-const APPROVAL_DISCLOSURE = Object.freeze({
+export const APPROVAL_DISCLOSURE = Object.freeze({
   setupIsVenueManaged: true,
   setupRelayerPaid: true,
   polygonGasRequired: false,

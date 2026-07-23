@@ -58,6 +58,7 @@ for (const required of [
   'id="verify"',
   'id="market-form"',
   'id="preview-form"',
+  'id="wallet-setup"',
   'id="verification-form"',
   'name="outcome" value="yes"',
   'name="outcome" value="no"',
@@ -84,6 +85,8 @@ assert.ok(css.includes("prefers-reduced-motion"), "missing reduced-motion suppor
 assert.ok(css.includes("--muted: #5f6964"), "muted text token does not meet AA contrast");
 assert.ok(css.includes("--orange: #c23c20"), "accent text token does not meet AA contrast");
 assert.ok(app.includes('postJson("/api/market"'), "one-field market lookup is not connected");
+assert.ok(app.includes('fetch("/api/wallet-setup"'), "wallet setup scaffold is not connected");
+assert.ok(app.includes('FEASIBILITY_ONLY_NOT_CONFIGURED'), "wallet setup scaffold is not fail-closed in the UI");
 assert.ok(app.includes('postJson("/api/preview"'), "wallet-free preview is not connected");
 assert.ok(app.includes('postJson("/api/intent"'), "final compiler UI is not connected to intent API");
 assert.ok(app.includes('postJson("/api/receipt"'), "receipt verification is not connected");
@@ -120,6 +123,14 @@ assert.doesNotMatch(
 assert.ok(
   html.includes("OPEN currently requires an already-ready buyer-controlled Polymarket deposit wallet"),
   "landing page omits the current ready-deposit-wallet requirement",
+);
+assert.ok(
+  html.includes("First-time Conviction Wallet Setup is a feasibility preview."),
+  "landing page does not label first-time wallet setup as unavailable",
+);
+assert.ok(
+  html.includes("Do not fund a new wallet from this screen."),
+  "landing page does not prevent premature funding for the setup scaffold",
 );
 assert.doesNotMatch(
   html,
