@@ -5551,7 +5551,7 @@ async function main() {
           const launchCard = closeMode
             ? validateCloseCard(checkpoint.paidCard, { trustedIssuers: pinnedRegistry, now: Date.now() })
             : validateCard(checkpoint.paidCard, { trustedIssuers: pinnedRegistry, now: Date.now() });
-          const launchWindow = requireExecutionLaunchWindow(launchCard);
+          requireExecutionLaunchWindow(launchCard);
           const launchArgv = closeMode
             ? launchCard.executionCard.argv
             : effectiveOpenExecutionArgv(launchCard, requestedTradingMode);
@@ -5581,8 +5581,9 @@ async function main() {
               phase: "immediately before the live OPEN command",
             });
           }
+          const finalLaunchWindow = requireExecutionLaunchWindow(launchCard);
           result = await commandJson(launchRuntime.binary, argv, "Polymarket live order", {
-            deadlineEpochMs: launchWindow.deadlineEpochMs,
+            deadlineEpochMs: finalLaunchWindow.deadlineEpochMs,
             onStart: () => { executionAttempted = true; },
           });
         } catch (error) {

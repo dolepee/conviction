@@ -156,10 +156,12 @@ test("buyer CLI re-reads finite EOA allowance after runtime inspection and befor
   const source = await readFile(new URL("../scripts/buyer-orchestrator.mjs", import.meta.url), "utf8");
   const runtimeInspection = source.indexOf("if (JSON.stringify(launchEvidence) !== JSON.stringify(checkpoint.executionRuntime))");
   const launchReadback = source.indexOf("const launchAllowanceRaw = await polygonPusdAllowanceRaw(", runtimeInspection);
-  const liveCommand = source.indexOf('result = await commandJson(launchRuntime.binary, argv, "Polymarket live order"', launchReadback);
+  const finalHeadroomCheck = source.indexOf("const finalLaunchWindow = requireExecutionLaunchWindow(launchCard)", launchReadback);
+  const liveCommand = source.indexOf('result = await commandJson(launchRuntime.binary, argv, "Polymarket live order"', finalHeadroomCheck);
   assert.ok(runtimeInspection >= 0);
   assert.ok(launchReadback > runtimeInspection);
-  assert.ok(liveCommand > launchReadback);
+  assert.ok(finalHeadroomCheck > launchReadback);
+  assert.ok(liveCommand > finalHeadroomCheck);
 });
 
 test("buyer CLI accepts one source-bound bounded CLOSE contract", () => {
