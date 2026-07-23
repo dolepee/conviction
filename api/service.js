@@ -3,9 +3,21 @@ import express from "express";
 import { createIntentHandler } from "./intent.js";
 import { createEnvironmentIntentIssuer } from "../src/intent-issuer.mjs";
 import { EXECUTOR_DISCOVERY_LINK } from "../src/executor-discovery.mjs";
+import { ConvictionError } from "../src/errors.mjs";
+import { createPublicApiGuard, PublicApiError } from "../src/public-api-guard.mjs";
 import { createPaymentGate, SERVICE_PATH } from "../src/service-payment.mjs";
 
 export const PAID_SERVICE_QUOTE_TTL_MS = 300_000;
+const PRE_PAYMENT_OPEN_GUARD_OPTIONS = Object.freeze({
+  // Structured preflight performs four Polygon RPC reads. Keep that free,
+  // safety-critical refusal path bounded without applying it to marketplace
+  // discovery probes that intentionally have no buyer body yet.
+  limit: 10,
+  windowMs: 60_000,
+  maxBodyBytes: 32 * 1024,
+  maxMarketLength: 512,
+  maxInFlight: 4,
+});
 export function createPaidIntentHandler(options = {}) {
   if (typeof options.issueIntentImpl !== "function") {
     const error = new Error("Paid intent issuance is not configured");
@@ -32,6 +44,7 @@ export function createServiceApp(
     compileHandler = undefined,
     notifyPaidCall = undefined,
     now = Date.now,
+    prePaymentOpenGuard = createPublicApiGuard(PRE_PAYMENT_OPEN_GUARD_OPTIONS),
   } = {},
 ) {
   const app = express();
@@ -97,15 +110,94 @@ export function createServiceApp(
     });
   }
 
-  // Marketplace validators probe API services without knowing their business
-  // method or request schema. Challenge the exact service path first, then run
-  // POST-only JSON and business validation after a payment is verified.
-  app.all(SERVICE_PATH, serviceResponseHeaders, requirePayment);
+  // Preserve marketplace discovery behavior for malformed/empty probes while
+  // making a structured unsupported buyer fail before x402 verification.
+  const serviceJson = express.json({ limit: "32kb", strict: true });
+  function parseServiceBody(request, response, next) {
+    return serviceJson(request, response, (error) => {
+      if (error) {
+        request.serviceBodyParseError = error;
+        request.body = {};
+      }
+      return next();
+    });
+  }
+
+  async function prePaymentOpenEligibility(request, response, next) {
+    const eligibility = resolvedCompileHandler?.prePaymentEligibility;
+    const body = request.body && typeof request.body === "object" ? request.body : {};
+    // A bare or malformed marketplace probe must still receive the standard
+    // x402 discovery response. A body that names an OPEN journey is eligible
+    // for an authoritative no-payment preflight.
+    if (
+      request.serviceBodyParseError ||
+      typeof eligibility !== "function" ||
+      !["wallet", "executionMode", "walletReadiness"].some((field) =>
+        Object.prototype.hasOwnProperty.call(body, field),
+      )
+    ) return next();
+    try {
+      request.convictionPaidOpenPreflight = await prePaymentOpenGuard.run(
+        request,
+        () => eligibility(body),
+      );
+      return next();
+    } catch (error) {
+      if (error instanceof PublicApiError) {
+        if (error.details?.retryAfterSeconds) {
+          response.setHeader("retry-after", String(error.details.retryAfterSeconds));
+        }
+        response.setHeader("cache-control", "no-store");
+        return response.status(error.status).json({
+          ok: false,
+          error: { code: error.code, message: error.message, details: error.details },
+        });
+      }
+      if (error instanceof ConvictionError) {
+        response.setHeader("cache-control", "no-store");
+        return response.status(422).json({
+          ok: false,
+          error: { code: error.code, message: error.message, details: error.details },
+        });
+      }
+      logger.error("pre-payment OPEN eligibility failed", { name: error?.name, code: error?.code });
+      response.setHeader("cache-control", "no-store");
+      return response.status(500).json({
+        ok: false,
+        error: { code: "prepayment_eligibility_failed", message: "Buyer eligibility could not be verified" },
+      });
+    }
+  }
+
+  function rejectVerifiedBodyParseError(request, response, next) {
+    const error = request.serviceBodyParseError;
+    if (!error) return next();
+    response.setHeader("cache-control", "no-store");
+    if (error.type === "entity.too.large") {
+      return response.status(413).json({
+        ok: false,
+        error: { code: "payload_too_large", message: "Request body exceeds 32 KB" },
+      });
+    }
+    return response.status(400).json({
+      ok: false,
+      error: { code: "invalid_json", message: "Request body must be valid JSON" },
+    });
+  }
+
+  // GET/HEAD and a bare POST retain the marketplace-compatible x402 discovery
+  // response. A structured POST is first checked against the deposit-wallet
+  // maker identity so unsupported buyers never enter payment verification.
   app.post(
     SERVICE_PATH,
-    express.json({ limit: "32kb", strict: true }),
+    serviceResponseHeaders,
+    parseServiceBody,
+    prePaymentOpenEligibility,
+    requirePayment,
+    rejectVerifiedBodyParseError,
     resolvedCompileHandler ?? unavailableCompileHandler,
   );
+  app.all(SERVICE_PATH, serviceResponseHeaders, requirePayment);
   app.all(SERVICE_PATH, (request, response) => {
     response.setHeader("allow", "POST");
     response.setHeader("cache-control", "no-store");

@@ -6,6 +6,8 @@ The free `GET|POST /api/readiness` route publishes and applies the buyer-local s
 
 Buyer readiness is a deterministic classifier over buyer-supplied local capability, wallet, balance, venue, mode, and approval state. It never reads credentials or signs, funds, approves, pays, or trades. OPEN is chargeable only for an already-ready buyer-controlled deposit wallet. Direct EOA mode returns `BUYER_SETUP_REQUIRED`, `paymentAllowed:false`, and `USE_READY_DEPOSIT_WALLET` because a live external attempt proved Polymarket V2 rejects that maker. Before payment, the server requires a successful official-plugin dry run matching every execution field. The published X Layer payee also lets the buyer refuse `payer == payee`. The one-time relayer-paid V2 deposit-wallet setup requires no POL and uses two maximum pUSD allowances plus three blanket CTF operator approvals; every readiness response discloses their reusable and currently non-revocable scope. Conviction never bypasses buyer or organization policy.
 
+`POST /api/service` preserves a standards-compatible x402 challenge for bare, malformed, and marketplace discovery probes. A structured OPEN request that names a buyer wallet, execution mode, or wallet-readiness result is instead screened before x402 verification: its declared ready deposit wallet must pass the bounded Polygon factory/code identity check, otherwise it returns a no-payment `422` with `paymentAllowed:false`. This free identity preflight is bounded to 10 requests per minute per client and four concurrent checks; a saturated preflight returns a no-payment `429`. A passing identity preflight does not replace the buyer's full readiness checks, fresh balance/approval checks, or the exact official-plugin dry run required before a paid card is issued.
+
 Public `POST /api/receipt` accepts only an issuer-signed `conviction-intent-v4` plus its issuance record. It returns top-level `assurance: "issuer-signed"` only after verifying the Ed25519 issuance, settlement window and block, deriving both outcome-token IDs from the CTF condition on Polygon, and matching the fill. Legacy v2/v3 replay remains an explicitly internal `self-asserted` provenance mode for Position Manager; it cannot be enabled by a public request field and is never rendered as an issuer-verified proof.
 
 For every paid action, the buyer runtime keeps the merchant body and `PAYMENT-RESPONSE` authorization-only until it independently verifies the exact X Layer receipt. Before promoting the card, it atomically creates an owner-only permanent claim keyed by the payment transaction and bound to the journal, replay key, EIP-3009 nonce, service, payer, amount, and proof hash. An already-claimed transaction fails closed and cannot promote a second journey; claim files are replay records and are never released as execution locks.
@@ -24,7 +26,7 @@ Send JSON:
   "maxPrice": "0.14",
   "wallet": "0x1111111111111111111111111111111111111111",
   "executionMode": "deposit-wallet",
-  "walletReadiness": { "ok": true, "accessible": true, "status": "deposit_wallet_ready", "wallet": { "deposit_wallet": "0x1111111111111111111111111111111111111111" } },
+  "walletReadiness": { "ok": true, "accessible": true, "status": "deposit_wallet_ready", "wallet": { "eoa": "0x2222222222222222222222222222222222222222", "deposit_wallet": "0x1111111111111111111111111111111111111111" } },
   "pluginPreview": { "ok": true, "dry_run": true, "data": {} },
   "rationale": "I selected NO and accept only the stated fee-inclusive bounds."
 }
