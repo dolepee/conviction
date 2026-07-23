@@ -6,6 +6,7 @@ import {
   TOPICS,
 } from "./constants.mjs";
 import { formatDecimal, parseDecimal, parseHexUint } from "./decimal.mjs";
+import { finiteEoaOpenPreparationMatches } from "./eoa-open-preparation.mjs";
 import { ConvictionError, invariant } from "./errors.mjs";
 import { verifyIntentIssuance } from "./intent-issuer.mjs";
 
@@ -304,6 +305,13 @@ export function verifyPositionProof({
     "invalid_intent",
     "Intent must be a bounded FAK buy",
   );
+  if (signedIntent && intent.walletPreparation !== undefined) {
+    invariant(
+      finiteEoaOpenPreparationMatches(intent),
+      "invalid_eoa_preparation",
+      "Signed finite-approval EOA preparation does not match the OPEN intent",
+    );
+  }
 
   const outcome = normalizeOutcome(intent.order?.outcome);
   invariant(intent.market?.outcome === outcome, "intent_outcome_mismatch", "Intent market and order outcomes disagree");

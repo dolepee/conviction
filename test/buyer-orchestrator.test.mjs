@@ -7,14 +7,20 @@ const PAYMENT_PAYER = "0x1111111111111111111111111111111111111111";
 const BUYER_WALLET = "0x2222222222222222222222222222222222222222";
 const CONDITION = `0x${"ab".repeat(32)}`;
 const TOKEN = "123456789";
+const PREP_HASH = `0x${"99".repeat(32)}`;
 
 function fixture({
   mutateValidated,
   validateCardError,
   proofSettledAt = "1970-01-01T00:00:02.000Z",
+  mode = "deposit_wallet",
+  eoaAllowanceRaw = "1350000",
 } = {}) {
   let clock = 1_000;
   let executes = 0;
+  let preparations = 0;
+  const dryRunArgv = [];
+  const executeArgv = [];
   const confirmations = [];
   const validated = {
     wallet: BUYER_WALLET,
@@ -24,6 +30,14 @@ function fixture({
     issuance: { version: "conviction-issuance-v1", signature: "fixture" },
     expiresAt: "2030-01-01T00:00:00.000Z",
     intent: { market: { conditionId: CONDITION } },
+    walletPreparation: {
+      planHash: PREP_HASH,
+      tradingMode: "eoa",
+      execution: {
+        appendArgv: ["--mode", "eoa"],
+        forbiddenArgv: ["--approve"],
+      },
+    },
     executionCard: { argv: ["buy", "--market-id", CONDITION] },
     bounds: {
       requestedBudgetRaw: "1350000",
@@ -34,17 +48,26 @@ function fixture({
     },
   };
   const adapters = {
-    ensureTradingMode: async () => ({ currentMode: "deposit_wallet" }),
+    ensureTradingMode: async () => ({ currentMode: mode }),
     checkReadiness: async () => ({
       accessible: true,
       clobVersion: "V2",
-      currentMode: "deposit_wallet",
+      currentMode: mode,
       paymentPayer: PAYMENT_PAYER,
       buyerWallet: BUYER_WALLET,
       tradingAddress: BUYER_WALLET,
       pUsdBalanceRaw: "9999999",
+      ...(mode === "eoa" ? { pUsdAllowanceRaw: eoaAllowanceRaw } : {}),
     }),
     previewMarket: async () => ({ conditionId: CONDITION, outcomeTokenId: TOKEN }),
+    prepareOpenWallet: async ({ confirm }) => {
+      preparations += 1;
+      const accepted = await confirm("wallet_preparation", {
+        plan: { planHash: PREP_HASH },
+      });
+      if (!accepted) throw new BuyerJourneyError("wallet_preparation_not_confirmed", "not confirmed");
+      return { ok: true, mode: "eoa", planHash: PREP_HASH };
+    },
     requestPaymentChallenge: async () => ({ amount: "50000", asset: "USD₮0" }),
     payAndRequestCard: async () => ({ card: { signed: true }, paymentTx: `0x${"ef".repeat(32)}` }),
     verifyPayment: async () => ({ transactionHash: `0x${"ef".repeat(32)}` }),
@@ -52,10 +75,14 @@ function fixture({
       if (validateCardError) throw validateCardError;
       return mutateValidated ? mutateValidated(structuredClone(validated)) : structuredClone(validated);
     },
-    dryRun: async () => ({ ok: true, dry_run: true }),
+    dryRun: async (argv) => {
+      dryRunArgv.push([...argv]);
+      return { ok: true, dry_run: true };
+    },
     validateDryRun: async () => ({ ok: true }),
-    execute: async () => {
+    execute: async (argv) => {
       executes += 1;
+      executeArgv.push([...argv]);
       return { ok: true };
     },
     buildReceiptRequest: async () => ({ transactionHash: `0x${"12".repeat(32)}` }),
@@ -75,6 +102,9 @@ function fixture({
     adapters,
     confirm,
     confirmations,
+    preparations: () => preparations,
+    dryRunArgv,
+    executeArgv,
     executes: () => executes,
     now: () => (clock += 10),
   };
@@ -109,6 +139,72 @@ test("open journey keeps payment and trade consent distinct and executes exactly
   assert.ok(result.timings.paidAt < result.timings.confirmedAt);
   assert.ok(result.timings.confirmedAt < result.timings.provedAt);
   assert.equal(result.timings.paymentToProofMs, result.timings.provedAt - result.timings.paidAt);
+});
+
+test("OPEN EOA mode prepares finite allowance before payment and appends the signed mode", async () => {
+  const f = fixture({ mode: "eoa" });
+  const result = await runOpenJourney({
+    request,
+    paymentPayer: PAYMENT_PAYER,
+    buyerWallet: BUYER_WALLET,
+    adapters: f.adapters,
+    confirm: f.confirm,
+    now: f.now,
+    trustedIssuers: [],
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(f.confirmations, ["wallet_preparation", "payment", "trade"]);
+  assert.equal(f.preparations(), 1);
+  assert.deepEqual(f.dryRunArgv, [
+    ["buy", "--market-id", CONDITION, "--mode", "eoa"],
+    ["buy", "--market-id", CONDITION, "--mode", "eoa"],
+  ]);
+  assert.deepEqual(f.executeArgv, [
+    ["buy", "--market-id", CONDITION, "--mode", "eoa"],
+  ]);
+});
+
+test("OPEN EOA mode rejects allowance drift before order submission", async () => {
+  const f = fixture({ mode: "eoa", eoaAllowanceRaw: "1350001" });
+  await assert.rejects(
+    runOpenJourney({
+      request,
+      paymentPayer: PAYMENT_PAYER,
+      buyerWallet: BUYER_WALLET,
+      adapters: f.adapters,
+      confirm: f.confirm,
+      now: f.now,
+      trustedIssuers: [],
+    }),
+    (error) => error?.code === "allowance_readback_mismatch",
+  );
+  assert.equal(f.executes(), 0);
+});
+
+test("OPEN EOA mode rejects a paid card whose preparation differs from the approved plan", async () => {
+  const f = fixture({
+    mode: "eoa",
+    mutateValidated: (value) => ({
+      ...value,
+      walletPreparation: {
+        ...value.walletPreparation,
+        planHash: `0x${"88".repeat(32)}`,
+      },
+    }),
+  });
+  await assert.rejects(
+    runOpenJourney({
+      request,
+      paymentPayer: PAYMENT_PAYER,
+      buyerWallet: BUYER_WALLET,
+      adapters: f.adapters,
+      confirm: f.confirm,
+      now: f.now,
+      trustedIssuers: [],
+    }),
+    (error) => error?.code === "wallet_preparation_mismatch",
+  );
+  assert.equal(f.executes(), 0);
 });
 
 test("OPEN preserves one structured consent timestamp when persistence crosses a second", async () => {

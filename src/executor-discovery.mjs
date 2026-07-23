@@ -27,7 +27,7 @@ function deepFreeze(value) {
 }
 
 export const NATIVE_OKX_EXECUTION = deepFreeze({
-  version: "conviction-native-okx-execution-v1",
+  version: "conviction-native-okx-execution-v2",
   mode: "native-okx-agentic-wallet",
   preferred: true,
   supportedActions: ["OPEN", "CLOSE"],
@@ -52,6 +52,23 @@ export const NATIVE_OKX_EXECUTION = deepFreeze({
     },
     takeProfitFallbackFixCommit: POLYMARKET_RUNTIME_COMMIT,
     tradingMode: "deposit-wallet",
+    tradingModesByAction: {
+      OPEN: ["deposit-wallet", "eoa-finite-approval"],
+      CLOSE: ["deposit-wallet"],
+      TAKE_PROFIT: ["pinned-conviction-executor"],
+    },
+    finiteEoaOpen: {
+      version: "conviction-eoa-open-preparation-v1",
+      signedPlanPointer: "$.intent.walletPreparation",
+      scope: "standard-v2-pusd-fak-buy-only",
+      directPusdFundingRequired: true,
+      finiteApprovalRequired: true,
+      unlimitedApprovalForbidden: true,
+      setApprovalForAllForbidden: true,
+      pluginArgvAppend: ["--mode", "eoa"],
+      pluginApproveFlagForbidden: true,
+      cleanupOfferedAfterProof: true,
+    },
     artifactSha256: {
       "darwin-arm64": NATIVE_OKX_RUNTIME_ARTIFACTS["darwin-arm64"].binarySha256,
       "linux-x64": NATIVE_OKX_RUNTIME_ARTIFACTS["linux-x64"].binarySha256,
@@ -179,6 +196,17 @@ function nativeNextStepFor(action) {
       argvPointer: NATIVE_OKX_EXECUTION.invocation.argvPointer,
       agentInvokesTool: true,
       convictionInstallRequired: false,
+      ...(action === "OPEN"
+        ? {
+            finiteEoaOpen: {
+              available: true,
+              signedPlanPointer: "$.intent.walletPreparation",
+              approvalConfirmation: "Prepare test wallet",
+              executionArgvAppend: ["--mode", "eoa"],
+              forbiddenExecutionArgv: ["--approve"],
+            },
+          }
+        : {}),
       proof: nativeProofFor(action),
     };
   }

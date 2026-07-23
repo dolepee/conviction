@@ -1,7 +1,7 @@
 import { parseDecimal } from "./decimal.mjs";
 import { SERVICE_PAYEE } from "./service-constants.mjs";
 
-export const BUYER_READINESS_VERSION = "conviction-buyer-readiness-v1";
+export const BUYER_READINESS_VERSION = "conviction-buyer-readiness-v2";
 export const BUYER_READINESS_URL = "https://conviction-bay.vercel.app/api/readiness";
 export const OPEN_SERVICE_PRICE_ATOMIC = "50000";
 export const DEFAULT_OPEN_BUDGET_RAW = "1250000";
@@ -19,6 +19,16 @@ const APPROVAL_DISCLOSURE = Object.freeze({
   revokeCommandAvailable: false,
   dedicatedLowBalanceWalletRecommended: true,
   convictionCanBypassWalletPolicy: false,
+  finiteEoaOpen: Object.freeze({
+    supported: true,
+    scope: "standard-v2-pusd-fak-buy-only",
+    directPusdFundingRequired: true,
+    approvalAmount: "signed maximumTotalDebit",
+    outcomeTokenApprovalRequiredForBuy: false,
+    unlimitedApprovalForbidden: true,
+    setApprovalForAllForbidden: true,
+    remainingAllowanceRevocationOfferedAfterProof: true,
+  }),
 });
 
 function address(value) {
@@ -35,13 +45,24 @@ function atomicDecimal(value, label) {
   }
 }
 
+function polygonPol(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  try {
+    return parseDecimal(String(value), 18, "Polygon POL balance");
+  } catch {
+    return null;
+  }
+}
+
 function setupPlan(input, requestedBudget) {
   const capabilities = input?.capabilities || {};
   const payer = address(input?.xLayer?.payer);
   const polygonEoa = address(input?.polygon?.eoa);
   const depositWallet = address(input?.polygon?.depositWallet);
+  const tradingMode = String(input?.polygon?.tradingMode || "");
   const xLayerBalance = atomicDecimal(input?.xLayer?.usdt0, "X Layer USD₮0 balance");
   const pUsdBalance = atomicDecimal(input?.polygon?.pUsd, "Polygon pUSD balance");
+  const polBalance = polygonPol(input?.polygon?.pol);
   const budget = requestedBudget ?? BigInt(DEFAULT_OPEN_BUDGET_RAW);
   const actions = [];
 
@@ -58,19 +79,24 @@ function setupPlan(input, requestedBudget) {
   } else if (input?.venue?.accessible !== true) {
     actions.push("RUN_POLYMARKET_CHECK_ACCESS");
   }
-  if (!depositWallet) actions.push("SETUP_DEPOSIT_WALLET");
-  if (depositWallet && input?.polygon?.tradingMode !== "deposit-wallet") {
-    actions.push("SELECT_DEPOSIT_WALLET_MODE");
+  if (tradingMode !== "deposit-wallet" && tradingMode !== "eoa") {
+    actions.push(depositWallet ? "SELECT_DEPOSIT_WALLET_MODE" : "SELECT_EOA_OPEN_MODE");
   }
+  if (tradingMode === "deposit-wallet" && !depositWallet) actions.push("SETUP_DEPOSIT_WALLET");
   if (input?.venue?.clobVersion !== "V2") actions.push("RESOLVE_POLYMARKET_V2");
-  if (input?.polygon?.approvalsReady !== true) actions.push("COMPLETE_POLYMARKET_V2_SETUP");
+  if (tradingMode === "deposit-wallet" && input?.polygon?.approvalsReady !== true) {
+    actions.push("COMPLETE_POLYMARKET_V2_SETUP");
+  }
+  if (tradingMode === "eoa" && (polBalance === null || polBalance < 10_000_000_000_000_000n)) {
+    actions.push("FUND_POLYGON_EOA_POL");
+  }
   if (xLayerBalance === null || xLayerBalance < BigInt(OPEN_SERVICE_PRICE_ATOMIC)) {
     actions.push("FUND_X_LAYER_USDT0");
   }
   if (requestedBudget === null || requestedBudget < 1_000_000n) {
     actions.push("CHOOSE_OPEN_BUDGET_AT_LEAST_1_PUSD");
   } else if (pUsdBalance === null || pUsdBalance < budget) {
-    actions.push("FUND_POLYGON_DEPOSIT_WALLET_PUSD");
+    actions.push(tradingMode === "eoa" ? "FUND_POLYGON_EOA_PUSD" : "FUND_POLYGON_DEPOSIT_WALLET_PUSD");
   }
   return Object.freeze([...new Set(actions)]);
 }
@@ -80,6 +106,10 @@ function result(status, nextAction, input, missing = []) {
     input?.requestedOpenBudget ?? "1.25",
     "requested OPEN budget",
   );
+  const tradingMode = String(input?.polygon?.tradingMode || "") || null;
+  const polygonDestination = tradingMode === "eoa"
+    ? "buyer.polygonEoa"
+    : "buyer.depositWallet";
   return Object.freeze({
     ok: status === "READY_FOR_CONVICTION",
     version: BUYER_READINESS_VERSION,
@@ -96,12 +126,13 @@ function result(status, nextAction, input, missing = []) {
       xLayerPayer: address(input?.xLayer?.payer),
       polygonEoa: address(input?.polygon?.eoa),
       depositWallet: address(input?.polygon?.depositWallet),
-      tradingMode: String(input?.polygon?.tradingMode || "") || null,
+      tradingMode,
     },
     requirements: {
       xLayerUsdt0Atomic: OPEN_SERVICE_PRICE_ATOMIC,
       polygonPusdRaw: (requestedBudget ?? BigInt(DEFAULT_OPEN_BUDGET_RAW)).toString(),
       minimumOpenBudgetRaw: "1000000",
+      ...(tradingMode === "eoa" ? { minimumPolygonPol: "0.01" } : {}),
     },
     funding: {
       xLayer: {
@@ -111,9 +142,11 @@ function result(status, nextAction, input, missing = []) {
       },
       polygon: {
         asset: "pUSD",
-        destination: "buyer.depositWallet",
-        doNotFund: "buyer.polygonEoa",
+        destination: polygonDestination,
+        doNotFund: tradingMode === "eoa" ? null : "buyer.polygonEoa",
         amountRaw: (requestedBudget ?? BigInt(DEFAULT_OPEN_BUDGET_RAW)).toString(),
+        polGasRequired: tradingMode === "eoa",
+        polGasMinimum: tradingMode === "eoa" ? "0.01" : "0",
         polGasRequiredInDepositWalletMode: false,
       },
     },
@@ -121,6 +154,7 @@ function result(status, nextAction, input, missing = []) {
     observed: {
       xLayerUsdt0: input?.xLayer?.usdt0 ?? null,
       polygonPusd: input?.polygon?.pUsd ?? null,
+      polygonPol: input?.polygon?.pol ?? null,
       approvalsReady: input?.polygon?.approvalsReady === true,
       regionalAccess: input?.venue?.accessible ?? null,
       clobVersion: input?.venue?.clobVersion ?? null,
@@ -161,8 +195,9 @@ export function buyerReadinessContract() {
       polygon: {
         eoa: "0x address",
         depositWallet: "0x address or null",
-        tradingMode: "deposit-wallet | other | null",
+        tradingMode: "deposit-wallet | eoa | other | null",
         pUsd: "decimal string",
+        pol: "decimal string; required for eoa mode",
         approvalsReady: "boolean",
       },
       venue: {
@@ -206,6 +241,7 @@ export function classifyBuyerReadiness(input = {}) {
 
   const polygonEoa = address(input?.polygon?.eoa);
   const depositWallet = address(input?.polygon?.depositWallet);
+  const tradingMode = String(input?.polygon?.tradingMode || "");
   const missingIdentity = [
     ...(payer ? [] : ["xLayer.payer"]),
     ...(polygonEoa ? [] : ["polygon.eoa"]),
@@ -225,20 +261,20 @@ export function classifyBuyerReadiness(input = {}) {
   if (input?.venue?.accessible !== true) {
     return result("REGION_CHECK_REQUIRED", "RUN_POLYMARKET_CHECK_ACCESS", input, ["venue.accessible"]);
   }
-  if (!depositWallet) {
+  if (tradingMode !== "deposit-wallet" && tradingMode !== "eoa") {
+    return result(
+      "BUYER_SETUP_REQUIRED",
+      depositWallet ? "SELECT_DEPOSIT_WALLET_MODE" : "SELECT_EOA_OPEN_MODE",
+      input,
+      ["polygon.tradingMode"],
+    );
+  }
+  if (tradingMode === "deposit-wallet" && !depositWallet) {
     return result(
       "BUYER_SETUP_REQUIRED",
       "SETUP_DEPOSIT_WALLET",
       input,
       ["polygon.depositWallet", "polygon.approvalsReady"],
-    );
-  }
-  if (input?.polygon?.tradingMode !== "deposit-wallet") {
-    return result(
-      "BUYER_SETUP_REQUIRED",
-      "SELECT_DEPOSIT_WALLET_MODE",
-      input,
-      ["polygon.tradingMode"],
     );
   }
   if (input?.venue?.clobVersion !== "V2") {
@@ -249,12 +285,25 @@ export function classifyBuyerReadiness(input = {}) {
       ["venue.clobVersion"],
     );
   }
-  if (input?.polygon?.approvalsReady !== true) {
+  if (tradingMode === "deposit-wallet" && input?.polygon?.approvalsReady !== true) {
     return result(
       "BUYER_SETUP_REQUIRED",
       "COMPLETE_POLYMARKET_V2_SETUP",
       input,
       ["polygon.approvalsReady"],
+    );
+  }
+
+  if (
+    tradingMode === "eoa" &&
+    (polygonPol(input?.polygon?.pol) === null ||
+      polygonPol(input?.polygon?.pol) < 10_000_000_000_000_000n)
+  ) {
+    return result(
+      "BUYER_SETUP_REQUIRED",
+      "FUND_POLYGON_EOA_POL",
+      input,
+      ["polygon.pol"],
     );
   }
 
@@ -284,11 +333,15 @@ export function classifyBuyerReadiness(input = {}) {
   if (pUsdBalance === null || pUsdBalance < requestedBudget) {
     return result(
       "BUYER_SETUP_REQUIRED",
-      "FUND_POLYGON_DEPOSIT_WALLET_PUSD",
+      tradingMode === "eoa" ? "FUND_POLYGON_EOA_PUSD" : "FUND_POLYGON_DEPOSIT_WALLET_PUSD",
       input,
       ["polygon.pUsd"],
     );
   }
 
-  return result("READY_FOR_CONVICTION", "RUN_FREE_PREVIEW", input);
+  return result(
+    "READY_FOR_CONVICTION",
+    tradingMode === "eoa" ? "RUN_FREE_PREVIEW_THEN_PREPARE_FINITE_EOA_ALLOWANCE" : "RUN_FREE_PREVIEW",
+    input,
+  );
 }

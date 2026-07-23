@@ -107,13 +107,64 @@ test("missing deposit wallet is recoverable buyer setup", () => {
     },
   }));
   assert.equal(result.status, "BUYER_SETUP_REQUIRED");
-  assert.equal(result.nextAction, "SETUP_DEPOSIT_WALLET");
+  assert.equal(result.nextAction, "SELECT_EOA_OPEN_MODE");
   assert.equal(result.recoverable, true);
   assert.deepEqual(result.remainingActions, [
-    "SETUP_DEPOSIT_WALLET",
-    "COMPLETE_POLYMARKET_V2_SETUP",
+    "SELECT_EOA_OPEN_MODE",
     "FUND_POLYGON_DEPOSIT_WALLET_PUSD",
   ]);
+});
+
+test("fresh buyer can become OPEN-ready through finite-approval EOA mode", () => {
+  const result = classifyBuyerReadiness(ready({
+    polygon: {
+      eoa: EOA,
+      depositWallet: null,
+      tradingMode: "eoa",
+      pUsd: "3.60",
+      pol: "0.05",
+      approvalsReady: false,
+    },
+    requestedOpenBudget: "3.575",
+  }));
+  assert.equal(result.ok, true);
+  assert.equal(result.status, "READY_FOR_CONVICTION");
+  assert.equal(result.nextAction, "RUN_FREE_PREVIEW_THEN_PREPARE_FINITE_EOA_ALLOWANCE");
+  assert.equal(result.buyer.depositWallet, null);
+  assert.equal(result.funding.polygon.destination, "buyer.polygonEoa");
+  assert.equal(result.funding.polygon.polGasRequired, true);
+  assert.equal(result.requirements.minimumPolygonPol, "0.01");
+  assert.equal(result.approvalDisclosure.finiteEoaOpen.unlimitedApprovalForbidden, true);
+  assert.equal(result.approvalDisclosure.finiteEoaOpen.outcomeTokenApprovalRequiredForBuy, false);
+  assert.deepEqual(result.remainingActions, []);
+});
+
+test("finite EOA mode requires direct pUSD and Polygon gas before preview", () => {
+  const noGas = classifyBuyerReadiness(ready({
+    polygon: {
+      eoa: EOA,
+      depositWallet: null,
+      tradingMode: "eoa",
+      pUsd: "3.60",
+      pol: "0.009999",
+      approvalsReady: false,
+    },
+    requestedOpenBudget: "3.575",
+  }));
+  assert.equal(noGas.nextAction, "FUND_POLYGON_EOA_POL");
+
+  const noPusd = classifyBuyerReadiness(ready({
+    polygon: {
+      eoa: EOA,
+      depositWallet: null,
+      tradingMode: "eoa",
+      pUsd: "3.574999",
+      pol: "0.05",
+      approvalsReady: false,
+    },
+    requestedOpenBudget: "3.575",
+  }));
+  assert.equal(noPusd.nextAction, "FUND_POLYGON_EOA_PUSD");
 });
 
 test("readiness returns one actionable blocker in deterministic order", () => {
