@@ -5201,10 +5201,9 @@ async function main() {
       );
       const allowanceRaw = await polygonPusdAllowanceRaw(plan.owner, plan.spender);
       if (
-        BigInt(allowanceRaw) < BigInt(plan.allowanceReadback.minimumRaw) ||
-        BigInt(allowanceRaw) > BigInt(plan.allowanceReadback.maximumRaw)
+        BigInt(allowanceRaw) !== BigInt(plan.allowanceReadback.maximumRaw)
       ) {
-        throw Object.assign(new Error("Finite pUSD allowance readback is outside the signed bounds"), {
+        throw Object.assign(new Error("Finite pUSD allowance readback does not equal the signed debit ceiling"), {
           code: "allowance_readback_mismatch",
           details: {
             allowanceRaw,
@@ -5479,6 +5478,28 @@ async function main() {
             trustedIssuers: pinnedRegistry,
             now: Date.now(),
           });
+          const lockedDebitRaw = BigInt(lockedCard.bounds?.maximumTotalDebitRaw || "-1");
+          if (BigInt(lockedReadiness.pUsdBalanceRaw ?? -1) < lockedDebitRaw) {
+            throw Object.assign(new Error("Active trading wallet lacks enough pUSD immediately before OPEN"), {
+              code: "insufficient_trade_balance",
+            });
+          }
+          if (requestedTradingMode === "eoa") {
+            if (!/^\d+$/.test(String(lockedReadiness.pUsdAllowanceRaw || ""))) {
+              throw Object.assign(new Error("Finite EOA pUSD allowance was not read immediately before OPEN"), {
+                code: "missing_finite_allowance",
+              });
+            }
+            if (BigInt(lockedReadiness.pUsdAllowanceRaw) !== lockedDebitRaw) {
+              throw Object.assign(new Error("Finite EOA pUSD allowance differs from the signed debit ceiling immediately before OPEN"), {
+                code: "allowance_readback_mismatch",
+                details: {
+                  allowanceRaw: lockedReadiness.pUsdAllowanceRaw,
+                  maximumRaw: lockedCard.bounds?.maximumTotalDebitRaw,
+                },
+              });
+            }
+          }
           const preDryRunWindow = requireExecutionLaunchWindow(lockedCard);
           const lockedDryRun = await commandJson(
             polymarketPluginCommand(),
