@@ -25,6 +25,7 @@ const previewStatus = document.querySelector("#preview-status");
 const formStatus = document.querySelector("#form-status");
 const verificationStatus = document.querySelector("#verification-status");
 const verificationResult = document.querySelector("#verification-result");
+const walletSetupStatus = document.querySelector("[data-wallet-setup-status]");
 
 const fieldNamesByErrorCode = {
   missing_market: ["market"],
@@ -86,6 +87,29 @@ const idleButtonLabels = new Map([
 const defaultSpendHelp = "After market lookup, Conviction suggests the selected side's live fee-inclusive viable minimum. You may set a higher total-risk bound; changing the price cap can change the exact requirement.";
 
 document.querySelector("#year").textContent = String(new Date().getFullYear());
+
+async function loadWalletSetupScaffold() {
+  if (!walletSetupStatus) return;
+  try {
+    const response = await fetch("/api/wallet-setup", {
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) throw new Error("wallet setup scaffold unavailable");
+    const scaffold = await response.json();
+    if (
+      scaffold?.status !== "FEASIBILITY_ONLY_NOT_CONFIGURED" ||
+      scaffold?.chainWritesAllowed !== false ||
+      scaffold?.paymentAllowed !== false
+    ) {
+      throw new Error("unexpected wallet setup contract");
+    }
+    walletSetupStatus.textContent = "Not configured yet: this screen cannot connect, deploy, approve, fund, pay, or trade.";
+  } catch {
+    walletSetupStatus.textContent = "Wallet Setup status is unavailable. Do not fund or connect a new wallet here.";
+  }
+}
+
+void loadWalletSetupScaffold();
 
 function escapeHtml(value) {
   return String(value)
