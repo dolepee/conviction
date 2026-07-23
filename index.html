@@ -360,9 +360,10 @@
             manual card inspector, and proof verifier. Your Agentic Wallet handles every signature.
           </p>
           <p>
-            Ready deposit wallets use Polymarket’s gasless venue setup. For a first OPEN, Conviction also supports
-            finite EOA mode: approve only the signed pUSD debit ceiling, never unlimited approval or outcome-token
-            operator approval. CLOSE and TAKE_PROFIT still require the venue’s sell-side approval model.
+            OPEN currently requires an already-ready buyer-controlled Polymarket deposit wallet. First-time venue
+            setup is Polymarket-managed and may require two reusable pUSD allowances plus three reusable outcome-token
+            operator approvals. Conviction will not bypass a wallet or organization policy, and it will not charge an
+            unsupported buyer.
           </p>
           <p>
             Polymarket V2 applies venue fees at match time rather than inside the signed order. Conviction therefore

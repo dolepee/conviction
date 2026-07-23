@@ -24,7 +24,7 @@ Send JSON:
   "maxPrice": "0.14",
   "wallet": "0x1111111111111111111111111111111111111111",
   "executionMode": "deposit-wallet",
-  "walletReadiness": { "ok": true, "accessible": true, "status": "deposit_wallet_ready", "wallet": { "deposit_wallet": "0x1111111111111111111111111111111111111111" } },
+  "walletReadiness": { "ok": true, "accessible": true, "status": "deposit_wallet_ready", "wallet": { "eoa": "0x2222222222222222222222222222222222222222", "deposit_wallet": "0x1111111111111111111111111111111111111111" } },
   "pluginPreview": { "ok": true, "dry_run": true, "data": {} },
   "rationale": "I selected NO and accept only the stated fee-inclusive bounds."
 }

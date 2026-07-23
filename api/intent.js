@@ -12,6 +12,18 @@ import { attachOpenRefreshContract } from "../src/open-card-refresh.mjs";
 
 export const PUBLIC_INTENT_QUOTE_TTL_MS = 300_000;
 
+export async function preflightPaidOpenExecution(
+  body,
+  { verifyExecutionWalletImpl = verifyDepositWalletExecution } = {},
+) {
+  requirePaidOpenExecutionMode(body);
+  const walletReadiness = verifyDepositWalletReadiness(body.wallet, body.walletReadiness);
+  const walletExecution = await verifyExecutionWalletImpl(body.wallet, {
+    owner: walletReadiness.owner,
+  });
+  return Object.freeze({ walletReadiness, walletExecution });
+}
+
 function send(response, status, body) {
   response.status(status).setHeader("content-type", "application/json; charset=utf-8");
   response.setHeader("cache-control", "no-store");
@@ -26,7 +38,11 @@ export function createIntentHandler({
   issueIntentImpl = undefined,
   verifyExecutionWalletImpl = verifyDepositWalletExecution,
 } = {}) {
-  return async function handler(request, response) {
+  const paidOpenEligibility = publicAccess
+    ? undefined
+    : (body) => preflightPaidOpenExecution(body, { verifyExecutionWalletImpl });
+
+  const handler = async function handler(request, response) {
     if (request.method !== "POST") {
       response.setHeader("allow", "POST");
       return send(response, 405, { ok: false, error: { code: "method_not_allowed" } });
@@ -34,19 +50,15 @@ export function createIntentHandler({
     try {
       const body = request.body && typeof request.body === "object" ? request.body : {};
       const compile = async () => {
-        let walletReadiness;
+        let paidPreflight;
         if (!publicAccess) {
-          requirePaidOpenExecutionMode(body);
-          walletReadiness = verifyDepositWalletReadiness(body.wallet, body.walletReadiness);
+          paidPreflight = request.convictionPaidOpenPreflight ?? await paidOpenEligibility(body);
         }
-        const [market] = await Promise.all([
-          resolveMarketImpl(body.market, { outcome: body.outcome }),
-          ...(publicAccess ? [] : [verifyExecutionWalletImpl(body.wallet, { owner: walletReadiness.owner })]),
-        ]);
+        const market = await resolveMarketImpl(body.market, { outcome: body.outcome });
         const compilation = compileIntent(body, market, compileOptions);
         if (!publicAccess) {
           verifyOpenPluginPreview(compilation, body.pluginPreview, {
-            verifiedWallet: walletReadiness.wallet,
+            verifiedWallet: paidPreflight.walletReadiness.wallet,
           });
         }
         const delivered = issueIntentImpl ? await issueIntentImpl(compilation) : compilation;
@@ -79,6 +91,13 @@ export function createIntentHandler({
       });
     }
   };
+  if (paidOpenEligibility) {
+    Object.defineProperty(handler, "prePaymentEligibility", {
+      value: paidOpenEligibility,
+      enumerable: false,
+    });
+  }
+  return handler;
 }
 
 export default createIntentHandler();

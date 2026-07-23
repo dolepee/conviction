@@ -43,7 +43,7 @@ export const POSITION_CARD_SERVICE = Object.freeze({
   priceAtomic: SERVICE_PRICE_ATOMIC,
   priceDisplay: SERVICE_PRICE_DISPLAY,
   serviceName: "Bounded YES/NO Position Card",
-  description: "Create one ready-to-sign, fee-inclusive YES or NO position card",
+  description: "Create one ready-to-sign, fee-inclusive YES or NO position card. First call POST /api/readiness; only a request that passes ready-deposit-wallet identity preflight is eligible for an x402 payment challenge.",
   deliveryNoun: "position card",
   previewHtml: "Use the free interactive OPEN preview on the Conviction home page.",
   previewHref: "/#try",
@@ -85,11 +85,87 @@ export const POSITION_CARD_SERVICE = Object.freeze({
           }),
           walletReadiness: Object.freeze({
             type: "object",
-            description: "Successful official polymarket-plugin quickstart output proving this exact ready deposit wallet.",
+            description: "Successful official polymarket-plugin quickstart result proving this exact ready deposit wallet. Both flat and { data: ... } official envelopes are accepted.",
+            anyOf: Object.freeze([
+              Object.freeze({
+                required: Object.freeze(["ok", "accessible", "status", "wallet"]),
+                properties: Object.freeze({
+                  ok: Object.freeze({ const: true }),
+                  accessible: Object.freeze({ const: true }),
+                  status: Object.freeze({ enum: Object.freeze(["deposit_wallet_ready", "active"]) }),
+                  wallet: Object.freeze({
+                    type: "object",
+                    required: Object.freeze(["eoa", "deposit_wallet"]),
+                    properties: Object.freeze({
+                      eoa: Object.freeze({ type: "string", pattern: "^0x[0-9a-fA-F]{40}$" }),
+                      deposit_wallet: Object.freeze({ type: "string", pattern: "^0x[0-9a-fA-F]{40}$" }),
+                    }),
+                  }),
+                }),
+              }),
+              Object.freeze({
+                required: Object.freeze(["ok", "data"]),
+                properties: Object.freeze({
+                  ok: Object.freeze({ const: true }),
+                  data: Object.freeze({
+                    type: "object",
+                    required: Object.freeze(["accessible", "status", "wallet"]),
+                    properties: Object.freeze({
+                      accessible: Object.freeze({ const: true }),
+                      status: Object.freeze({ enum: Object.freeze(["deposit_wallet_ready", "active"]) }),
+                      wallet: Object.freeze({
+                        type: "object",
+                        required: Object.freeze(["eoa", "deposit_wallet"]),
+                        properties: Object.freeze({
+                          eoa: Object.freeze({ type: "string", pattern: "^0x[0-9a-fA-F]{40}$" }),
+                          deposit_wallet: Object.freeze({ type: "string", pattern: "^0x[0-9a-fA-F]{40}$" }),
+                        }),
+                      }),
+                    }),
+                  }),
+                }),
+              }),
+            ]),
           }),
           pluginPreview: Object.freeze({
             type: "object",
-            description: "Successful official polymarket-plugin v0.7.0 dry-run output for these exact bounds.",
+            description: "Successful official polymarket-plugin v0.7.0 dry-run for these exact bounds. It must be a standard V2 FAK BUY and prove no order was submitted.",
+            required: Object.freeze(["ok", "dry_run", "data"]),
+            properties: Object.freeze({
+              ok: Object.freeze({ const: true }),
+              dry_run: Object.freeze({ const: true }),
+              data: Object.freeze({
+                type: "object",
+                required: Object.freeze([
+                  "clob_version",
+                  "collateral_token",
+                  "condition_id",
+                  "exchange_address",
+                  "expires",
+                  "fee_rate_bps",
+                  "limit_price",
+                  "neg_risk",
+                  "note",
+                  "order_type",
+                  "outcome",
+                  "post_only",
+                  "shares",
+                  "side",
+                  "token_id",
+                  "usdc_amount",
+                  "usdc_requested",
+                ]),
+                properties: Object.freeze({
+                  clob_version: Object.freeze({ const: "V2" }),
+                  expires: Object.freeze({ const: null }),
+                  neg_risk: Object.freeze({ const: false }),
+                  note: Object.freeze({ const: "dry-run: order not submitted" }),
+                  order_type: Object.freeze({ const: "FAK" }),
+                  post_only: Object.freeze({ const: false }),
+                  side: Object.freeze({ const: "BUY" }),
+                }),
+              }),
+            }),
           }),
           rationale: Object.freeze({
             type: "string",
@@ -106,7 +182,7 @@ export const POSITION_CARD_SERVICE = Object.freeze({
           "walletReadiness",
           "pluginPreview",
         ]),
-        additionalProperties: false,
+        additionalProperties: true,
       }),
     }),
     output: Object.freeze({
@@ -171,7 +247,7 @@ export const POSITION_MANAGER_SERVICE = Object.freeze({
           }),
           sourcePosition: Object.freeze({
             type: "object",
-            description: "Complete verified OPEN proof returned by Conviction.",
+            description: "Complete issuer-signed verified OPEN proof returned by Conviction.",
           }),
           rationale: Object.freeze({
             type: "string",
@@ -186,7 +262,23 @@ export const POSITION_MANAGER_SERVICE = Object.freeze({
           "shares",
           "sourcePosition",
         ]),
-        additionalProperties: false,
+        additionalProperties: true,
+        allOf: Object.freeze([
+          Object.freeze({
+            if: Object.freeze({
+              properties: Object.freeze({ action: Object.freeze({ enum: Object.freeze(["CLOSE", "close"]) }) }),
+              required: Object.freeze(["action"]),
+            }),
+            then: Object.freeze({ required: Object.freeze(["minPrice"]) }),
+          }),
+          Object.freeze({
+            if: Object.freeze({
+              properties: Object.freeze({ action: Object.freeze({ enum: Object.freeze(["TAKE_PROFIT", "take_profit"]) }) }),
+              required: Object.freeze(["action"]),
+            }),
+            then: Object.freeze({ required: Object.freeze(["targetPrice", "venueExpiresAt"]) }),
+          }),
+        ]),
       }),
     }),
     output: Object.freeze({

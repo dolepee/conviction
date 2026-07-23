@@ -113,6 +113,15 @@ assert.doesNotMatch(
   /First-time OPEN can instead use finite EOA mode/i,
   "handoff still advertises the rejected finite-EOA fallback",
 );
+assert.ok(
+  html.includes("OPEN currently requires an already-ready buyer-controlled Polymarket deposit wallet"),
+  "landing page omits the current ready-deposit-wallet requirement",
+);
+assert.doesNotMatch(
+  html,
+  /finite EOA mode/i,
+  "landing page still advertises the rejected finite-EOA fallback",
+);
 assert.equal(
   html.includes("0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe"),
   false,

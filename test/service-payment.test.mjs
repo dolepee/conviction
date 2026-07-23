@@ -8,7 +8,9 @@ import {
   createServiceApp,
   PAID_SERVICE_QUOTE_TTL_MS,
 } from "../api/service.js";
+import { ConvictionError } from "../src/errors.mjs";
 import { createEnvironmentIntentIssuer } from "../src/intent-issuer.mjs";
+import { createPublicApiGuard } from "../src/public-api-guard.mjs";
 import {
   readFacilitatorCredentials,
   MANAGE_SERVICE_PATH,
@@ -254,11 +256,16 @@ test("returns a standards-compliant unpaid challenge before compiling", async ()
     assert.equal(challenge.accepts[0].asset, SERVICE_ASSET);
     assert.equal(challenge.accepts[0].payTo, SERVICE_PAYEE);
     assert.equal(challenge.outputSchema.input.type, "http");
-    assert.equal(challenge.outputSchema.input.method, "POST");
-    assert.deepEqual(
+  assert.equal(challenge.outputSchema.input.method, "POST");
+  assert.deepEqual(
       challenge.outputSchema.input.body.required,
       ["market", "outcome", "spend", "maxPrice", "wallet", "executionMode", "walletReadiness", "pluginPreview"],
-    );
+  );
+  const input = challenge.outputSchema.input.body;
+  assert.equal(input.additionalProperties, true);
+  assert.equal(input.properties.walletReadiness.anyOf.length, 2);
+  assert.equal(input.properties.pluginPreview.properties.ok.const, true);
+  assert.equal(input.properties.pluginPreview.properties.dry_run.const, true);
   });
 });
 
@@ -771,7 +778,7 @@ test("the paid route bypasses public preview limits only after payment verificat
   assert.equal(facilitator.calls.settle, 1);
 });
 
-test("an EOA paid replay is refused without settlement before market or wallet RPC", async () => {
+test("an EOA-mode request is refused before x402 verification, settlement, or market resolution", async () => {
   const facilitator = trackedFacilitator();
   let upstreamCalls = 0;
   const compileHandler = createPaidIntentHandler({
@@ -812,9 +819,98 @@ test("an EOA paid replay is refused without settlement before market or wallet R
     const body = await response.json();
     assert.equal(body.error.code, "maker_not_eligible");
     assert.equal(body.error.details.paymentAllowed, false);
+    assert.equal(response.headers.get("payment-required"), null);
     assert.equal(response.headers.get("payment-response"), null);
   });
   assert.equal(upstreamCalls, 0);
-  assert.equal(facilitator.calls.verify, 1);
+  assert.equal(facilitator.calls.verify, 0);
+  assert.equal(facilitator.calls.settle, 0);
+});
+
+test("structured maker preflight is rate-limited and refuses an unsupported deposit wallet before x402", async () => {
+  const facilitator = trackedFacilitator();
+  let marketCalls = 0;
+  let walletChecks = 0;
+  const compileHandler = createPaidIntentHandler({
+    issueIntentImpl(compilation) { return compilation; },
+    async resolveMarketImpl() {
+      marketCalls += 1;
+      return LIVE_MARKET_SNAPSHOT;
+    },
+    async verifyExecutionWalletImpl(wallet) {
+      walletChecks += 1;
+      throw new ConvictionError(
+        "maker_not_eligible",
+        "Polygon factory does not bind this wallet to the buyer's Polymarket owner",
+        { wallet, paymentAllowed: false, nextAction: "USE_READY_DEPOSIT_WALLET" },
+      );
+    },
+  });
+  const app = createServiceApp(TEST_ENVIRONMENT, {
+    facilitatorClient: facilitator.client,
+    logger: quietLogger(),
+    compileHandler,
+    prePaymentOpenGuard: createPublicApiGuard({
+      limit: 1,
+      windowMs: 60_000,
+      maxBodyBytes: 32 * 1024,
+      maxMarketLength: 512,
+      maxInFlight: 1,
+    }),
+  });
+  const body = {
+    market: LIVE_MARKET_SNAPSHOT.slug,
+    outcome: "YES",
+    spend: "1.35",
+    maxPrice: "0.27",
+    wallet: "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+    executionMode: "deposit-wallet",
+    walletReadiness: {
+      ok: true,
+      accessible: true,
+      status: "deposit_wallet_ready",
+      wallet: {
+        eoa: "0x1111111111111111111111111111111111111111",
+        deposit_wallet: "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+      },
+    },
+    pluginPreview: {},
+  };
+
+  await withServer(app, async (origin) => {
+    const headers = {
+      "content-type": "application/json",
+      "x-vercel-forwarded-for": "203.0.113.71",
+    };
+    const first = await fetch(`${origin}/api/service`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    assert.equal(first.status, 422);
+    assert.equal((await first.json()).error.code, "maker_not_eligible");
+    assert.equal(first.headers.get("payment-required"), null);
+
+    const second = await fetch(`${origin}/api/service`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    assert.equal(second.status, 429);
+    assert.equal((await second.json()).error.code, "rate_limited");
+    assert.equal(second.headers.get("payment-required"), null);
+
+    const bare = await fetch(`${origin}/api/service`, {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    assert.equal(bare.status, 402);
+    assert.ok(bare.headers.get("payment-required"));
+  });
+
+  assert.equal(walletChecks, 1);
+  assert.equal(marketCalls, 0);
+  assert.equal(facilitator.calls.verify, 0);
   assert.equal(facilitator.calls.settle, 0);
 });
