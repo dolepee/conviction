@@ -95,6 +95,11 @@ test("public market lookup returns both sides without a wallet", async () => {
   assert.equal(body.outcomes.NO.bestAsk, "0.72");
   assert.equal(body.outcomes.YES.minimumMarketableBudget.minimumTotalBudget, "1.08");
   assert.equal(body.outcomes.YES.minimumMarketableBudget.minimumShares, "4");
+  assert.equal(body.outcomes.YES.minimumOrderSizeScope, "venue_resting_order_shares");
+  assert.equal(
+    body.outcomes.YES.minimumMarketableBudgetScope,
+    "immediately_marketable_order_budget",
+  );
   assert.deepEqual(calls.map(({ outcome }) => outcome).sort(), ["no", "yes"]);
   assert.equal(JSON.stringify(body).includes("wallet"), false);
 });

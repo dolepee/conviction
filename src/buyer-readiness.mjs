@@ -7,6 +7,19 @@ export const OPEN_SERVICE_PRICE_ATOMIC = "50000";
 export const DEFAULT_OPEN_BUDGET_RAW = "1250000";
 
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
+const APPROVAL_DISCLOSURE = Object.freeze({
+  setupIsVenueManaged: true,
+  setupRelayerPaid: true,
+  polygonGasRequired: false,
+  reusable: true,
+  pUsdAllowances: 2,
+  pUsdAllowanceAmount: "maximum",
+  ctfOperatorApprovals: 3,
+  ctfOperatorApprovalScope: "blanket",
+  revokeCommandAvailable: false,
+  dedicatedLowBalanceWalletRecommended: true,
+  convictionCanBypassWalletPolicy: false,
+});
 
 function address(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -20,6 +33,46 @@ function atomicDecimal(value, label) {
   } catch {
     return null;
   }
+}
+
+function setupPlan(input, requestedBudget) {
+  const capabilities = input?.capabilities || {};
+  const payer = address(input?.xLayer?.payer);
+  const polygonEoa = address(input?.polygon?.eoa);
+  const depositWallet = address(input?.polygon?.depositWallet);
+  const xLayerBalance = atomicDecimal(input?.xLayer?.usdt0, "X Layer USD₮0 balance");
+  const pUsdBalance = atomicDecimal(input?.polygon?.pUsd, "Polygon pUSD balance");
+  const budget = requestedBudget ?? BigInt(DEFAULT_OPEN_BUDGET_RAW);
+  const actions = [];
+
+  if (
+    capabilities.walletTools !== true ||
+    capabilities.x402Payment !== true ||
+    capabilities.polymarketTrading !== true
+  ) actions.push("USE_OKX_RUNTIME_WITH_WALLET_X402_AND_POLYMARKET_TRADING");
+  if (!payer) actions.push("CONNECT_X_LAYER_PAYER");
+  else if (payer === SERVICE_PAYEE) actions.push("SWITCH_TO_DISTINCT_BUYER_ACCOUNT");
+  if (!polygonEoa) actions.push("CONNECT_POLYGON_WALLET");
+  if (input?.venue?.accessible === null || input?.venue?.accessible === undefined) {
+    actions.push("RUN_POLYMARKET_CHECK_ACCESS");
+  } else if (input?.venue?.accessible === false) {
+    actions.push("STOP_NO_PAYMENT_OR_TRADE");
+  }
+  if (!depositWallet) actions.push("SETUP_DEPOSIT_WALLET");
+  if (depositWallet && input?.polygon?.tradingMode !== "deposit-wallet") {
+    actions.push("SELECT_DEPOSIT_WALLET_MODE");
+  }
+  if (input?.venue?.clobVersion !== "V2") actions.push("RESOLVE_POLYMARKET_V2");
+  if (input?.polygon?.approvalsReady !== true) actions.push("COMPLETE_POLYMARKET_V2_SETUP");
+  if (xLayerBalance === null || xLayerBalance < BigInt(OPEN_SERVICE_PRICE_ATOMIC)) {
+    actions.push("FUND_X_LAYER_USDT0");
+  }
+  if (requestedBudget === null || requestedBudget < 1_000_000n) {
+    actions.push("CHOOSE_OPEN_BUDGET_AT_LEAST_1_PUSD");
+  } else if (pUsdBalance === null || pUsdBalance < budget) {
+    actions.push("FUND_POLYGON_DEPOSIT_WALLET_PUSD");
+  }
+  return Object.freeze([...new Set(actions)]);
 }
 
 function result(status, nextAction, input, missing = []) {
@@ -50,6 +103,21 @@ function result(status, nextAction, input, missing = []) {
       polygonPusdRaw: (requestedBudget ?? BigInt(DEFAULT_OPEN_BUDGET_RAW)).toString(),
       minimumOpenBudgetRaw: "1000000",
     },
+    funding: {
+      xLayer: {
+        asset: "USD₮0",
+        destination: "buyer.xLayerPayer",
+        amountAtomic: OPEN_SERVICE_PRICE_ATOMIC,
+      },
+      polygon: {
+        asset: "pUSD",
+        destination: "buyer.depositWallet",
+        doNotFund: "buyer.polygonEoa",
+        amountRaw: (requestedBudget ?? BigInt(DEFAULT_OPEN_BUDGET_RAW)).toString(),
+        polGasRequiredInDepositWalletMode: false,
+      },
+    },
+    approvalDisclosure: APPROVAL_DISCLOSURE,
     observed: {
       xLayerUsdt0: input?.xLayer?.usdt0 ?? null,
       polygonPusd: input?.polygon?.pUsd ?? null,
@@ -58,6 +126,7 @@ function result(status, nextAction, input, missing = []) {
       clobVersion: input?.venue?.clobVersion ?? null,
     },
     missing,
+    remainingActions: setupPlan(input, requestedBudget),
     recoverable:
       status === "BUYER_SETUP_REQUIRED" ||
       status === "REGION_CHECK_REQUIRED",
@@ -102,13 +171,7 @@ export function buyerReadinessContract() {
       },
       requestedOpenBudget: "decimal string; optional, default 1.25",
     },
-    approvalDisclosure: {
-      setupIsVenueManaged: true,
-      reusable: true,
-      pUsdAllowances: 2,
-      ctfOperatorApprovals: 3,
-      convictionCanBypassWalletPolicy: false,
-    },
+    approvalDisclosure: APPROVAL_DISCLOSURE,
   });
 }
 
@@ -221,7 +284,7 @@ export function classifyBuyerReadiness(input = {}) {
   if (pUsdBalance === null || pUsdBalance < requestedBudget) {
     return result(
       "BUYER_SETUP_REQUIRED",
-      "FUND_POLYGON_PUSD",
+      "FUND_POLYGON_DEPOSIT_WALLET_PUSD",
       input,
       ["polygon.pUsd"],
     );

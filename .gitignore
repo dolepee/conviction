@@ -11,6 +11,9 @@ output/
 acceptance-report.json
 acceptance-report-b.json
 acceptance-report-c.json
+acceptance-report-*.json
+acceptance-report-b-*.json
+acceptance-report-c-*.json
 .vercel/
 .conviction-tools/
 .vercel

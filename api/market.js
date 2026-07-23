@@ -67,8 +67,10 @@ function outcomeSummary(market) {
     suggestedMaxPrice: suggestion?.suggestedMaxPrice || null,
     tickSize: market.tickSize,
     minimumOrderSize: market.minOrderSize,
+    minimumOrderSizeScope: "venue_resting_order_shares",
     feeBps: market.feeBps,
     minimumMarketableBudget: suggestion?.minimum || null,
+    minimumMarketableBudgetScope: "immediately_marketable_order_budget",
   };
 }
 
