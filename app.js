@@ -459,7 +459,7 @@ function renderCompiled(payload) {
         <a href="https://web3.okx.com/onchainos/plugins/detail/polymarket-plugin" target="_blank" rel="noreferrer">Official Polymarket plugin <span aria-hidden="true">↗</span></a>
         <a href="https://web3.okx.com/onchainos/dev-docs/home/install-your-agentic-wallet" target="_blank" rel="noreferrer">Agentic Wallet setup <span aria-hidden="true">↗</span></a>
       </div>
-      <p class="approval-warning"><strong>Approval warning:</strong> ready deposit-wallet buyers can use the standard gasless venue setup. First-time OPEN can instead use finite EOA mode: approve only the signed pUSD debit ceiling, no unlimited approval and no outcome-token operator approval.</p>
+      <p class="approval-warning"><strong>Approval warning:</strong> OPEN is currently available only to a ready buyer-controlled Polymarket deposit wallet. First-time venue setup is Polymarket-managed and may require broad reusable approvals; Conviction will not bypass your wallet or organization policy, and will not charge an unsupported buyer.</p>
     </div>
   `;
 

@@ -104,6 +104,15 @@ assert.ok(html.includes("Total risk, fees included"), "compiler form does not la
 assert.ok(app.includes('id="download-dossier"'), "compiler UI does not expose the intent dossier");
 assert.ok(app.includes("Copy secure dry-run request"), "compiler UI does not expose a safe Agentic Wallet handoff");
 assert.ok(app.includes("Pasting it is not live-trading authorization"), "handoff does not separate copy from authorization");
+assert.ok(
+  app.includes("OPEN is currently available only to a ready buyer-controlled Polymarket deposit wallet"),
+  "handoff omits the current ready-deposit-wallet requirement",
+);
+assert.doesNotMatch(
+  app,
+  /First-time OPEN can instead use finite EOA mode/i,
+  "handoff still advertises the rejected finite-EOA fallback",
+);
 assert.equal(
   html.includes("0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe"),
   false,
