@@ -144,6 +144,45 @@ export function bindPaidOpenPreflight(requestBody, {
   return requestBody;
 }
 
+export function previewOpenExecutionArgv(previewValue) {
+  const preview = previewValue?.preview || previewValue;
+  const market = preview?.market;
+  const order = preview?.order;
+  const required = [
+    market?.conditionId,
+    market?.outcomeTokenId,
+    order?.outcome,
+    order?.maximumOrderPrincipal,
+    order?.maxPrice,
+  ];
+  if (
+    preview?.version !== "conviction-preview-v1" ||
+    preview?.executable !== false ||
+    required.some((value) => typeof value !== "string" || value.length === 0) ||
+    order?.side !== "BUY" ||
+    order?.orderType !== "FAK"
+  ) {
+    throw Object.assign(new Error("Free OPEN preview cannot produce an exact dry-run request"), {
+      code: "invalid_preview",
+    });
+  }
+  return [
+    "buy",
+    "--market-id",
+    market.conditionId,
+    "--token-id",
+    market.outcomeTokenId,
+    "--outcome",
+    order.outcome.toLowerCase(),
+    "--amount",
+    order.maximumOrderPrincipal,
+    "--price",
+    order.maxPrice,
+    "--order-type",
+    "FAK",
+  ];
+}
+
 function journalRevision(value, label = "Reconciliation journal") {
   const revision = value?.journalRevision ?? 0;
   if (!Number.isSafeInteger(revision) || revision < 0) {
@@ -5306,7 +5345,7 @@ async function main() {
       }
       const pluginPreview = await commandJson(
         polymarketPluginCommand(),
-        [...json.preview.executionCard.argv, "--dry-run"],
+        [...previewOpenExecutionArgv(json.preview), "--dry-run"],
         "Pre-payment Polymarket dry run",
       );
       bindPaidOpenPreflight(requestBody, {
