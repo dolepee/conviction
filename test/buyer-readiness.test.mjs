@@ -64,6 +64,7 @@ test("ready buyer advances to the free preview", () => {
   assert.equal(result.ok, true);
   assert.equal(result.status, "READY_FOR_CONVICTION");
   assert.equal(result.nextAction, "RUN_FREE_PREVIEW_AND_PLUGIN_DRY_RUN");
+  assert.equal(result.paymentAllowed, true);
   assert.equal(result.service.priceAtomic, "50000");
   assert.equal(result.service.payee, SERVICE_PAYEE);
   assert.equal(result.requirements.polygonPusdRaw, "1250000");
@@ -85,6 +86,9 @@ test("unsupported is reserved for genuinely missing runtime capabilities", () =>
   }));
   assert.equal(result.status, "UNSUPPORTED_EXECUTION_RUNTIME");
   assert.deepEqual(result.missing, ["capabilities.x402Payment"]);
+  assert.equal(result.paymentAllowed, false);
+  assert.equal(result.service, undefined);
+  assert.equal(result.funding, undefined);
   assert.equal(result.recoverable, false);
 });
 
@@ -94,9 +98,24 @@ test("treasury payer is rejected before any setup or payment", () => {
   }));
   assert.equal(result.status, "SELF_PAYMENT_FORBIDDEN");
   assert.equal(result.nextAction, "SWITCH_TO_DISTINCT_BUYER_ACCOUNT");
+  assert.equal(result.paymentAllowed, false);
+  assert.equal(result.service, undefined);
+  assert.equal(result.funding, undefined);
 });
 
-test("missing deposit wallet is recoverable buyer setup", () => {
+test("missing X Layer payer cannot receive funding or payment guidance", () => {
+  const result = classifyBuyerReadiness(ready({
+    xLayer: { payer: null, usdt0: "0" },
+  }));
+  assert.equal(result.status, "BUYER_SETUP_REQUIRED");
+  assert.equal(result.nextAction, "CONNECT_X_LAYER_PAYER");
+  assert.equal(result.paymentAllowed, false);
+  assert.equal(result.service, undefined);
+  assert.equal(result.funding, undefined);
+  assert.equal(result.recoverable, false);
+});
+
+test("missing deposit wallet is a no-payment stop, not an in-session setup loop", () => {
   const result = classifyBuyerReadiness(ready({
     polygon: {
       eoa: EOA,
@@ -107,12 +126,14 @@ test("missing deposit wallet is recoverable buyer setup", () => {
     },
   }));
   assert.equal(result.status, "BUYER_SETUP_REQUIRED");
-  assert.equal(result.nextAction, "USE_READY_DEPOSIT_WALLET");
-  assert.equal(result.recoverable, true);
-  assert.deepEqual(result.remainingActions, [
-    "USE_READY_DEPOSIT_WALLET",
-    "FUND_POLYGON_DEPOSIT_WALLET_PUSD",
-  ]);
+  assert.equal(result.nextAction, "USE_READY_DEPOSIT_WALLET_OR_STOP");
+  assert.equal(result.paymentAllowed, false);
+  assert.equal(result.recoverable, false);
+  assert.equal(result.canResumeWithReadyDepositWallet, true);
+  assert.equal(result.service, undefined);
+  assert.equal(result.funding, undefined);
+  assert.deepEqual(result.remainingActions, ["USE_READY_DEPOSIT_WALLET_OR_STOP"]);
+  assert.doesNotMatch(JSON.stringify(result), /SETUP_DEPOSIT_WALLET|COMPLETE_POLYMARKET_V2_SETUP|FUND_/);
 });
 
 test("fresh EOA is routed away before payment after the live V2 maker rejection", () => {
@@ -129,13 +150,15 @@ test("fresh EOA is routed away before payment after the live V2 maker rejection"
   }));
   assert.equal(result.ok, false);
   assert.equal(result.status, "BUYER_SETUP_REQUIRED");
-  assert.equal(result.nextAction, "USE_READY_DEPOSIT_WALLET");
+  assert.equal(result.nextAction, "USE_READY_DEPOSIT_WALLET_OR_STOP");
+  assert.equal(result.paymentAllowed, false);
+  assert.equal(result.recoverable, false);
   assert.equal(result.buyer.depositWallet, null);
-  assert.equal(result.funding.polygon.destination, "buyer.depositWallet");
-  assert.equal(result.funding.polygon.polGasRequired, false);
+  assert.equal(result.service, undefined);
+  assert.equal(result.funding, undefined);
   assert.equal(result.approvalDisclosure.finiteEoaOpen.supported, false);
   assert.equal(result.approvalDisclosure.finiteEoaOpen.status, "disabled-after-live-maker-rejection");
-  assert.deepEqual(result.remainingActions, ["USE_READY_DEPOSIT_WALLET"]);
+  assert.deepEqual(result.remainingActions, ["USE_READY_DEPOSIT_WALLET_OR_STOP"]);
 });
 
 test("finite EOA funding no longer makes an unsupported maker chargeable", () => {
@@ -150,7 +173,9 @@ test("finite EOA funding no longer makes an unsupported maker chargeable", () =>
     },
     requestedOpenBudget: "3.575",
   }));
-  assert.equal(noGas.nextAction, "USE_READY_DEPOSIT_WALLET");
+  assert.equal(noGas.nextAction, "USE_READY_DEPOSIT_WALLET_OR_STOP");
+  assert.equal(noGas.paymentAllowed, false);
+  assert.equal(noGas.funding, undefined);
 
   const noPusd = classifyBuyerReadiness(ready({
     polygon: {
@@ -163,7 +188,9 @@ test("finite EOA funding no longer makes an unsupported maker chargeable", () =>
     },
     requestedOpenBudget: "3.575",
   }));
-  assert.equal(noPusd.nextAction, "USE_READY_DEPOSIT_WALLET");
+  assert.equal(noPusd.nextAction, "USE_READY_DEPOSIT_WALLET_OR_STOP");
+  assert.equal(noPusd.paymentAllowed, false);
+  assert.equal(noPusd.funding, undefined);
 });
 
 test("readiness returns one actionable blocker in deterministic order", () => {
@@ -178,10 +205,11 @@ test("readiness returns one actionable blocker in deterministic order", () => {
     },
   }));
   assert.equal(setup.nextAction, "FUND_X_LAYER_USDT0");
-  assert.deepEqual(setup.remainingActions, [
-    "FUND_X_LAYER_USDT0",
-    "FUND_POLYGON_DEPOSIT_WALLET_PUSD",
-  ]);
+  assert.equal(setup.paymentAllowed, false);
+  assert.equal(setup.recoverable, true);
+  assert.equal(setup.service, undefined);
+  assert.equal(setup.funding.polygon.destination, "buyer.depositWallet");
+  assert.deepEqual(setup.remainingActions, ["FUND_X_LAYER_USDT0"]);
 
   const polygon = classifyBuyerReadiness(ready({
     polygon: {
@@ -193,6 +221,8 @@ test("readiness returns one actionable blocker in deterministic order", () => {
     },
   }));
   assert.equal(polygon.nextAction, "FUND_POLYGON_DEPOSIT_WALLET_PUSD");
+  assert.equal(polygon.paymentAllowed, false);
+  assert.equal(polygon.recoverable, true);
 });
 
 test("region states stop or request the official check", () => {
@@ -205,6 +235,9 @@ test("region states stop or request the official check", () => {
   }));
   assert.equal(unchecked.status, "REGION_CHECK_REQUIRED");
   assert.equal(unchecked.nextAction, "RUN_POLYMARKET_CHECK_ACCESS");
+  assert.equal(unchecked.paymentAllowed, false);
+  assert.equal(unchecked.service, undefined);
+  assert.equal(unchecked.funding, undefined);
   assert.equal(unchecked.remainingActions.includes("RUN_POLYMARKET_CHECK_ACCESS"), true);
 
   const stringAccess = classifyBuyerReadiness(ready({

@@ -457,9 +457,9 @@ function renderCompiled(payload) {
       </div>
       <div class="handoff-links">
         <a href="https://web3.okx.com/onchainos/plugins/detail/polymarket-plugin" target="_blank" rel="noreferrer">Official Polymarket plugin <span aria-hidden="true">↗</span></a>
-        <a href="https://web3.okx.com/onchainos/dev-docs/home/install-your-agentic-wallet" target="_blank" rel="noreferrer">Agentic Wallet setup <span aria-hidden="true">↗</span></a>
+        <a href="https://web3.okx.com/onchainos/dev-docs/home/install-your-agentic-wallet" target="_blank" rel="noreferrer">Agentic Wallet documentation <span aria-hidden="true">↗</span></a>
       </div>
-      <p class="approval-warning"><strong>Approval warning:</strong> OPEN is currently available only to a ready buyer-controlled Polymarket deposit wallet. First-time venue setup is Polymarket-managed and may require broad reusable approvals; Conviction will not bypass your wallet or organization policy, and will not charge an unsupported buyer.</p>
+      <p class="approval-warning"><strong>Approval warning:</strong> OPEN is currently available only to a ready buyer-controlled Polymarket deposit wallet. This handoff is not a first-time venue-setup route: if your wallet is not already ready, stop without funding or payment. Conviction will not bypass your wallet or organization policy.</p>
     </div>
   `;
 

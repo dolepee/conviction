@@ -827,6 +827,45 @@ test("an EOA-mode request is refused before x402 verification, settlement, or ma
   assert.equal(facilitator.calls.settle, 0);
 });
 
+test("an incomplete nonempty OPEN replay is refused before x402", async () => {
+  const facilitator = trackedFacilitator();
+  let upstreamCalls = 0;
+  const compileHandler = createPaidIntentHandler({
+    issueIntentImpl(compilation) { return compilation; },
+    async resolveMarketImpl() {
+      upstreamCalls += 1;
+      return LIVE_MARKET_SNAPSHOT;
+    },
+  });
+  const app = createServiceApp(TEST_ENVIRONMENT, {
+    facilitatorClient: facilitator.client,
+    logger: quietLogger(),
+    compileHandler,
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/service`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        market: LIVE_MARKET_SNAPSHOT.slug,
+        outcome: "YES",
+        spend: "1.35",
+        maxPrice: "0.27",
+      }),
+    });
+    assert.equal(response.status, 422);
+    const body = await response.json();
+    assert.equal(body.error.code, "maker_not_eligible");
+    assert.equal(body.error.details.paymentAllowed, false);
+    assert.equal(response.headers.get("payment-required"), null);
+    assert.equal(response.headers.get("payment-response"), null);
+  });
+  assert.equal(upstreamCalls, 0);
+  assert.equal(facilitator.calls.verify, 0);
+  assert.equal(facilitator.calls.settle, 0);
+});
+
 test("structured maker preflight is rate-limited and refuses an unsupported deposit wallet before x402", async () => {
   const facilitator = trackedFacilitator();
   let marketCalls = 0;
@@ -842,7 +881,7 @@ test("structured maker preflight is rate-limited and refuses an unsupported depo
       throw new ConvictionError(
         "maker_not_eligible",
         "Polygon factory does not bind this wallet to the buyer's Polymarket owner",
-        { wallet, paymentAllowed: false, nextAction: "USE_READY_DEPOSIT_WALLET" },
+        { wallet, paymentAllowed: false, nextAction: "USE_READY_DEPOSIT_WALLET_OR_STOP" },
       );
     },
   });

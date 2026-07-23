@@ -1,7 +1,7 @@
 import { parseDecimal } from "./decimal.mjs";
 import { SERVICE_PAYEE } from "./service-constants.mjs";
 
-export const BUYER_READINESS_VERSION = "conviction-buyer-readiness-v2";
+export const BUYER_READINESS_VERSION = "conviction-buyer-readiness-v3";
 export const BUYER_READINESS_URL = "https://conviction-bay.vercel.app/api/readiness";
 export const OPEN_SERVICE_PRICE_ATOMIC = "50000";
 export const DEFAULT_OPEN_BUDGET_RAW = "1250000";
@@ -40,47 +40,22 @@ function atomicDecimal(value, label) {
   }
 }
 
-function setupPlan(input, requestedBudget) {
+function depositWalletRouteReady(input) {
   const capabilities = input?.capabilities || {};
   const payer = address(input?.xLayer?.payer);
-  const polygonEoa = address(input?.polygon?.eoa);
-  const depositWallet = address(input?.polygon?.depositWallet);
-  const tradingMode = String(input?.polygon?.tradingMode || "");
-  const xLayerBalance = atomicDecimal(input?.xLayer?.usdt0, "X Layer USD₮0 balance");
-  const pUsdBalance = atomicDecimal(input?.polygon?.pUsd, "Polygon pUSD balance");
-  const budget = requestedBudget ?? BigInt(DEFAULT_OPEN_BUDGET_RAW);
-  const actions = [];
-
-  if (
-    capabilities.walletTools !== true ||
-    capabilities.x402Payment !== true ||
-    capabilities.polymarketTrading !== true
-  ) actions.push("USE_OKX_RUNTIME_WITH_WALLET_X402_AND_POLYMARKET_TRADING");
-  if (!payer) actions.push("CONNECT_X_LAYER_PAYER");
-  else if (payer === SERVICE_PAYEE) actions.push("SWITCH_TO_DISTINCT_BUYER_ACCOUNT");
-  if (!polygonEoa) actions.push("CONNECT_POLYGON_WALLET");
-  if (input?.venue?.accessible === false) {
-    actions.push("STOP_NO_PAYMENT_OR_TRADE");
-  } else if (input?.venue?.accessible !== true) {
-    actions.push("RUN_POLYMARKET_CHECK_ACCESS");
-  }
-  if (tradingMode !== "deposit-wallet") {
-    actions.push(depositWallet ? "SELECT_DEPOSIT_WALLET_MODE" : "USE_READY_DEPOSIT_WALLET");
-  }
-  if (tradingMode === "deposit-wallet" && !depositWallet) actions.push("SETUP_DEPOSIT_WALLET");
-  if (input?.venue?.clobVersion !== "V2") actions.push("RESOLVE_POLYMARKET_V2");
-  if (tradingMode === "deposit-wallet" && input?.polygon?.approvalsReady !== true) {
-    actions.push("COMPLETE_POLYMARKET_V2_SETUP");
-  }
-  if (xLayerBalance === null || xLayerBalance < BigInt(OPEN_SERVICE_PRICE_ATOMIC)) {
-    actions.push("FUND_X_LAYER_USDT0");
-  }
-  if (requestedBudget === null || requestedBudget < 1_000_000n) {
-    actions.push("CHOOSE_OPEN_BUDGET_AT_LEAST_1_PUSD");
-  } else if (pUsdBalance === null || pUsdBalance < budget) {
-    actions.push("FUND_POLYGON_DEPOSIT_WALLET_PUSD");
-  }
-  return Object.freeze([...new Set(actions)]);
+  return (
+    capabilities.walletTools === true &&
+    capabilities.x402Payment === true &&
+    capabilities.polymarketTrading === true &&
+    payer !== null &&
+    payer !== SERVICE_PAYEE &&
+    address(input?.polygon?.eoa) !== null &&
+    address(input?.polygon?.depositWallet) !== null &&
+    input?.polygon?.tradingMode === "deposit-wallet" &&
+    input?.polygon?.approvalsReady === true &&
+    input?.venue?.accessible === true &&
+    input?.venue?.clobVersion === "V2"
+  );
 }
 
 function result(status, nextAction, input, missing = []) {
@@ -90,45 +65,57 @@ function result(status, nextAction, input, missing = []) {
   );
   const tradingMode = String(input?.polygon?.tradingMode || "") || null;
   const polygonDestination = "buyer.depositWallet";
+  const routeReady = depositWalletRouteReady(input);
+  const paymentAllowed = status === "READY_FOR_CONVICTION";
+  const fundingGuidanceAllowed =
+    routeReady && (paymentAllowed || status === "BUYER_SETUP_REQUIRED");
+  const canResumeInThisRuntime =
+    status === "REGION_CHECK_REQUIRED" ||
+    (status === "BUYER_SETUP_REQUIRED" && routeReady);
   return Object.freeze({
     ok: status === "READY_FOR_CONVICTION",
     version: BUYER_READINESS_VERSION,
     status,
     nextAction,
-    service: {
-      product: "OPEN",
-      endpoint: "https://conviction-bay.vercel.app/api/service",
-      network: "eip155:196",
-      priceAtomic: OPEN_SERVICE_PRICE_ATOMIC,
-      payee: SERVICE_PAYEE,
-    },
+    paymentAllowed,
     buyer: {
       xLayerPayer: address(input?.xLayer?.payer),
       polygonEoa: address(input?.polygon?.eoa),
       depositWallet: address(input?.polygon?.depositWallet),
       tradingMode,
     },
-    requirements: {
-      xLayerUsdt0Atomic: OPEN_SERVICE_PRICE_ATOMIC,
-      polygonPusdRaw: (requestedBudget ?? BigInt(DEFAULT_OPEN_BUDGET_RAW)).toString(),
-      minimumOpenBudgetRaw: "1000000",
-    },
-    funding: {
-      xLayer: {
-        asset: "USD₮0",
-        destination: "buyer.xLayerPayer",
-        amountAtomic: OPEN_SERVICE_PRICE_ATOMIC,
+    ...(paymentAllowed ? {
+      service: {
+        product: "OPEN",
+        endpoint: "https://conviction-bay.vercel.app/api/service",
+        network: "eip155:196",
+        priceAtomic: OPEN_SERVICE_PRICE_ATOMIC,
+        payee: SERVICE_PAYEE,
       },
-      polygon: {
-        asset: "pUSD",
-        destination: polygonDestination,
-        doNotFund: "buyer.polygonEoa",
-        amountRaw: (requestedBudget ?? BigInt(DEFAULT_OPEN_BUDGET_RAW)).toString(),
-        polGasRequired: false,
-        polGasMinimum: "0",
-        polGasRequiredInDepositWalletMode: false,
+    } : {}),
+    ...(fundingGuidanceAllowed ? {
+      requirements: {
+        xLayerUsdt0Atomic: OPEN_SERVICE_PRICE_ATOMIC,
+        polygonPusdRaw: (requestedBudget ?? BigInt(DEFAULT_OPEN_BUDGET_RAW)).toString(),
+        minimumOpenBudgetRaw: "1000000",
       },
-    },
+      funding: {
+        xLayer: {
+          asset: "USD₮0",
+          destination: "buyer.xLayerPayer",
+          amountAtomic: OPEN_SERVICE_PRICE_ATOMIC,
+        },
+        polygon: {
+          asset: "pUSD",
+          destination: polygonDestination,
+          doNotFund: "buyer.polygonEoa",
+          amountRaw: (requestedBudget ?? BigInt(DEFAULT_OPEN_BUDGET_RAW)).toString(),
+          polGasRequired: false,
+          polGasMinimum: "0",
+          polGasRequiredInDepositWalletMode: false,
+        },
+      },
+    } : {}),
     approvalDisclosure: APPROVAL_DISCLOSURE,
     observed: {
       xLayerUsdt0: input?.xLayer?.usdt0 ?? null,
@@ -140,10 +127,12 @@ function result(status, nextAction, input, missing = []) {
       eoaMakerAllowed: input?.venue?.eoaMakerAllowed ?? null,
     },
     missing,
-    remainingActions: setupPlan(input, requestedBudget),
-    recoverable:
-      status === "BUYER_SETUP_REQUIRED" ||
-      status === "REGION_CHECK_REQUIRED",
+    remainingActions: status === "READY_FOR_CONVICTION" ? [] : [nextAction],
+    recoverable: canResumeInThisRuntime,
+    ...(status === "BUYER_SETUP_REQUIRED" && !routeReady ? {
+      canResumeWithReadyDepositWallet: true,
+      stopReason: "A fresh or unfinished Polymarket deposit-wallet setup is not a Conviction in-session path. Do not fund, approve, pay, or trade until a buyer-controlled ready deposit wallet is independently available.",
+    } : {}),
   });
 }
 
@@ -153,7 +142,7 @@ export function buyerReadinessContract() {
     endpoint: BUYER_READINESS_URL,
     method: "POST",
     readOnly: true,
-    description: "Classifies buyer-local OKX and Polymarket readiness before preview or payment.",
+    description: "Classifies buyer-local OKX and Polymarket readiness before preview or payment. A fresh or unfinished deposit-wallet setup is not an in-session Conviction onboarding path.",
     statuses: [
       "READY_FOR_CONVICTION",
       "BUYER_SETUP_REQUIRED",
@@ -244,7 +233,7 @@ export function classifyBuyerReadiness(input = {}) {
   if (tradingMode !== "deposit-wallet") {
     return result(
       "BUYER_SETUP_REQUIRED",
-      depositWallet ? "SELECT_DEPOSIT_WALLET_MODE" : "USE_READY_DEPOSIT_WALLET",
+      "USE_READY_DEPOSIT_WALLET_OR_STOP",
       input,
       ["polygon.depositWallet", "polygon.tradingMode"],
     );
@@ -252,7 +241,7 @@ export function classifyBuyerReadiness(input = {}) {
   if (tradingMode === "deposit-wallet" && !depositWallet) {
     return result(
       "BUYER_SETUP_REQUIRED",
-      "SETUP_DEPOSIT_WALLET",
+      "USE_READY_DEPOSIT_WALLET_OR_STOP",
       input,
       ["polygon.depositWallet", "polygon.approvalsReady"],
     );
@@ -260,7 +249,7 @@ export function classifyBuyerReadiness(input = {}) {
   if (input?.venue?.clobVersion !== "V2") {
     return result(
       "BUYER_SETUP_REQUIRED",
-      "RESOLVE_POLYMARKET_V2",
+      "USE_READY_DEPOSIT_WALLET_OR_STOP",
       input,
       ["venue.clobVersion"],
     );
@@ -268,7 +257,7 @@ export function classifyBuyerReadiness(input = {}) {
   if (tradingMode === "deposit-wallet" && input?.polygon?.approvalsReady !== true) {
     return result(
       "BUYER_SETUP_REQUIRED",
-      "COMPLETE_POLYMARKET_V2_SETUP",
+      "USE_READY_DEPOSIT_WALLET_OR_STOP",
       input,
       ["polygon.approvalsReady"],
     );

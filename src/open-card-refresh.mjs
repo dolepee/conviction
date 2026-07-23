@@ -41,7 +41,7 @@ function rawCard(value) {
     candidate.intent.walletPreparation === undefined,
     "maker_not_eligible",
     "Finite-approval EOA cards cannot be refreshed",
-    { paymentAllowed: false, nextAction: "USE_READY_DEPOSIT_WALLET" },
+    { paymentAllowed: false, nextAction: "USE_READY_DEPOSIT_WALLET_OR_STOP" },
   );
   return candidate;
 }

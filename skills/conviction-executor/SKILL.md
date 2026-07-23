@@ -66,7 +66,7 @@ Explain the separate service fee before payment: `0.05 USD₮0` on X Layer for O
 
 ## 2. Prove readiness before charging
 
-Call `POST https://conviction-bay.vercel.app/api/readiness` with the buyer-local capability, wallet, balance, venue, mode, and approval snapshot before the market preview. Treat its result as guidance, then independently recheck every field locally before payment and execution. `BUYER_SETUP_REQUIRED` and `REGION_CHECK_REQUIRED` are recoverable onboarding states; only `UNSUPPORTED_EXECUTION_RUNTIME` means the runtime genuinely lacks wallet, x402-payment, or Polymarket-trading capability. `SELF_PAYMENT_FORBIDDEN` and `REGION_RESTRICTED` are final for the active session.
+Call `POST https://conviction-bay.vercel.app/api/readiness` with the buyer-local capability, wallet, balance, venue, mode, and approval snapshot before the market preview. Treat its result as guidance, then independently recheck every field locally before payment and execution. Proceed only when `paymentAllowed:true`. A `BUYER_SETUP_REQUIRED` result whose next action is `USE_READY_DEPOSIT_WALLET_OR_STOP` is a no-payment stop, not an in-session onboarding path: do not preview, fund, approve, pay, or trade. It may resume only in a later session with an independently ready buyer-controlled deposit wallet. `REGION_CHECK_REQUIRED` is a read-only check; only `UNSUPPORTED_EXECUTION_RUNTIME` means the runtime genuinely lacks wallet, x402-payment, or Polymarket-trading capability. `SELF_PAYMENT_FORBIDDEN` and `REGION_RESTRICTED` are final for the active session.
 
 Follow the official Polymarket preflight and require all of the following:
 
@@ -76,7 +76,7 @@ Follow the official Polymarket preflight and require all of the following:
 4. The CLOB version resolves to `V2`.
 5. `references/trusted-issuers.json` exists and passes registry validation. Never create or amend it from a paid response.
 
-If the deposit wallet is absent, stop the requested trade before payment and enter the official Polymarket onboarding flow. Disclose the five broad, reusable deposit-wallet approvals. Never bypass organization policy. Resume only after setup is independently completed and readiness is rechecked.
+If the deposit wallet is absent or unfinished, stop the requested trade before preview or payment. Do not enter, automate, or instruct the official Polymarket onboarding flow from Conviction; its five broad reusable approvals remain a venue operation and may be blocked by the buyer runtime's policy. Never bypass organization policy. Resume only after an independently ready buyer-controlled deposit wallet is available and readiness is rechecked.
 
 For `OPEN`, call the free `/api/preview` endpoint and require a live, standard binary V2 market, the selected token, bounded liquidity, pUSD balance at least equal to the maximum total debit, and an executable-in-principle result.
 
