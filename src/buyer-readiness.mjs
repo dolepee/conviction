@@ -53,10 +53,10 @@ function setupPlan(input, requestedBudget) {
   if (!payer) actions.push("CONNECT_X_LAYER_PAYER");
   else if (payer === SERVICE_PAYEE) actions.push("SWITCH_TO_DISTINCT_BUYER_ACCOUNT");
   if (!polygonEoa) actions.push("CONNECT_POLYGON_WALLET");
-  if (input?.venue?.accessible === null || input?.venue?.accessible === undefined) {
-    actions.push("RUN_POLYMARKET_CHECK_ACCESS");
-  } else if (input?.venue?.accessible === false) {
+  if (input?.venue?.accessible === false) {
     actions.push("STOP_NO_PAYMENT_OR_TRADE");
+  } else if (input?.venue?.accessible !== true) {
+    actions.push("RUN_POLYMARKET_CHECK_ACCESS");
   }
   if (!depositWallet) actions.push("SETUP_DEPOSIT_WALLET");
   if (depositWallet && input?.polygon?.tradingMode !== "deposit-wallet") {

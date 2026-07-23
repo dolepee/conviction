@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { localSourceEvidence } from "../src/source-evidence.mjs";
+import {
+  assertSourceEvidenceUnchanged,
+  localSourceEvidence,
+} from "../src/source-evidence.mjs";
 
 const COMMIT = "ab".repeat(20);
 
@@ -41,5 +44,46 @@ test("source evidence exposes tracked changes and rejects invalid commits", () =
       },
     }),
     /commit is invalid/,
+  );
+});
+
+test("source evidence refuses changed commits or dirty final trees", () => {
+  assert.deepEqual(
+    assertSourceEvidenceUnchanged(
+      { commit: COMMIT, trackedTreeClean: true },
+      {
+        cwd: "/repo",
+        execFileSyncImpl(_command, args) {
+          return args[0] === "rev-parse" ? `${COMMIT}\n` : "";
+        },
+      },
+    ),
+    { commit: COMMIT, trackedTreeClean: true },
+  );
+
+  assert.throws(
+    () => assertSourceEvidenceUnchanged(
+      { commit: COMMIT, trackedTreeClean: true },
+      {
+        cwd: "/repo",
+        execFileSyncImpl(_command, args) {
+          return args[0] === "rev-parse" ? `${"cd".repeat(20)}\n` : "";
+        },
+      },
+    ),
+    /commit changed/,
+  );
+
+  assert.throws(
+    () => assertSourceEvidenceUnchanged(
+      { commit: COMMIT, trackedTreeClean: true },
+      {
+        cwd: "/repo",
+        execFileSyncImpl(_command, args) {
+          return args[0] === "rev-parse" ? `${COMMIT}\n` : " M scripts/gate.mjs\n";
+        },
+      },
+    ),
+    /tree is dirty/,
   );
 });

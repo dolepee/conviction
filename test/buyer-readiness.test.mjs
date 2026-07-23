@@ -155,6 +155,14 @@ test("region states stop or request the official check", () => {
   }));
   assert.equal(unchecked.status, "REGION_CHECK_REQUIRED");
   assert.equal(unchecked.nextAction, "RUN_POLYMARKET_CHECK_ACCESS");
+  assert.equal(unchecked.remainingActions.includes("RUN_POLYMARKET_CHECK_ACCESS"), true);
+
+  const stringAccess = classifyBuyerReadiness(ready({
+    venue: { accessible: "true", clobVersion: "V2" },
+  }));
+  assert.equal(stringAccess.status, "REGION_CHECK_REQUIRED");
+  assert.equal(stringAccess.nextAction, "RUN_POLYMARKET_CHECK_ACCESS");
+  assert.equal(stringAccess.remainingActions.includes("RUN_POLYMARKET_CHECK_ACCESS"), true);
 });
 
 test("readiness API serves its contract and classifies without payment", async () => {

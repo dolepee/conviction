@@ -20,3 +20,20 @@ export function localSourceEvidence({
     trackedTreeClean: status === "",
   });
 }
+
+export function assertSourceEvidenceUnchanged(
+  expected,
+  {
+    cwd,
+    execFileSyncImpl = execFileSync,
+  } = {},
+) {
+  const current = localSourceEvidence({ cwd, execFileSyncImpl });
+  if (current.commit !== expected?.commit) {
+    throw new Error("source evidence commit changed");
+  }
+  if (current.trackedTreeClean !== true || expected?.trackedTreeClean !== true) {
+    throw new Error("source evidence tree is dirty");
+  }
+  return current;
+}
