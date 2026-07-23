@@ -35,7 +35,7 @@ Opens one bounded YES or NO position from a ready buyer-controlled Polymarket de
 Provide: market URL or slug, YES or NO, total pUSD budget of at least 1 pUSD, maximum price, buyer wallet, and optional rationale.
 ```
 
-Inputs: `market`, `outcome=yes|no`, `spend`, `maxPrice`, `wallet`, `executionMode=deposit-wallet`, `pluginPreview`, `rationale`.
+Inputs: `market`, `outcome=yes|no`, `spend`, `maxPrice`, `wallet`, `executionMode=deposit-wallet`, `walletReadiness`, `pluginPreview`, `rationale`.
 
 Not included: financial advice, outcome recommendations, signals, custody, recurring/autonomous trading, leverage, neg-risk/categorical markets, or guaranteed profit.
 

@@ -83,6 +83,10 @@ export const POSITION_CARD_SERVICE = Object.freeze({
             const: "deposit-wallet",
             description: "OPEN is charged only for an already-ready deposit wallet.",
           }),
+          walletReadiness: Object.freeze({
+            type: "object",
+            description: "Successful official polymarket-plugin quickstart output proving this exact ready deposit wallet.",
+          }),
           pluginPreview: Object.freeze({
             type: "object",
             description: "Successful official polymarket-plugin v0.7.0 dry-run output for these exact bounds.",
@@ -99,6 +103,7 @@ export const POSITION_CARD_SERVICE = Object.freeze({
           "maxPrice",
           "wallet",
           "executionMode",
+          "walletReadiness",
           "pluginPreview",
         ]),
         additionalProperties: false,

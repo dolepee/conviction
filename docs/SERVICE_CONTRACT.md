@@ -24,6 +24,7 @@ Send JSON:
   "maxPrice": "0.14",
   "wallet": "0x1111111111111111111111111111111111111111",
   "executionMode": "deposit-wallet",
+  "walletReadiness": { "ok": true, "accessible": true, "status": "deposit_wallet_ready", "wallet": { "deposit_wallet": "0x1111111111111111111111111111111111111111" } },
   "pluginPreview": { "ok": true, "dry_run": true, "data": {} },
   "rationale": "I selected NO and accept only the stated fee-inclusive bounds."
 }
@@ -37,6 +38,7 @@ Rules:
 - `maxPrice`: `(0, 1)`, aligned to the market tick.
 - `wallet`: buyer-controlled, already-ready Polymarket deposit wallet.
 - `executionMode`: exactly `deposit-wallet`.
+- `walletReadiness`: the official plugin quickstart result; its ready deposit-wallet identity and regional status must match `wallet`.
 - `pluginPreview`: the successful official plugin dry-run envelope; Conviction recomputes and exactly compares the execution fields before issuing a paid card.
 - `rationale`: optional user-authored note; when present, 20–500 characters.
 

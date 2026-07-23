@@ -10,7 +10,7 @@ function send(response, status, body) {
 
 export function createRefreshHandler({
   environment = process.env,
-  publicGuard = createPublicApiGuard(),
+  publicGuard = createPublicApiGuard({ limit: 15, maxBodyBytes: 65_536, maxInFlight: 4 }),
   refreshImpl = refreshOpenCard,
   refreshOptions = undefined,
 } = {}) {

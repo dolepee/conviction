@@ -5,6 +5,7 @@ import { createPublicApiGuard, PublicApiError } from "../src/public-api-guard.mj
 import {
   requirePaidOpenExecutionMode,
   verifyDepositWalletExecution,
+  verifyDepositWalletReadiness,
   verifyOpenPluginPreview,
 } from "../src/open-execution-preflight.mjs";
 import { attachOpenRefreshContract } from "../src/open-card-refresh.mjs";
@@ -33,7 +34,10 @@ export function createIntentHandler({
     try {
       const body = request.body && typeof request.body === "object" ? request.body : {};
       const compile = async () => {
-        if (!publicAccess) requirePaidOpenExecutionMode(body);
+        if (!publicAccess) {
+          requirePaidOpenExecutionMode(body);
+          verifyDepositWalletReadiness(body.wallet, body.walletReadiness);
+        }
         const [market] = await Promise.all([
           resolveMarketImpl(body.market, { outcome: body.outcome }),
           ...(publicAccess ? [] : [verifyExecutionWalletImpl(body.wallet)]),

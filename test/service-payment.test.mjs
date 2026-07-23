@@ -257,7 +257,7 @@ test("returns a standards-compliant unpaid challenge before compiling", async ()
     assert.equal(challenge.outputSchema.input.method, "POST");
     assert.deepEqual(
       challenge.outputSchema.input.body.required,
-      ["market", "outcome", "spend", "maxPrice", "wallet", "executionMode", "pluginPreview"],
+      ["market", "outcome", "spend", "maxPrice", "wallet", "executionMode", "walletReadiness", "pluginPreview"],
     );
   });
 });
@@ -724,6 +724,12 @@ test("the paid route bypasses public preview limits only after payment verificat
         maxPrice: "0.27",
         wallet: "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
         executionMode: "deposit-wallet",
+        walletReadiness: {
+          ok: true,
+          accessible: true,
+          status: "deposit_wallet_ready",
+          wallet: { deposit_wallet: "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe" },
+        },
         pluginPreview: {
           ok: true,
           dry_run: true,

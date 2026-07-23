@@ -5,6 +5,7 @@ import { compileIntent } from "../src/intent-compiler.mjs";
 import {
   requirePaidOpenExecutionMode,
   verifyDepositWalletExecution,
+  verifyDepositWalletReadiness,
   verifyOpenPluginPreview,
 } from "../src/open-execution-preflight.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
@@ -53,6 +54,18 @@ function pluginPreview() {
   };
 }
 
+function walletReadiness() {
+  return {
+    ok: true,
+    accessible: true,
+    status: "deposit_wallet_ready",
+    wallet: {
+      eoa: "0x1111111111111111111111111111111111111111",
+      deposit_wallet: WALLET,
+    },
+  };
+}
+
 test("paid OPEN accepts only the already-ready deposit-wallet mode", () => {
   assert.doesNotThrow(() => requirePaidOpenExecutionMode({ executionMode: "deposit-wallet" }));
   for (const executionMode of [undefined, "", "eoa", "proxy"]) {
@@ -89,6 +102,26 @@ test("official plugin dry run must match every execution-critical OPEN field", (
       () => verifyOpenPluginPreview(card, value),
       (error) => ["plugin_preview_mismatch", "invalid_plugin_preview"].includes(error?.code),
       label,
+    );
+  }
+});
+
+test("official quickstart binds the exact ready deposit wallet before payment", () => {
+  const result = verifyDepositWalletReadiness(WALLET, walletReadiness());
+  assert.equal(result.wallet, WALLET);
+  assert.equal(result.status, "deposit_wallet_ready");
+
+  for (const mutate of [
+    (value) => { value.wallet.deposit_wallet = "0x2222222222222222222222222222222222222222"; },
+    (value) => { value.status = "needs_deposit_wallet_setup"; },
+    (value) => { value.accessible = false; },
+    (value) => { value.ok = false; },
+  ]) {
+    const value = structuredClone(walletReadiness());
+    mutate(value);
+    assert.throws(
+      () => verifyDepositWalletReadiness(WALLET, value),
+      (error) => ["maker_not_eligible", "missing_wallet_readiness"].includes(error?.code),
     );
   }
 });

@@ -9,6 +9,7 @@ import {
   attachOpenRefreshContract,
   refreshOpenCard,
 } from "../src/open-card-refresh.mjs";
+import { createRefreshHandler } from "../api/refresh.js";
 import { SERVICE_ASSET, SERVICE_PAYEE, SERVICE_PRICE_ATOMIC } from "../src/service-constants.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
@@ -77,11 +78,21 @@ function preview() {
   };
 }
 
+function walletReadiness() {
+  return {
+    ok: true,
+    accessible: true,
+    status: "deposit_wallet_ready",
+    wallet: { deposit_wallet: WALLET },
+  };
+}
+
 function body() {
   return {
     card: originalCard(),
     paymentTx: PAYMENT_TX,
     payer: PAYER,
+    walletReadiness: walletReadiness(),
     pluginPreview: preview(),
   };
 }
@@ -202,4 +213,32 @@ test("paid card advertises the bounded refresh contract without claiming settlem
   assert.equal(card.refresh.windowSeconds, 1800);
   assert.equal(card.refresh.additionalPaymentRequired, false);
   assert.equal(card.refresh.paymentTx, undefined);
+});
+
+test("refresh route accepts a normal signed-card payload above the generic 8 KiB limit", async () => {
+  const requestBody = {
+    ...body(),
+    paddingRepresentativeOfSignedCardAndDiscovery: "x".repeat(12_000),
+  };
+  let delivered;
+  const response = {
+    statusCode: 0,
+    headers: new Map(),
+    status(value) { this.statusCode = value; return this; },
+    setHeader(name, value) { this.headers.set(name.toLowerCase(), value); return this; },
+    end(value) { delivered = JSON.parse(value); },
+  };
+  const handler = createRefreshHandler({
+    async refreshImpl(value) {
+      assert.equal(value.paddingRepresentativeOfSignedCardAndDiscovery.length, 12_000);
+      return { ok: true };
+    },
+  });
+  await handler({
+    method: "POST",
+    headers: { "x-vercel-forwarded-for": "203.0.113.1" },
+    body: requestBody,
+  }, response);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(delivered, { ok: true });
 });

@@ -7,6 +7,7 @@ import {
 import { resolveMarket } from "./market-client.mjs";
 import {
   verifyDepositWalletExecution,
+  verifyDepositWalletReadiness,
   verifyOpenPluginPreview,
 } from "./open-execution-preflight.mjs";
 import {
@@ -115,6 +116,7 @@ export async function refreshOpenCard(
   );
 
   await verifyWalletImpl(original.intent.buyer.wallet);
+  verifyDepositWalletReadiness(original.intent.buyer.wallet, body?.walletReadiness);
   const request = {
     market: original.intent.market.conditionId,
     outcome: original.intent.order.outcome,
@@ -150,7 +152,7 @@ export function attachOpenRefreshContract(card) {
       method: "POST",
       windowSeconds: OPEN_CARD_REFRESH_WINDOW_MS / 1_000,
       additionalPaymentRequired: false,
-      requires: ["card", "paymentTx", "payer", "pluginPreview"],
+      requires: ["card", "paymentTx", "payer", "walletReadiness", "pluginPreview"],
       scope: "same-market-outcome-budget-cap-and-wallet",
     }),
   });

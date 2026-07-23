@@ -143,6 +143,50 @@ export async function verifyDepositWalletExecution(
   });
 }
 
+export function verifyDepositWalletReadiness(walletValue, readinessInput) {
+  const wallet = String(walletValue || "").trim().toLowerCase();
+  const outer =
+    readinessInput &&
+    typeof readinessInput === "object" &&
+    !Array.isArray(readinessInput)
+      ? readinessInput
+      : null;
+  const data =
+    outer?.data &&
+    typeof outer.data === "object" &&
+    !Array.isArray(outer.data)
+      ? outer.data
+      : outer;
+  invariant(
+    outer?.ok === true && data,
+    "missing_wallet_readiness",
+    "A successful official Polymarket quickstart result is required before payment",
+  );
+  const depositWallet = String(data?.wallet?.deposit_wallet || "").toLowerCase();
+  invariant(
+    ADDRESS_RE.test(wallet) &&
+      depositWallet === wallet &&
+      data.accessible === true &&
+      ["deposit_wallet_ready", "active"].includes(String(data.status || "")),
+    "maker_not_eligible",
+    "Official Polymarket quickstart does not prove this wallet is the buyer's ready deposit wallet",
+    {
+      wallet,
+      observedDepositWallet: ADDRESS_RE.test(depositWallet) ? depositWallet : null,
+      observedStatus: data?.status ?? null,
+      paymentAllowed: false,
+      nextAction: "USE_READY_DEPOSIT_WALLET",
+    },
+  );
+  return Object.freeze({
+    ok: true,
+    wallet,
+    status: data.status,
+    accessible: true,
+    source: "official-polymarket-quickstart",
+  });
+}
+
 export function requirePaidOpenExecutionMode(body) {
   invariant(
     body?.executionMode === "deposit-wallet",
