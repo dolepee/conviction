@@ -159,7 +159,7 @@ export async function verifyDepositWalletExecution(
     {
       wallet,
       paymentAllowed: false,
-      nextAction: "USE_READY_DEPOSIT_WALLET",
+      nextAction: "USE_READY_DEPOSIT_WALLET_OR_STOP",
     },
   );
   const predictedHex = String(predictedWord || "").replace(/^0x/, "");
@@ -190,7 +190,7 @@ export async function verifyDepositWalletExecution(
         ? legacyPredictedWallet
         : null,
       paymentAllowed: false,
-      nextAction: "USE_READY_DEPOSIT_WALLET",
+      nextAction: "USE_READY_DEPOSIT_WALLET_OR_STOP",
     },
   );
   return Object.freeze({
@@ -238,7 +238,7 @@ export function verifyDepositWalletReadiness(walletValue, readinessInput) {
       observedDepositWallet: ADDRESS_RE.test(depositWallet) ? depositWallet : null,
       observedStatus: data?.status ?? null,
       paymentAllowed: false,
-      nextAction: "USE_READY_DEPOSIT_WALLET",
+      nextAction: "USE_READY_DEPOSIT_WALLET_OR_STOP",
     },
   );
   return Object.freeze({
@@ -258,7 +258,7 @@ export function requirePaidOpenExecutionMode(body) {
     "OPEN is charged only for an already-ready Polymarket deposit wallet",
     {
       paymentAllowed: false,
-      nextAction: "USE_READY_DEPOSIT_WALLET",
+      nextAction: "USE_READY_DEPOSIT_WALLET_OR_STOP",
     },
   );
 }

@@ -108,6 +108,10 @@ assert.ok(
   app.includes("OPEN is currently available only to a ready buyer-controlled Polymarket deposit wallet"),
   "handoff omits the current ready-deposit-wallet requirement",
 );
+assert.ok(
+  app.includes("This handoff is not a first-time venue-setup route"),
+  "handoff can still be mistaken for a first-time venue-setup route",
+);
 assert.doesNotMatch(
   app,
   /First-time OPEN can instead use finite EOA mode/i,
@@ -134,6 +138,10 @@ assert.equal(
 );
 assert.equal(/id="market-input"[^>]*\svalue=/.test(html), false, "market input must start empty");
 assert.equal(/id="wallet-input"[^>]*\svalue=/.test(html), false, "wallet input must start empty");
+assert.ok(
+  terms.includes("must not be funded or paid through Conviction until independently ready"),
+  "terms do not prohibit funding or payment through an unfinished venue setup",
+);
 assert.ok(html.includes('href="/privacy.html"'), "footer does not expose privacy terms");
 assert.ok(html.includes('href="/terms.html"'), "footer does not expose service terms");
 for (const [page, slug, title] of [

@@ -111,7 +111,8 @@ export function createServiceApp(
   }
 
   // Preserve marketplace discovery behavior for malformed/empty probes while
-  // making a structured unsupported buyer fail before x402 verification.
+  // making every nonempty structured OPEN attempt fail before x402 verification
+  // when it is missing an eligible buyer route.
   const serviceJson = express.json({ limit: "32kb", strict: true });
   function parseServiceBody(request, response, next) {
     return serviceJson(request, response, (error) => {
@@ -127,14 +128,12 @@ export function createServiceApp(
     const eligibility = resolvedCompileHandler?.prePaymentEligibility;
     const body = request.body && typeof request.body === "object" ? request.body : {};
     // A bare or malformed marketplace probe must still receive the standard
-    // x402 discovery response. A body that names an OPEN journey is eligible
-    // for an authoritative no-payment preflight.
+    // x402 discovery response. Any nonempty JSON body is an attempted OPEN
+    // replay and is eligible for an authoritative no-payment preflight.
     if (
       request.serviceBodyParseError ||
       typeof eligibility !== "function" ||
-      !["wallet", "executionMode", "walletReadiness"].some((field) =>
-        Object.prototype.hasOwnProperty.call(body, field),
-      )
+      Object.keys(body).length === 0
     ) return next();
     try {
       request.convictionPaidOpenPreflight = await prePaymentOpenGuard.run(
@@ -186,8 +185,9 @@ export function createServiceApp(
   }
 
   // GET/HEAD and a bare POST retain the marketplace-compatible x402 discovery
-  // response. A structured POST is first checked against the deposit-wallet
-  // maker identity so unsupported buyers never enter payment verification.
+  // response. A nonempty structured POST is first checked against the
+  // deposit-wallet maker identity so unsupported buyers never enter payment
+  // verification.
   app.post(
     SERVICE_PATH,
     serviceResponseHeaders,

@@ -75,7 +75,7 @@ test("paid OPEN accepts only the already-ready deposit-wallet mode", () => {
       (error) =>
         error?.code === "maker_not_eligible" &&
         error?.details?.paymentAllowed === false &&
-        error?.details?.nextAction === "USE_READY_DEPOSIT_WALLET",
+        error?.details?.nextAction === "USE_READY_DEPOSIT_WALLET_OR_STOP",
     );
   }
 });

@@ -1,6 +1,6 @@
 # Conviction ASP Listing and Target Catalog
 
-Status: Conviction ASP `#7034` is listed with the final two-service catalog submitted on 2026-07-22. The update transaction is `0x861be48333c6ec751ea615b4122816509cfe0679b92b555ffa5815824055cf60`. Production v0.4.17 keeps the submitted names, prices, endpoints, and outcome promise while making the paid machine contract stricter: structured unsupported buyers are rejected before x402 verification, ready-deposit-wallet-only OPEN, official-plugin dry-run agreement before issuance, a free payment-bound card refresh window, and support for both current and legacy buyer-controlled Polymarket deposit wallets.
+Status: Conviction ASP `#7034` is listed with the final two-service catalog submitted on 2026-07-22. The update transaction is `0x861be48333c6ec751ea615b4122816509cfe0679b92b555ffa5815824055cf60`. Production v0.4.18 keeps the submitted names, prices, endpoints, and outcome promise while making the paid machine contract stricter: structured unsupported buyers are rejected before x402 verification and receive no service or funding instructions, OPEN remains ready-deposit-wallet-only, official-plugin dry-run agreement is required before issuance, a free payment-bound card refresh window is available, and both current and legacy buyer-controlled Polymarket deposit wallets are supported.
 
 Registration transaction: `0x29fa8a07669fd30b3953e02c148dbb17827b179cd55058f2214bad0df4e78fa6`
 
