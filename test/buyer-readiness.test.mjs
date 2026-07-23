@@ -63,7 +63,7 @@ test("ready buyer advances to the free preview", () => {
   const result = classifyBuyerReadiness(ready());
   assert.equal(result.ok, true);
   assert.equal(result.status, "READY_FOR_CONVICTION");
-  assert.equal(result.nextAction, "RUN_FREE_PREVIEW");
+  assert.equal(result.nextAction, "RUN_FREE_PREVIEW_AND_PLUGIN_DRY_RUN");
   assert.equal(result.service.priceAtomic, "50000");
   assert.equal(result.service.payee, SERVICE_PAYEE);
   assert.equal(result.requirements.polygonPusdRaw, "1250000");
@@ -107,15 +107,15 @@ test("missing deposit wallet is recoverable buyer setup", () => {
     },
   }));
   assert.equal(result.status, "BUYER_SETUP_REQUIRED");
-  assert.equal(result.nextAction, "SELECT_EOA_OPEN_MODE");
+  assert.equal(result.nextAction, "USE_READY_DEPOSIT_WALLET");
   assert.equal(result.recoverable, true);
   assert.deepEqual(result.remainingActions, [
-    "SELECT_EOA_OPEN_MODE",
+    "USE_READY_DEPOSIT_WALLET",
     "FUND_POLYGON_DEPOSIT_WALLET_PUSD",
   ]);
 });
 
-test("fresh buyer can become OPEN-ready through finite-approval EOA mode", () => {
+test("fresh EOA is routed away before payment after the live V2 maker rejection", () => {
   const result = classifyBuyerReadiness(ready({
     polygon: {
       eoa: EOA,
@@ -127,19 +127,18 @@ test("fresh buyer can become OPEN-ready through finite-approval EOA mode", () =>
     },
     requestedOpenBudget: "3.575",
   }));
-  assert.equal(result.ok, true);
-  assert.equal(result.status, "READY_FOR_CONVICTION");
-  assert.equal(result.nextAction, "RUN_FREE_PREVIEW_THEN_PREPARE_FINITE_EOA_ALLOWANCE");
+  assert.equal(result.ok, false);
+  assert.equal(result.status, "BUYER_SETUP_REQUIRED");
+  assert.equal(result.nextAction, "USE_READY_DEPOSIT_WALLET");
   assert.equal(result.buyer.depositWallet, null);
-  assert.equal(result.funding.polygon.destination, "buyer.polygonEoa");
-  assert.equal(result.funding.polygon.polGasRequired, true);
-  assert.equal(result.requirements.minimumPolygonPol, "0.01");
-  assert.equal(result.approvalDisclosure.finiteEoaOpen.unlimitedApprovalForbidden, true);
-  assert.equal(result.approvalDisclosure.finiteEoaOpen.outcomeTokenApprovalRequiredForBuy, false);
-  assert.deepEqual(result.remainingActions, []);
+  assert.equal(result.funding.polygon.destination, "buyer.depositWallet");
+  assert.equal(result.funding.polygon.polGasRequired, false);
+  assert.equal(result.approvalDisclosure.finiteEoaOpen.supported, false);
+  assert.equal(result.approvalDisclosure.finiteEoaOpen.status, "disabled-after-live-maker-rejection");
+  assert.deepEqual(result.remainingActions, ["USE_READY_DEPOSIT_WALLET"]);
 });
 
-test("finite EOA mode requires direct pUSD and Polygon gas before preview", () => {
+test("finite EOA funding no longer makes an unsupported maker chargeable", () => {
   const noGas = classifyBuyerReadiness(ready({
     polygon: {
       eoa: EOA,
@@ -151,7 +150,7 @@ test("finite EOA mode requires direct pUSD and Polygon gas before preview", () =
     },
     requestedOpenBudget: "3.575",
   }));
-  assert.equal(noGas.nextAction, "FUND_POLYGON_EOA_POL");
+  assert.equal(noGas.nextAction, "USE_READY_DEPOSIT_WALLET");
 
   const noPusd = classifyBuyerReadiness(ready({
     polygon: {
@@ -164,7 +163,7 @@ test("finite EOA mode requires direct pUSD and Polygon gas before preview", () =
     },
     requestedOpenBudget: "3.575",
   }));
-  assert.equal(noPusd.nextAction, "FUND_POLYGON_EOA_PUSD");
+  assert.equal(noPusd.nextAction, "USE_READY_DEPOSIT_WALLET");
 });
 
 test("readiness returns one actionable blocker in deterministic order", () => {

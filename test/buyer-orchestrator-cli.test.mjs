@@ -123,14 +123,13 @@ test("buyer CLI accepts the release contract without pre-authorizing payment", (
   );
 });
 
-test("buyer CLI accepts finite-approval EOA mode for OPEN", () => {
-  const parsed = parseArgs([...BASE, "--trading-mode", "eoa"]);
-  assert.equal(parsed.command, "open");
-  assert.equal(parsed.tradingMode, "eoa");
-  assert.throws(
-    () => parseArgs([...BASE, "--trading-mode", "proxy"]),
-    (error) => error?.code === "invalid_argument",
-  );
+test("buyer CLI rejects direct EOA OPEN before payment", () => {
+  for (const mode of ["eoa", "proxy"]) {
+    assert.throws(
+      () => parseArgs([...BASE, "--trading-mode", mode]),
+      (error) => error?.code === "maker_not_eligible",
+    );
+  }
 });
 
 test("buyer CLI requires the finite EOA allowance to equal the signed debit ceiling", () => {
@@ -601,7 +600,7 @@ test("buyer CLI normalizes the installed deposit-wallet quickstart shape", () =>
   });
 });
 
-test("buyer CLI normalizes a selected EOA OPEN shape", () => {
+test("buyer CLI never promotes a selected EOA to V2 readiness", () => {
   const payer = "0x1111111111111111111111111111111111111111";
   const wallet = "0x2222222222222222222222222222222222222222";
   const readiness = normalizePluginReadiness({
@@ -626,11 +625,11 @@ test("buyer CLI normalizes a selected EOA OPEN shape", () => {
 
   assert.deepEqual(readiness, {
     accessible: true,
-    clobVersion: "V2",
+    clobVersion: "",
     currentMode: "eoa",
     paymentPayer: payer,
-    buyerWallet: wallet,
-    tradingAddress: wallet,
+    buyerWallet: "",
+    tradingAddress: "",
     pUsdBalanceRaw: "3575000",
     pUsdAllowanceRaw: "3575000",
   });

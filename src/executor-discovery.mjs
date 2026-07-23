@@ -53,21 +53,14 @@ export const NATIVE_OKX_EXECUTION = deepFreeze({
     takeProfitFallbackFixCommit: POLYMARKET_RUNTIME_COMMIT,
     tradingMode: "deposit-wallet",
     tradingModesByAction: {
-      OPEN: ["deposit-wallet", "eoa-finite-approval"],
+      OPEN: ["deposit-wallet"],
       CLOSE: ["deposit-wallet"],
       TAKE_PROFIT: ["pinned-conviction-executor"],
     },
     finiteEoaOpen: {
-      version: "conviction-eoa-open-preparation-v1",
-      signedPlanPointer: "$.intent.walletPreparation",
-      scope: "standard-v2-pusd-fak-buy-only",
-      directPusdFundingRequired: true,
-      finiteApprovalRequired: true,
-      unlimitedApprovalForbidden: true,
-      setApprovalForAllForbidden: true,
-      pluginArgvAppend: ["--mode", "eoa"],
-      pluginApproveFlagForbidden: true,
-      cleanupOfferedAfterProof: true,
+      available: false,
+      status: "disabled-after-live-maker-rejection",
+      reason: "Polymarket V2 rejected a fresh EOA maker after finite approval.",
     },
     artifactSha256: {
       "darwin-arm64": NATIVE_OKX_RUNTIME_ARTIFACTS["darwin-arm64"].binarySha256,
@@ -199,11 +192,16 @@ function nativeNextStepFor(action) {
       ...(action === "OPEN"
         ? {
             finiteEoaOpen: {
-              available: true,
-              signedPlanPointer: "$.intent.walletPreparation",
-              approvalConfirmation: "Prepare test wallet",
-              executionArgvAppend: ["--mode", "eoa"],
-              forbiddenExecutionArgv: ["--approve"],
+              available: false,
+              status: "disabled-after-live-maker-rejection",
+              requiredMode: "deposit-wallet",
+            },
+            cardRefresh: {
+              endpoint: "https://conviction-bay.vercel.app/api/refresh",
+              windowSeconds: 1800,
+              additionalPaymentRequired: false,
+              requiresOriginalVerifiedPayment: true,
+              requiresFreshExactPluginPreview: true,
             },
           }
         : {}),

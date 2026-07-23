@@ -212,9 +212,9 @@ function requireOpenReadiness(readiness, paymentPayer, buyerWallet, minimumDebit
   requireValue(readiness?.accessible === true, "venue_unavailable", "Prediction venue is unavailable in the buyer region");
   requireValue(readiness?.clobVersion === "V2", "unsupported_venue", "Standard Polymarket V2 is required");
   requireValue(
-    readiness?.currentMode === "deposit_wallet" || readiness?.currentMode === "eoa",
+    readiness?.currentMode === "deposit_wallet",
     "wrong_trading_mode",
-    "OPEN requires deposit-wallet mode or finite-approval EOA mode",
+    "OPEN requires an already-ready Polymarket deposit wallet",
   );
   requireValue(lower(readiness?.paymentPayer) === paymentPayer, "payment_wallet_mismatch", "Active X Layer payer differs from the requested payer");
   requireValue(lower(readiness?.buyerWallet) === buyerWallet, "trading_wallet_mismatch", "Active Polygon trading wallet differs from the card wallet");
@@ -226,14 +226,6 @@ function requireOpenReadiness(readiness, paymentPayer, buyerWallet, minimumDebit
       "insufficient_trade_balance",
       "Trading wallet lacks enough pUSD for the bounded order",
     );
-    if (readiness?.currentMode === "eoa") {
-      requireValue(/^\d+$/.test(String(readiness?.pUsdAllowanceRaw || "")), "missing_finite_allowance", "Finite EOA pUSD allowance was not read before execution");
-      requireValue(
-        BigInt(readiness.pUsdAllowanceRaw) === debit,
-        "allowance_readback_mismatch",
-        "Finite EOA pUSD allowance differs from the signed debit ceiling",
-      );
-    }
   }
 }
 

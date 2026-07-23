@@ -141,31 +141,8 @@ test("open journey keeps payment and trade consent distinct and executes exactly
   assert.equal(result.timings.paymentToProofMs, result.timings.provedAt - result.timings.paidAt);
 });
 
-test("OPEN EOA mode prepares finite allowance before payment and appends the signed mode", async () => {
+test("OPEN EOA mode is rejected before preparation, payment, or execution", async () => {
   const f = fixture({ mode: "eoa" });
-  const result = await runOpenJourney({
-    request,
-    paymentPayer: PAYMENT_PAYER,
-    buyerWallet: BUYER_WALLET,
-    adapters: f.adapters,
-    confirm: f.confirm,
-    now: f.now,
-    trustedIssuers: [],
-  });
-  assert.equal(result.ok, true);
-  assert.deepEqual(f.confirmations, ["wallet_preparation", "payment", "trade"]);
-  assert.equal(f.preparations(), 1);
-  assert.deepEqual(f.dryRunArgv, [
-    ["buy", "--market-id", CONDITION, "--mode", "eoa"],
-    ["buy", "--market-id", CONDITION, "--mode", "eoa"],
-  ]);
-  assert.deepEqual(f.executeArgv, [
-    ["buy", "--market-id", CONDITION, "--mode", "eoa"],
-  ]);
-});
-
-test("OPEN EOA mode rejects allowance drift before order submission", async () => {
-  const f = fixture({ mode: "eoa", eoaAllowanceRaw: "1350001" });
   await assert.rejects(
     runOpenJourney({
       request,
@@ -176,34 +153,10 @@ test("OPEN EOA mode rejects allowance drift before order submission", async () =
       now: f.now,
       trustedIssuers: [],
     }),
-    (error) => error?.code === "allowance_readback_mismatch",
+    (error) => error?.code === "wrong_trading_mode",
   );
-  assert.equal(f.executes(), 0);
-});
-
-test("OPEN EOA mode rejects a paid card whose preparation differs from the approved plan", async () => {
-  const f = fixture({
-    mode: "eoa",
-    mutateValidated: (value) => ({
-      ...value,
-      walletPreparation: {
-        ...value.walletPreparation,
-        planHash: `0x${"88".repeat(32)}`,
-      },
-    }),
-  });
-  await assert.rejects(
-    runOpenJourney({
-      request,
-      paymentPayer: PAYMENT_PAYER,
-      buyerWallet: BUYER_WALLET,
-      adapters: f.adapters,
-      confirm: f.confirm,
-      now: f.now,
-      trustedIssuers: [],
-    }),
-    (error) => error?.code === "wallet_preparation_mismatch",
-  );
+  assert.deepEqual(f.confirmations, []);
+  assert.equal(f.preparations(), 0);
   assert.equal(f.executes(), 0);
 });
 
