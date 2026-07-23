@@ -31,6 +31,7 @@ import {
   requireDistinctPaymentPayer,
   requireExecutionLaunchWindow,
   requirePinnedCloseExecutionReadiness,
+  requireExactFiniteEoaAllowance,
   shouldPersistFailureCheckpoint,
   settleExecutionLock,
   summarizeOpenSellReservations,
@@ -130,6 +131,37 @@ test("buyer CLI accepts finite-approval EOA mode for OPEN", () => {
     () => parseArgs([...BASE, "--trading-mode", "proxy"]),
     (error) => error?.code === "invalid_argument",
   );
+});
+
+test("buyer CLI requires the finite EOA allowance to equal the signed debit ceiling", () => {
+  assert.equal(requireExactFiniteEoaAllowance({
+    allowanceRaw: "3575000",
+    maximumRaw: "3575000",
+  }), "3575000");
+  for (const allowanceRaw of ["0", "3574999", "3575001"]) {
+    assert.throws(
+      () => requireExactFiniteEoaAllowance({ allowanceRaw, maximumRaw: "3575000" }),
+      (error) => error?.code === "allowance_readback_mismatch",
+    );
+  }
+  for (const allowanceRaw of [undefined, "", "not-a-number"]) {
+    assert.throws(
+      () => requireExactFiniteEoaAllowance({ allowanceRaw, maximumRaw: "3575000" }),
+      (error) => error?.code === "missing_finite_allowance",
+    );
+  }
+});
+
+test("buyer CLI re-reads finite EOA allowance after runtime inspection and before live OPEN", async () => {
+  const source = await readFile(new URL("../scripts/buyer-orchestrator.mjs", import.meta.url), "utf8");
+  const runtimeInspection = source.indexOf("if (JSON.stringify(launchEvidence) !== JSON.stringify(checkpoint.executionRuntime))");
+  const launchReadback = source.indexOf("const launchAllowanceRaw = await polygonPusdAllowanceRaw(", runtimeInspection);
+  const finalHeadroomCheck = source.indexOf("const finalLaunchWindow = requireExecutionLaunchWindow(launchCard)", launchReadback);
+  const liveCommand = source.indexOf('result = await commandJson(launchRuntime.binary, argv, "Polymarket live order"', finalHeadroomCheck);
+  assert.ok(runtimeInspection >= 0);
+  assert.ok(launchReadback > runtimeInspection);
+  assert.ok(finalHeadroomCheck > launchReadback);
+  assert.ok(liveCommand > finalHeadroomCheck);
 });
 
 test("buyer CLI accepts one source-bound bounded CLOSE contract", () => {

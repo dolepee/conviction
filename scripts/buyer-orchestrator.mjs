@@ -4712,6 +4712,33 @@ async function polygonPusdAllowanceRaw(owner, spender) {
   return BigInt(result).toString();
 }
 
+export function requireExactFiniteEoaAllowance({
+  allowanceRaw,
+  maximumRaw,
+  phase = "before OPEN",
+}) {
+  if (!/^\d+$/.test(String(allowanceRaw || ""))) {
+    throw Object.assign(new Error(`Finite EOA pUSD allowance was not read ${phase}`), {
+      code: "missing_finite_allowance",
+    });
+  }
+  if (!/^\d+$/.test(String(maximumRaw || ""))) {
+    throw Object.assign(new Error("Signed finite EOA debit ceiling is invalid"), {
+      code: "invalid_eoa_preparation",
+    });
+  }
+  if (BigInt(allowanceRaw) !== BigInt(maximumRaw)) {
+    throw Object.assign(new Error(`Finite EOA pUSD allowance differs from the signed debit ceiling ${phase}`), {
+      code: "allowance_readback_mismatch",
+      details: {
+        allowanceRaw: String(allowanceRaw),
+        maximumRaw: String(maximumRaw),
+      },
+    });
+  }
+  return String(allowanceRaw);
+}
+
 async function polygonEthCall({ to, data, errorCode, errorMessage }) {
   const rpc = async (method, params) => {
     const response = await fetch(POLYGON_RPC_URL, {
@@ -5200,18 +5227,11 @@ async function main() {
         "Finite pUSD approval",
       );
       const allowanceRaw = await polygonPusdAllowanceRaw(plan.owner, plan.spender);
-      if (
-        BigInt(allowanceRaw) !== BigInt(plan.allowanceReadback.maximumRaw)
-      ) {
-        throw Object.assign(new Error("Finite pUSD allowance readback does not equal the signed debit ceiling"), {
-          code: "allowance_readback_mismatch",
-          details: {
-            allowanceRaw,
-            minimumRaw: plan.allowanceReadback.minimumRaw,
-            maximumRaw: plan.allowanceReadback.maximumRaw,
-          },
-        });
-      }
+      requireExactFiniteEoaAllowance({
+        allowanceRaw,
+        maximumRaw: plan.allowanceReadback.maximumRaw,
+        phase: "after wallet preparation",
+      });
       return {
         ok: true,
         mode: "eoa",
@@ -5485,20 +5505,11 @@ async function main() {
             });
           }
           if (requestedTradingMode === "eoa") {
-            if (!/^\d+$/.test(String(lockedReadiness.pUsdAllowanceRaw || ""))) {
-              throw Object.assign(new Error("Finite EOA pUSD allowance was not read immediately before OPEN"), {
-                code: "missing_finite_allowance",
-              });
-            }
-            if (BigInt(lockedReadiness.pUsdAllowanceRaw) !== lockedDebitRaw) {
-              throw Object.assign(new Error("Finite EOA pUSD allowance differs from the signed debit ceiling immediately before OPEN"), {
-                code: "allowance_readback_mismatch",
-                details: {
-                  allowanceRaw: lockedReadiness.pUsdAllowanceRaw,
-                  maximumRaw: lockedCard.bounds?.maximumTotalDebitRaw,
-                },
-              });
-            }
+            requireExactFiniteEoaAllowance({
+              allowanceRaw: lockedReadiness.pUsdAllowanceRaw,
+              maximumRaw: lockedDebitRaw.toString(),
+              phase: "before the locked OPEN dry run",
+            });
           }
           const preDryRunWindow = requireExecutionLaunchWindow(lockedCard);
           const lockedDryRun = await commandJson(
@@ -5540,7 +5551,7 @@ async function main() {
           const launchCard = closeMode
             ? validateCloseCard(checkpoint.paidCard, { trustedIssuers: pinnedRegistry, now: Date.now() })
             : validateCard(checkpoint.paidCard, { trustedIssuers: pinnedRegistry, now: Date.now() });
-          const launchWindow = requireExecutionLaunchWindow(launchCard);
+          requireExecutionLaunchWindow(launchCard);
           const launchArgv = closeMode
             ? launchCard.executionCard.argv
             : effectiveOpenExecutionArgv(launchCard, requestedTradingMode);
@@ -5559,8 +5570,20 @@ async function main() {
               code: "runtime_changed_before_execution",
             });
           }
+          if (!closeMode && requestedTradingMode === "eoa") {
+            const launchAllowanceRaw = await polygonPusdAllowanceRaw(
+              launchCard.wallet,
+              launchCard.walletPreparation.spender,
+            );
+            requireExactFiniteEoaAllowance({
+              allowanceRaw: launchAllowanceRaw,
+              maximumRaw: launchCard.bounds.maximumTotalDebitRaw,
+              phase: "immediately before the live OPEN command",
+            });
+          }
+          const finalLaunchWindow = requireExecutionLaunchWindow(launchCard);
           result = await commandJson(launchRuntime.binary, argv, "Polymarket live order", {
-            deadlineEpochMs: launchWindow.deadlineEpochMs,
+            deadlineEpochMs: finalLaunchWindow.deadlineEpochMs,
             onStart: () => { executionAttempted = true; },
           });
         } catch (error) {
