@@ -90,6 +90,25 @@ test("unsupported is reserved for genuinely missing runtime capabilities", () =>
   assert.equal(result.service, undefined);
   assert.equal(result.funding, undefined);
   assert.equal(result.recoverable, false);
+  assert.equal(result.canResumeWithReadyDepositWallet, undefined);
+  assert.equal(result.stopReason, undefined);
+});
+
+test("ordinary Polygon-identity blockers omit venue-wallet stop metadata", () => {
+  const result = classifyBuyerReadiness(ready({
+    polygon: {
+      eoa: null,
+      depositWallet: DEPOSIT,
+      tradingMode: "deposit-wallet",
+      pUsd: "1.25",
+      approvalsReady: true,
+    },
+  }));
+  assert.equal(result.status, "BUYER_SETUP_REQUIRED");
+  assert.equal(result.nextAction, "CONNECT_POLYGON_WALLET");
+  assert.equal(result.paymentAllowed, false);
+  assert.equal(result.canResumeWithReadyDepositWallet, undefined);
+  assert.equal(result.stopReason, undefined);
 });
 
 test("treasury payer is rejected before any setup or payment", () => {
@@ -113,6 +132,8 @@ test("missing X Layer payer cannot receive funding or payment guidance", () => {
   assert.equal(result.service, undefined);
   assert.equal(result.funding, undefined);
   assert.equal(result.recoverable, false);
+  assert.equal(result.canResumeWithReadyDepositWallet, undefined);
+  assert.equal(result.stopReason, undefined);
 });
 
 test("missing deposit wallet is a no-payment stop, not an in-session setup loop", () => {
