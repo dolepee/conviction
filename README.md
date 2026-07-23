@@ -51,6 +51,12 @@ The browser is a free OPEN preview and manual proof inspector. The repository-ba
 
 The full wire contract is in [`docs/SERVICE_CONTRACT.md`](docs/SERVICE_CONTRACT.md). The OKX.AI listing copy is in [`docs/ASP_LISTING.md`](docs/ASP_LISTING.md).
 
+### First-use buyer readiness
+
+`GET /api/readiness` publishes the free readiness contract and `POST /api/readiness` classifies a buyer-local wallet snapshot before preview or payment. A missing deposit wallet, balance, trading mode, approval, or regional check returns `BUYER_SETUP_REQUIRED` or `REGION_CHECK_REQUIRED` with one exact next action; `UNSUPPORTED_EXECUTION_RUNTIME` is reserved for a runtime that genuinely lacks wallet, x402-payment, or Polymarket-trading capability. The classifier also publishes Conviction's X Layer payee and rejects `payer == payee` as `SELF_PAYMENT_FORBIDDEN`.
+
+New Polymarket V2 buyers may need the venue-managed deposit-wallet setup before their first Conviction order. That one-time relayer batch creates two reusable pUSD allowances and three reusable CTF operator approvals. Conviction cannot weaken or bypass the buyer runtime's wallet policy. A runtime that forbids the official setup can still use the free preview and verifier, but it cannot complete a live Polymarket order until an approved wallet environment finishes the venue setup.
+
 ## Run locally
 
 Requires Node.js 22.x LTS and Python 3. Buyer-state claims, journal updates, and crash-safe lock releases use Python's standard `fcntl.flock` support to serialize independent local processes.
@@ -64,6 +70,7 @@ npx vercel dev
 The site is served at `http://localhost:3000`. The API surface is:
 
 - `GET /api/health`
+- `GET|POST /api/readiness` — free buyer-local setup classifier; never signs, funds, approves, pays, or trades
 - `POST /api/market` — wallet-free lookup of both live outcome books
 - `POST /api/preview` — wallet-free economic preview; never executable
 - `POST /api/intent` — fresh wallet-bound card used by the public web app
@@ -233,7 +240,7 @@ Never send Conviction a seed phrase, private key, bearer token, CLOB credential,
 
 ## Status
 
-- Production runtime: v0.4.10 is the reviewer-facing market lookup hotfix release for `https://conviction-bay.vercel.app`; it preserves the v0.4.9 signed-proof runtime, issuer-signed public proofs, YES/NO CTF label binding, and immutable executor v6 while returning clean 404 guidance for unknown Polymarket slugs
+- Production runtime: v0.4.11 adds the free Buyer Readiness contract and machine-readable self-payment refusal while preserving the v0.4.10 market lookup fix, v0.4.9 signed-proof runtime, issuer-signed public proofs, YES/NO CTF label binding, and immutable executor v6
 - OPEN: fresh buyer-seat `0.05 USD₮0` payment, one confirmed bounded order, exact 10 YES Polygon fill, and independent position proof passed in 42.0 seconds locally / 48.8 seconds independently ([payment](https://www.oklink.com/xlayer/tx/0xccbf4d92a1c80a7697d2f17b2d41129806826a7e28a4325303e3abcaaf17be6c), [fill](https://polygonscan.com/tx/0x716734f1bccb9c7c6c20cc7d0f064c857159b075fd12707ddbedd40c18cb3409))
 - CLOSE: fresh buyer-seat `0.10 USD₮0` payment, one confirmed exact 10 YES FOK sale, and independent close proof passed in 56.7 seconds locally / 61.7 seconds independently ([payment](https://www.oklink.com/xlayer/tx/0x03e05a3fdc18dbbd320e30abb062830b67fecf9d77a3e0c6142dca195c03d279), [fill](https://polygonscan.com/tx/0x7f0bb701c22bdb8aff43a66c259de01330e5b41c45908d36e677a4216dfbfba4))
 - TAKE_PROFIT: fresh buyer-seat `0.10 USD₮0` payment armed exactly one zero-match post-only 9 YES GTD order with an authenticated proof in 38.0 seconds locally / 42.3 seconds independently; exact cancellation then returned `CANCELED`, zero matched, no open orders, and no global execution lock ([payment](https://www.oklink.com/xlayer/tx/0x2f1257db47bba77f45766767a18ededca6b82310c725a08f62e7797e549ba80a))

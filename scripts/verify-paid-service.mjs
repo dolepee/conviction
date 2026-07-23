@@ -16,7 +16,14 @@ assert.equal(healthResponse.headers.get("cache-control"), "no-store");
 const health = await healthResponse.json();
 assert.equal(health.ok, true);
 assert.equal(health.product, "Conviction");
-assert.equal(health.version, "0.4.10");
+assert.equal(health.version, "0.4.11");
+assert.equal(health.buyerReadiness, "/api/readiness");
+assert.deepEqual(health.payment, {
+  network: SERVICE_NETWORK,
+  asset: SERVICE_ASSET,
+  payee: SERVICE_PAYEE,
+  selfPaymentAllowed: false,
+});
 assert.deepEqual(health.products, [
   { name: "OPEN", price: POSITION_CARD_SERVICE.priceDisplay, path: POSITION_CARD_SERVICE.path },
   {
@@ -27,6 +34,35 @@ assert.deepEqual(health.products, [
   },
 ]);
 assert.deepEqual(health.supported?.actions, ["OPEN", "CLOSE", "TAKE_PROFIT"]);
+
+const readinessContractResponse = await fetch(`${origin}/api/readiness`);
+assert.equal(
+  readinessContractResponse.status,
+  200,
+  `expected readiness HTTP 200, received ${readinessContractResponse.status}`,
+);
+const readinessContract = await readinessContractResponse.json();
+assert.equal(readinessContract.ok, true);
+assert.equal(readinessContract.contract?.readOnly, true);
+assert.equal(readinessContract.contract?.approvalDisclosure?.pUsdAllowances, 2);
+assert.equal(readinessContract.contract?.approvalDisclosure?.ctfOperatorApprovals, 3);
+
+const selfPaymentResponse = await fetch(`${origin}/api/readiness`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    capabilities: {
+      walletTools: true,
+      x402Payment: true,
+      polymarketTrading: true,
+    },
+    xLayer: { payer: SERVICE_PAYEE, usdt0: "1" },
+  }),
+});
+assert.equal(selfPaymentResponse.status, 200);
+const selfPayment = await selfPaymentResponse.json();
+assert.equal(selfPayment.status, "SELF_PAYMENT_FORBIDDEN");
+assert.equal(selfPayment.nextAction, "SWITCH_TO_DISTINCT_BUYER_ACCOUNT");
 
 for (const service of [POSITION_CARD_SERVICE, POSITION_MANAGER_SERVICE]) {
   // Match the marketplace validator's default probe: no method override and

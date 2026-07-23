@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import handler from "../api/executor.js";
+import { BUYER_READINESS_URL } from "../src/buyer-readiness.mjs";
 import {
   EXECUTOR_DISCOVERY_LINK,
   EXECUTOR_DISCOVERY_URL,
@@ -15,6 +16,7 @@ import {
 } from "../src/executor-discovery.mjs";
 import { compileIntent } from "../src/intent-compiler.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
+import { SERVICE_PAYEE } from "../src/service-payment.mjs";
 
 function response() {
   return {
@@ -61,6 +63,10 @@ test("public executor discovery prefers native OKX execution without a Convictio
     "5f3a89aea4995b5f43a3cfe6cced29a2b218c539ffa031ac1e4defd635040441",
   );
   assert.equal(output.body.preferredExecution.invocation.humanTypesPluginCommand, false);
+  assert.equal(output.body.buyerReadiness.url, BUYER_READINESS_URL);
+  assert.equal(output.body.buyerReadiness.contract.readOnly, true);
+  assert.equal(output.body.buyerReadiness.servicePayee, SERVICE_PAYEE);
+  assert.equal(output.body.buyerReadiness.selfPaymentAllowed, false);
   assert.equal(EXECUTOR_DISCOVERY_LINK, `<${EXECUTOR_DISCOVERY_URL}>; rel="service-desc"; type="application/json"`);
 });
 

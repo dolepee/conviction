@@ -66,6 +66,8 @@ Explain the separate service fee before payment: `0.05 USD₮0` on X Layer for O
 
 ## 2. Prove readiness before charging
 
+Call `POST https://conviction-bay.vercel.app/api/readiness` with the buyer-local capability, wallet, balance, venue, mode, and approval snapshot before the market preview. Treat its result as guidance, then independently recheck every field locally before payment and execution. `BUYER_SETUP_REQUIRED` and `REGION_CHECK_REQUIRED` are recoverable onboarding states; only `UNSUPPORTED_EXECUTION_RUNTIME` means the runtime genuinely lacks wallet, x402-payment, or Polymarket-trading capability. `SELF_PAYMENT_FORBIDDEN` and `REGION_RESTRICTED` are final for the active session.
+
 Follow the official Polymarket preflight and require all of the following:
 
 1. Regional access is exactly `accessible: true`. False, indeterminate, timeout, or malformed output is a stop.

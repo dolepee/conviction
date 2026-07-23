@@ -1,3 +1,5 @@
+import { SERVICE_ASSET, SERVICE_NETWORK, SERVICE_PAYEE } from "../src/service-constants.mjs";
+
 export default function handler(request, response) {
   if (!["GET", "HEAD"].includes(request.method)) {
     response.setHeader("allow", "GET, HEAD");
@@ -7,9 +9,16 @@ export default function handler(request, response) {
   return response.status(200).json({
     ok: true,
     product: "Conviction",
-    version: "0.4.10",
+    version: "0.4.11",
     execution: "non-custodial",
     executorDiscovery: "/api/executor",
+    buyerReadiness: "/api/readiness",
+    payment: {
+      network: SERVICE_NETWORK,
+      asset: SERVICE_ASSET,
+      payee: SERVICE_PAYEE,
+      selfPaymentAllowed: false,
+    },
     products: [
       { name: "OPEN", price: "0.05 USD₮0", path: "/api/service" },
       { name: "POSITION_MANAGER", price: "0.10 USD₮0", path: "/api/manage", actions: ["CLOSE", "TAKE_PROFIT"] },
@@ -20,6 +29,11 @@ export default function handler(request, response) {
       outcomes: ["YES", "NO"],
       actions: ["OPEN", "CLOSE", "TAKE_PROFIT"],
       orderTypes: ["FAK", "FOK", "GTD"],
+    },
+    firstUse: {
+      depositWalletSetupMayBeRequired: true,
+      approvalModel: "2 reusable pUSD allowances + 3 reusable CTF operator approvals",
+      convictionCanBypassWalletPolicy: false,
     },
   });
 }
