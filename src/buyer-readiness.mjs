@@ -72,6 +72,9 @@ function result(status, nextAction, input, missing = []) {
   const canResumeInThisRuntime =
     status === "REGION_CHECK_REQUIRED" ||
     (status === "BUYER_SETUP_REQUIRED" && routeReady);
+  const venueWalletStop =
+    status === "BUYER_SETUP_REQUIRED" &&
+    nextAction === "USE_READY_DEPOSIT_WALLET_OR_STOP";
   return Object.freeze({
     ok: status === "READY_FOR_CONVICTION",
     version: BUYER_READINESS_VERSION,
@@ -129,7 +132,7 @@ function result(status, nextAction, input, missing = []) {
     missing,
     remainingActions: status === "READY_FOR_CONVICTION" ? [] : [nextAction],
     recoverable: canResumeInThisRuntime,
-    ...(status === "BUYER_SETUP_REQUIRED" && !routeReady ? {
+    ...(venueWalletStop ? {
       canResumeWithReadyDepositWallet: true,
       stopReason: "A fresh or unfinished Polymarket deposit-wallet setup is not a Conviction in-session path. Do not fund, approve, pay, or trade until a buyer-controlled ready deposit wallet is independently available.",
     } : {}),
