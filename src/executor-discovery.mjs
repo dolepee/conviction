@@ -6,7 +6,7 @@ import {
   BUYER_READINESS_URL,
   buyerReadinessContract,
 } from "./buyer-readiness.mjs";
-import { SERVICE_PAYEE } from "./service-payment.mjs";
+import { SERVICE_PAYEE } from "./service-constants.mjs";
 
 export const EXECUTOR_DISCOVERY_URL = "https://conviction-bay.vercel.app/api/executor";
 export const EXECUTOR_DISCOVERY_LINK = `<${EXECUTOR_DISCOVERY_URL}>; rel="service-desc"; type="application/json"`;

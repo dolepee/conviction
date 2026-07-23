@@ -1,4 +1,4 @@
-import { SERVICE_ASSET, SERVICE_NETWORK, SERVICE_PAYEE } from "../src/service-payment.mjs";
+import { SERVICE_ASSET, SERVICE_NETWORK, SERVICE_PAYEE } from "../src/service-constants.mjs";
 
 export default function handler(request, response) {
   if (!["GET", "HEAD"].includes(request.method)) {

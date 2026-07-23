@@ -1,5 +1,5 @@
 import { parseDecimal } from "./decimal.mjs";
-import { SERVICE_PAYEE } from "./service-payment.mjs";
+import { SERVICE_PAYEE } from "./service-constants.mjs";
 
 export const BUYER_READINESS_VERSION = "conviction-buyer-readiness-v1";
 export const BUYER_READINESS_URL = "https://conviction-bay.vercel.app/api/readiness";

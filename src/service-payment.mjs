@@ -7,19 +7,35 @@ import {
 import { ExactEvmScheme } from "@okxweb3/x402-evm/exact/server";
 
 import { createTelegramNotifier } from "./telegram-notifier.mjs";
+import {
+  MANAGE_SERVICE_PATH,
+  MANAGE_SERVICE_PRICE_ATOMIC,
+  MANAGE_SERVICE_PRICE_DISPLAY,
+  MANAGE_SERVICE_RESOURCE,
+  SERVICE_ASSET,
+  SERVICE_NETWORK,
+  SERVICE_PATH,
+  SERVICE_PAYEE,
+  SERVICE_PAYMENT_TIMEOUT_SECONDS,
+  SERVICE_PRICE_ATOMIC,
+  SERVICE_PRICE_DISPLAY,
+  SERVICE_RESOURCE,
+} from "./service-constants.mjs";
 
-export const SERVICE_PATH = "/api/service";
-export const SERVICE_RESOURCE = "https://conviction-bay.vercel.app/api/service";
-export const SERVICE_NETWORK = "eip155:196";
-export const SERVICE_ASSET = "0x779ded0c9e1022225f8e0630b35a9b54be713736";
-export const SERVICE_PAYEE = "0x4abbae03afff90f50d4f6b42b3e362f5228ad4c7";
-export const SERVICE_PRICE_ATOMIC = "50000";
-export const SERVICE_PRICE_DISPLAY = "0.05 USD₮0";
-export const MANAGE_SERVICE_PATH = "/api/manage";
-export const MANAGE_SERVICE_RESOURCE = "https://conviction-bay.vercel.app/api/manage";
-export const MANAGE_SERVICE_PRICE_ATOMIC = "100000";
-export const MANAGE_SERVICE_PRICE_DISPLAY = "0.10 USD₮0";
-export const SERVICE_PAYMENT_TIMEOUT_SECONDS = 300;
+export {
+  MANAGE_SERVICE_PATH,
+  MANAGE_SERVICE_PRICE_ATOMIC,
+  MANAGE_SERVICE_PRICE_DISPLAY,
+  MANAGE_SERVICE_RESOURCE,
+  SERVICE_ASSET,
+  SERVICE_NETWORK,
+  SERVICE_PATH,
+  SERVICE_PAYEE,
+  SERVICE_PAYMENT_TIMEOUT_SECONDS,
+  SERVICE_PRICE_ATOMIC,
+  SERVICE_PRICE_DISPLAY,
+  SERVICE_RESOURCE,
+} from "./service-constants.mjs";
 
 export const POSITION_CARD_SERVICE = Object.freeze({
   path: SERVICE_PATH,
