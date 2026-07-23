@@ -17,7 +17,10 @@ import {
 import { runOpenJourney } from "../src/buyer-orchestrator.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
 import { polymarketRuntimeEvidence } from "../src/polymarket-runtime.mjs";
-import { localSourceEvidence } from "../src/source-evidence.mjs";
+import {
+  assertSourceEvidenceUnchanged,
+  localSourceEvidence,
+} from "../src/source-evidence.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import {
   evaluateOpenConsentAcceptance,
@@ -57,13 +60,23 @@ const reportPath = take(
 const orchestratorPath = path.join(HERE, "buyer-orchestrator.mjs");
 const productionRegistryPath = path.join(HERE, "..", "config", "trusted-issuer.production.json");
 const productionOrigin = new URL(SERVICE_RESOURCE).origin;
-const source = localSourceEvidence({ cwd: path.join(HERE, "..") });
+const repoRoot = path.join(HERE, "..");
+const source = localSourceEvidence({ cwd: repoRoot });
 if (mode === "live" && !source.trackedTreeClean) {
   throw new Error("Live acceptance requires a clean tracked source tree");
 }
 const results = [];
 let reconciliation = null;
 let executionRuntime = polymarketRuntimeEvidence({ verified: false });
+
+function liveSourceEvidence(stage) {
+  if (mode !== "live") return source;
+  try {
+    return assertSourceEvidenceUnchanged(source, { cwd: repoRoot });
+  } catch (error) {
+    throw new Error(`Live acceptance source changed before ${stage}: ${error.message}`);
+  }
+}
 
 function record(id, name, status, detail = "") {
   results.push({ id, name, status, detail });
@@ -205,6 +218,7 @@ if (mode === "live") {
   const trustedIssuerDocument = JSON.parse(readFileSync(productionRegistryPath, "utf8"));
   const trustedIssuers = trustedIssuerRegistry(trustedIssuerDocument.issuers || trustedIssuerDocument);
   const gateStartedAt = Date.now();
+  liveSourceEvidence("orchestrator launch");
   const journey = await new Promise((resolve) => {
     const child = spawn(process.execPath, [
       orchestratorPath, "open", "--origin", origin,
@@ -343,12 +357,13 @@ const verdict = mode === "live"
   ? failed.length === 0 && pending.length === 0 ? "GATE A: PASS" : "GATE A: FAIL"
   : failed.length === 0 ? `NO FAILURES (${pending.length} pending; Gate A undecided)` : "FAILURES PRESENT";
 process.stdout.write(`\n${verdict}\n`);
+const reportSource = liveSourceEvidence("report write");
 writeFileSync(reportPath, `${JSON.stringify({
   mode,
   origin,
   at: new Date().toISOString(),
   verdict,
-  source,
+  source: reportSource,
   executionRuntime,
   results,
   ...(reconciliation ? { reconciliation } : {}),
