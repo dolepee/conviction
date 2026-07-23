@@ -143,7 +143,9 @@ test("maker check rejects EOAs and accepts a Polygon contract wallet", async () 
               ? "0x89"
               : request.method === "eth_getCode"
                 ? "0x6001600055"
-                : `0x${WALLET.slice(2).padStart(64, "0")}`,
+                : request.params[0].data.startsWith("0x1f264778")
+                  ? `0x${WALLET.slice(2).padStart(64, "0")}`
+                  : `0x${"2".repeat(40).padStart(64, "0")}`,
         };
       },
     };
@@ -155,7 +157,34 @@ test("maker check rejects EOAs and accepts a Polygon contract wallet", async () 
   });
   assert.equal(ready.contractCodePresent, true);
   assert.equal(ready.factoryPredictionMatched, true);
-  assert.deepEqual(calls.sort(), ["eth_call", "eth_chainId", "eth_getCode"]);
+  assert.equal(ready.factoryPredictionKind, "beacon");
+  assert.deepEqual(calls.sort(), ["eth_call", "eth_call", "eth_chainId", "eth_getCode"]);
+
+  const legacyReady = await verifyDepositWalletExecution(WALLET, {
+    owner: OWNER,
+    rpcUrl: "https://polygon.test",
+    fetchImpl: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      return {
+        ok: true,
+        async json() {
+          return {
+            jsonrpc: "2.0",
+            id: 1,
+            result:
+              request.method === "eth_chainId"
+                ? "0x89"
+                : request.method === "eth_getCode"
+                  ? "0x6001600055"
+                  : request.params[0].data.startsWith("0x8becfd88")
+                    ? `0x${WALLET.slice(2).padStart(64, "0")}`
+                    : `0x${"2".repeat(40).padStart(64, "0")}`,
+          };
+        },
+      };
+    },
+  });
+  assert.equal(legacyReady.factoryPredictionKind, "legacy-uups");
 
   await assert.rejects(
     verifyDepositWalletExecution(WALLET, {

@@ -5,6 +5,7 @@ import { ConvictionError, invariant } from "./errors.mjs";
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
 const DEPOSIT_WALLET_FACTORY = "0x00000000000fb5c9adea0298d729a0cb3823cc07";
 const PREDICT_WALLET_SELECTOR = "1f264778";
+const PREDICT_LEGACY_WALLET_SELECTOR = "8becfd88";
 
 function paddedAddress(value) {
   return String(value || "").toLowerCase().replace(/^0x/, "").padStart(64, "0");
@@ -131,13 +132,19 @@ export async function verifyDepositWalletExecution(
   const ownerAddress = String(owner || "").trim().toLowerCase();
   invariant(ADDRESS_RE.test(wallet), "invalid_wallet", "wallet must be a valid EVM address");
   invariant(ADDRESS_RE.test(ownerAddress), "invalid_wallet_owner", "deposit-wallet owner must be a valid EVM address");
-  const predictionData = `0x${PREDICT_WALLET_SELECTOR}${paddedAddress(ownerAddress)}${paddedAddress(ownerAddress)}`;
-  const [chainHex, code, predictedWord] = await Promise.all([
+  const predictionArgs = `${paddedAddress(ownerAddress)}${paddedAddress(ownerAddress)}`;
+  const predictionData = `0x${PREDICT_WALLET_SELECTOR}${predictionArgs}`;
+  const legacyPredictionData = `0x${PREDICT_LEGACY_WALLET_SELECTOR}${paddedAddress(ownerAddress)}`;
+  const [chainHex, code, predictedWord, legacyPredictedWord] = await Promise.all([
     polygonRpc("eth_chainId", [], { rpcUrl, fetchImpl }),
     polygonRpc("eth_getCode", [wallet, "latest"], { rpcUrl, fetchImpl }),
     polygonRpc("eth_call", [{
       to: DEPOSIT_WALLET_FACTORY,
       data: predictionData,
+    }, "latest"], { rpcUrl, fetchImpl }),
+    polygonRpc("eth_call", [{
+      to: DEPOSIT_WALLET_FACTORY,
+      data: legacyPredictionData,
     }, "latest"], { rpcUrl, fetchImpl }),
   ]);
   invariant(
@@ -160,14 +167,28 @@ export async function verifyDepositWalletExecution(
     predictedHex.length >= 40
       ? `0x${predictedHex.slice(-40).toLowerCase()}`
       : "";
+  const legacyPredictedHex = String(legacyPredictedWord || "").replace(/^0x/, "");
+  const legacyPredictedWallet =
+    legacyPredictedHex.length >= 40
+      ? `0x${legacyPredictedHex.slice(-40).toLowerCase()}`
+      : "";
+  const predictionKind =
+    predictedWallet === wallet
+      ? "beacon"
+      : legacyPredictedWallet === wallet
+        ? "legacy-uups"
+        : null;
   invariant(
-    predictedWallet === wallet,
+    predictionKind !== null,
     "maker_not_eligible",
     "Polygon factory does not bind this wallet to the buyer's Polymarket owner",
     {
       wallet,
       owner: ownerAddress,
       predictedWallet: ADDRESS_RE.test(predictedWallet) ? predictedWallet : null,
+      legacyPredictedWallet: ADDRESS_RE.test(legacyPredictedWallet)
+        ? legacyPredictedWallet
+        : null,
       paymentAllowed: false,
       nextAction: "USE_READY_DEPOSIT_WALLET",
     },
@@ -179,6 +200,7 @@ export async function verifyDepositWalletExecution(
     owner: ownerAddress,
     contractCodePresent: true,
     factoryPredictionMatched: true,
+    factoryPredictionKind: predictionKind,
   });
 }
 
