@@ -83,7 +83,7 @@ function walletReadiness() {
     ok: true,
     accessible: true,
     status: "deposit_wallet_ready",
-    wallet: { deposit_wallet: WALLET },
+    wallet: { eoa: PAYER, deposit_wallet: WALLET },
   };
 }
 
@@ -109,8 +109,9 @@ function options(overrides = {}) {
         capturedAt: new Date(REFRESH_NOW).toISOString(),
       };
     },
-    async verifyWalletImpl(wallet) {
+    async verifyWalletImpl(wallet, { owner }) {
       assert.equal(wallet, WALLET);
+      assert.equal(owner, PAYER);
       return { ok: true, executionMode: "deposit-wallet" };
     },
     async verifyPaymentImpl(expected) {
@@ -204,6 +205,20 @@ test("refresh fails closed on expiry, EOA cards, plugin drift, or issuer substit
   await assert.rejects(
     refreshOpenCard(tampered, options()),
     (error) => error?.code === "intent_hash_mismatch",
+  );
+
+  await assert.rejects(
+    refreshOpenCard(body(), options({
+      async verifyPaymentImpl() {
+        return {
+          ok: true,
+          proof: {
+            blockTimestamp: String(Math.floor((ORIGINAL_NOW - 1_000) / 1_000)),
+          },
+        };
+      },
+    })),
+    (error) => error?.code === "payment_card_mismatch",
   );
 });
 

@@ -34,17 +34,20 @@ export function createIntentHandler({
     try {
       const body = request.body && typeof request.body === "object" ? request.body : {};
       const compile = async () => {
+        let walletReadiness;
         if (!publicAccess) {
           requirePaidOpenExecutionMode(body);
-          verifyDepositWalletReadiness(body.wallet, body.walletReadiness);
+          walletReadiness = verifyDepositWalletReadiness(body.wallet, body.walletReadiness);
         }
         const [market] = await Promise.all([
           resolveMarketImpl(body.market, { outcome: body.outcome }),
-          ...(publicAccess ? [] : [verifyExecutionWalletImpl(body.wallet)]),
+          ...(publicAccess ? [] : [verifyExecutionWalletImpl(body.wallet, { owner: walletReadiness.owner })]),
         ]);
         const compilation = compileIntent(body, market, compileOptions);
         if (!publicAccess) {
-          verifyOpenPluginPreview(compilation, body.pluginPreview);
+          verifyOpenPluginPreview(compilation, body.pluginPreview, {
+            verifiedWallet: walletReadiness.wallet,
+          });
         }
         const delivered = issueIntentImpl ? await issueIntentImpl(compilation) : compilation;
         return publicAccess ? delivered : attachOpenRefreshContract(delivered);

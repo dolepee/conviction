@@ -11,6 +11,7 @@ import {
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
 const WALLET = "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe";
+const OWNER = "0x1111111111111111111111111111111111111111";
 const NOW = Date.parse("2026-07-21T02:00:10.000Z");
 
 function compilation() {
@@ -60,7 +61,7 @@ function walletReadiness() {
     accessible: true,
     status: "deposit_wallet_ready",
     wallet: {
-      eoa: "0x1111111111111111111111111111111111111111",
+      eoa: OWNER,
       deposit_wallet: WALLET,
     },
   };
@@ -81,7 +82,7 @@ test("paid OPEN accepts only the already-ready deposit-wallet mode", () => {
 
 test("official plugin dry run must match every execution-critical OPEN field", () => {
   const card = compilation();
-  const result = verifyOpenPluginPreview(card, pluginPreview());
+  const result = verifyOpenPluginPreview(card, pluginPreview(), { verifiedWallet: WALLET });
   assert.equal(result.ok, true);
   assert.equal(result.wallet, WALLET);
   assert.equal(result.tokenId, LIVE_MARKET_SNAPSHOT.yesTokenId);
@@ -99,7 +100,7 @@ test("official plugin dry run must match every execution-critical OPEN field", (
     const value = structuredClone(pluginPreview());
     mutate(value);
     assert.throws(
-      () => verifyOpenPluginPreview(card, value),
+      () => verifyOpenPluginPreview(card, value, { verifiedWallet: WALLET }),
       (error) => ["plugin_preview_mismatch", "invalid_plugin_preview"].includes(error?.code),
       label,
     );
@@ -137,20 +138,28 @@ test("maker check rejects EOAs and accepts a Polygon contract wallet", async () 
         return {
           jsonrpc: "2.0",
           id: 1,
-          result: request.method === "eth_chainId" ? "0x89" : "0x6001600055",
+          result:
+            request.method === "eth_chainId"
+              ? "0x89"
+              : request.method === "eth_getCode"
+                ? "0x6001600055"
+                : `0x${WALLET.slice(2).padStart(64, "0")}`,
         };
       },
     };
   };
   const ready = await verifyDepositWalletExecution(WALLET, {
+    owner: OWNER,
     rpcUrl: "https://polygon.test",
     fetchImpl,
   });
   assert.equal(ready.contractCodePresent, true);
-  assert.deepEqual(calls.sort(), ["eth_chainId", "eth_getCode"]);
+  assert.equal(ready.factoryPredictionMatched, true);
+  assert.deepEqual(calls.sort(), ["eth_call", "eth_chainId", "eth_getCode"]);
 
   await assert.rejects(
     verifyDepositWalletExecution(WALLET, {
+      owner: OWNER,
       rpcUrl: "https://polygon.test",
       fetchImpl: async (_url, options) => {
         const request = JSON.parse(options.body);
@@ -160,7 +169,12 @@ test("maker check rejects EOAs and accepts a Polygon contract wallet", async () 
             return {
               jsonrpc: "2.0",
               id: 1,
-              result: request.method === "eth_chainId" ? "0x89" : "0x",
+              result:
+                request.method === "eth_chainId"
+                  ? "0x89"
+                  : request.method === "eth_getCode"
+                    ? "0x"
+                    : `0x${WALLET.slice(2).padStart(64, "0")}`,
             };
           },
         };
@@ -169,5 +183,31 @@ test("maker check rejects EOAs and accepts a Polygon contract wallet", async () 
     (error) =>
       error?.code === "maker_not_eligible" &&
       error?.details?.paymentAllowed === false,
+  );
+
+  await assert.rejects(
+    verifyDepositWalletExecution(WALLET, {
+      owner: OWNER,
+      rpcUrl: "https://polygon.test",
+      fetchImpl: async (_url, options) => {
+        const request = JSON.parse(options.body);
+        return {
+          ok: true,
+          async json() {
+            return {
+              jsonrpc: "2.0",
+              id: 1,
+              result:
+                request.method === "eth_chainId"
+                  ? "0x89"
+                  : request.method === "eth_getCode"
+                    ? "0x6001600055"
+                    : `0x${"2".repeat(40).padStart(64, "0")}`,
+            };
+          },
+        };
+      },
+    }),
+    (error) => error?.code === "maker_not_eligible",
   );
 });

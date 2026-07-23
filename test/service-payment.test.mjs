@@ -728,7 +728,10 @@ test("the paid route bypasses public preview limits only after payment verificat
           ok: true,
           accessible: true,
           status: "deposit_wallet_ready",
-          wallet: { deposit_wallet: "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe" },
+          wallet: {
+            eoa: "0x1111111111111111111111111111111111111111",
+            deposit_wallet: "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+          },
         },
         pluginPreview: {
           ok: true,

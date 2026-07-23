@@ -3,6 +3,12 @@ import { parseDecimal } from "./decimal.mjs";
 import { ConvictionError, invariant } from "./errors.mjs";
 
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
+const DEPOSIT_WALLET_FACTORY = "0x00000000000fb5c9adea0298d729a0cb3823cc07";
+const PREDICT_WALLET_SELECTOR = "1f264778";
+
+function paddedAddress(value) {
+  return String(value || "").toLowerCase().replace(/^0x/, "").padStart(64, "0");
+}
 
 function pluginData(value) {
   const outer = value && typeof value === "object" && !Array.isArray(value)
@@ -29,12 +35,18 @@ function decimalRaw(value, label) {
   return parseDecimal(String(value), 6, label);
 }
 
-export function verifyOpenPluginPreview(compilation, previewInput) {
+export function verifyOpenPluginPreview(compilation, previewInput, { verifiedWallet } = {}) {
   const data = pluginData(previewInput);
   const intent = compilation?.intent;
   const market = intent?.market;
   const order = intent?.order;
   invariant(intent && market && order, "invalid_compilation", "OPEN compilation is incomplete");
+  invariant(
+    String(verifiedWallet || "").toLowerCase() === intent.buyer.wallet,
+    "plugin_preview_mismatch",
+    "Official plugin dry run is not bound to the verified deposit-wallet identity",
+    { field: "wallet", expected: intent.buyer.wallet, actual: verifiedWallet ?? null },
+  );
 
   const exact = [
     [String(data.clob_version), "V2", "clobVersion"],
@@ -110,15 +122,23 @@ async function polygonRpc(method, params, { rpcUrl, fetchImpl }) {
 export async function verifyDepositWalletExecution(
   walletValue,
   {
+    owner,
     rpcUrl = POLYGON_RPC_URL,
     fetchImpl = fetch,
   } = {},
 ) {
   const wallet = String(walletValue || "").trim().toLowerCase();
+  const ownerAddress = String(owner || "").trim().toLowerCase();
   invariant(ADDRESS_RE.test(wallet), "invalid_wallet", "wallet must be a valid EVM address");
-  const [chainHex, code] = await Promise.all([
+  invariant(ADDRESS_RE.test(ownerAddress), "invalid_wallet_owner", "deposit-wallet owner must be a valid EVM address");
+  const predictionData = `0x${PREDICT_WALLET_SELECTOR}${paddedAddress(ownerAddress)}${paddedAddress(ownerAddress)}`;
+  const [chainHex, code, predictedWord] = await Promise.all([
     polygonRpc("eth_chainId", [], { rpcUrl, fetchImpl }),
     polygonRpc("eth_getCode", [wallet, "latest"], { rpcUrl, fetchImpl }),
+    polygonRpc("eth_call", [{
+      to: DEPOSIT_WALLET_FACTORY,
+      data: predictionData,
+    }, "latest"], { rpcUrl, fetchImpl }),
   ]);
   invariant(
     Number(BigInt(chainHex)) === POLYGON_CHAIN_ID,
@@ -135,11 +155,30 @@ export async function verifyDepositWalletExecution(
       nextAction: "USE_READY_DEPOSIT_WALLET",
     },
   );
+  const predictedHex = String(predictedWord || "").replace(/^0x/, "");
+  const predictedWallet =
+    predictedHex.length >= 40
+      ? `0x${predictedHex.slice(-40).toLowerCase()}`
+      : "";
+  invariant(
+    predictedWallet === wallet,
+    "maker_not_eligible",
+    "Polygon factory does not bind this wallet to the buyer's Polymarket owner",
+    {
+      wallet,
+      owner: ownerAddress,
+      predictedWallet: ADDRESS_RE.test(predictedWallet) ? predictedWallet : null,
+      paymentAllowed: false,
+      nextAction: "USE_READY_DEPOSIT_WALLET",
+    },
+  );
   return Object.freeze({
     ok: true,
     executionMode: "deposit-wallet",
     wallet,
+    owner: ownerAddress,
     contractCodePresent: true,
+    factoryPredictionMatched: true,
   });
 }
 
@@ -163,8 +202,10 @@ export function verifyDepositWalletReadiness(walletValue, readinessInput) {
     "A successful official Polymarket quickstart result is required before payment",
   );
   const depositWallet = String(data?.wallet?.deposit_wallet || "").toLowerCase();
+  const owner = String(data?.wallet?.eoa || "").toLowerCase();
   invariant(
     ADDRESS_RE.test(wallet) &&
+      ADDRESS_RE.test(owner) &&
       depositWallet === wallet &&
       data.accessible === true &&
       ["deposit_wallet_ready", "active"].includes(String(data.status || "")),
@@ -181,6 +222,7 @@ export function verifyDepositWalletReadiness(walletValue, readinessInput) {
   return Object.freeze({
     ok: true,
     wallet,
+    owner,
     status: data.status,
     accessible: true,
     source: "official-polymarket-quickstart",

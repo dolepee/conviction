@@ -90,17 +90,23 @@ export async function refreshOpenCard(
 
   const issuedAtMs = Date.parse(original.issuance.issuedAt);
   const expiresAtMs = Date.parse(original.issuance.expiresAt);
+  const issuanceSecondMs = Math.floor(issuedAtMs / 1_000) * 1_000;
   const verifiedPayment = await verifyPaymentImpl({
     paymentTx,
     payer,
     payee: SERVICE_PAYEE,
     asset: SERVICE_ASSET,
     amountAtomic: SERVICE_PRICE_ATOMIC,
-    earliestAllowedTime: new Date(issuedAtMs - 5_000).toISOString(),
+    earliestAllowedTime: new Date(issuanceSecondMs).toISOString(),
   });
   const paymentBlockTimestamp = String(verifiedPayment?.proof?.blockTimestamp || "");
   invariant(/^(?:0|[1-9][0-9]*)$/.test(paymentBlockTimestamp), "invalid_payment_receipt", "Payment proof has no block timestamp");
   const paymentMs = Number(BigInt(paymentBlockTimestamp)) * 1_000;
+  invariant(
+    paymentMs >= issuanceSecondMs,
+    "payment_card_mismatch",
+    "Payment settled before the original signed card issuance second",
+  );
   invariant(
     paymentMs <= expiresAtMs,
     "payment_card_mismatch",
@@ -115,8 +121,13 @@ export async function refreshOpenCard(
     },
   );
 
-  await verifyWalletImpl(original.intent.buyer.wallet);
-  verifyDepositWalletReadiness(original.intent.buyer.wallet, body?.walletReadiness);
+  const walletReadiness = verifyDepositWalletReadiness(
+    original.intent.buyer.wallet,
+    body?.walletReadiness,
+  );
+  await verifyWalletImpl(original.intent.buyer.wallet, {
+    owner: walletReadiness.owner,
+  });
   const request = {
     market: original.intent.market.conditionId,
     outcome: original.intent.order.outcome,
@@ -133,7 +144,9 @@ export async function refreshOpenCard(
     quoteTtlMs: 300_000,
     intentVersion: "conviction-intent-v4",
   });
-  verifyOpenPluginPreview(compilation, body?.pluginPreview);
+  verifyOpenPluginPreview(compilation, body?.pluginPreview, {
+    verifiedWallet: walletReadiness.wallet,
+  });
   const issue = issueIntentImpl ?? createEnvironmentIntentIssuer(environment, { now });
   const refreshed = await issue(compilation);
   return Object.freeze({
