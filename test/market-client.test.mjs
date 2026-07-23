@@ -79,6 +79,53 @@ test("resolves and fetches the selected NO token book", async () => {
   assert.ok(!api.calls.some((url) => url.includes(`token_id=${LIVE_MARKET_SNAPSHOT.yesTokenId}`)));
 });
 
+test("returns a clean market_not_found error for unknown Gamma slugs", async () => {
+  const calls = [];
+  await assert.rejects(
+    () =>
+      resolveMarket("definitely-not-a-real-market", {
+        outcome: "yes",
+        fetchImpl: async (url) => {
+          calls.push(String(url));
+          return response({ error: "not found" }, 404);
+        },
+      }),
+    (error) => {
+      assert.equal(error instanceof ConvictionError, true);
+      assert.equal(error.code, "market_not_found");
+      assert.match(error.message, /Polymarket market not found/);
+      assert.deepEqual(error.details, { market: "definitely-not-a-real-market" });
+      return true;
+    },
+  );
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /gamma-api\.polymarket\.com/);
+});
+
+test("returns a clean market_not_found error for unknown CLOB condition IDs", async () => {
+  const missingCondition = `0x${"9".repeat(64)}`;
+  const calls = [];
+  await assert.rejects(
+    () =>
+      resolveMarket(missingCondition, {
+        outcome: "yes",
+        fetchImpl: async (url) => {
+          calls.push(String(url));
+          return response({ error: "not found" }, 404);
+        },
+      }),
+    (error) => {
+      assert.equal(error instanceof ConvictionError, true);
+      assert.equal(error.code, "market_not_found");
+      assert.match(error.message, /Polymarket market not found/);
+      assert.deepEqual(error.details, { market: missingCondition });
+      return true;
+    },
+  );
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /clob\.polymarket\.com\/markets\//);
+});
+
 test("cross-checks both Gamma outcome tokens against CLOB", async () => {
   const api = fakeMarketApi({
     gamma: {

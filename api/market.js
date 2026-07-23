@@ -131,7 +131,8 @@ export function createMarketHandler({
       }
       if (error instanceof ConvictionError) {
         const upstream = error.code === "market_api_error";
-        return send(response, upstream ? 502 : 422, {
+        const status = error.code === "market_not_found" ? 404 : upstream ? 502 : 422;
+        return send(response, status, {
           ok: false,
           error: { code: error.code, message: error.message, details: error.details },
         });

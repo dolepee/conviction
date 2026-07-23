@@ -62,7 +62,8 @@ export function createManagePreviewHandler({
       }
       if (error instanceof ConvictionError) {
         const upstream = ["market_api_error", "rpc_error"].includes(error.code);
-        return send(response, upstream ? 502 : 422, { ok: false, error: { code: error.code, message: error.message, details: error.details } });
+        const status = error.code === "market_not_found" ? 404 : upstream ? 502 : 422;
+        return send(response, status, { ok: false, error: { code: error.code, message: error.message, details: error.details } });
       }
       console.error("manage preview handler failed", { name: error?.name, code: error?.code });
       return send(response, 500, { ok: false, error: { code: "internal_error", message: "Position-manager preview failed" } });
