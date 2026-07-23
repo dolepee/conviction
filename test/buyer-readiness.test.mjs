@@ -49,8 +49,13 @@ test("buyer readiness contract exposes the free classifier and approval disclosu
   const contract = buyerReadinessContract();
   assert.equal(contract.method, "POST");
   assert.equal(contract.readOnly, true);
+  assert.equal(contract.approvalDisclosure.setupRelayerPaid, true);
+  assert.equal(contract.approvalDisclosure.polygonGasRequired, false);
   assert.equal(contract.approvalDisclosure.pUsdAllowances, 2);
+  assert.equal(contract.approvalDisclosure.pUsdAllowanceAmount, "maximum");
   assert.equal(contract.approvalDisclosure.ctfOperatorApprovals, 3);
+  assert.equal(contract.approvalDisclosure.ctfOperatorApprovalScope, "blanket");
+  assert.equal(contract.approvalDisclosure.revokeCommandAvailable, false);
   assert.equal(contract.approvalDisclosure.convictionCanBypassWalletPolicy, false);
 });
 
@@ -63,6 +68,11 @@ test("ready buyer advances to the free preview", () => {
   assert.equal(result.service.payee, SERVICE_PAYEE);
   assert.equal(result.requirements.polygonPusdRaw, "1250000");
   assert.equal(result.observed.polygonPusd, "1.25");
+  assert.equal(result.funding.polygon.destination, "buyer.depositWallet");
+  assert.equal(result.funding.polygon.doNotFund, "buyer.polygonEoa");
+  assert.equal(result.funding.polygon.polGasRequiredInDepositWalletMode, false);
+  assert.equal(result.approvalDisclosure.pUsdAllowanceAmount, "maximum");
+  assert.deepEqual(result.remainingActions, []);
 });
 
 test("unsupported is reserved for genuinely missing runtime capabilities", () => {
@@ -99,6 +109,11 @@ test("missing deposit wallet is recoverable buyer setup", () => {
   assert.equal(result.status, "BUYER_SETUP_REQUIRED");
   assert.equal(result.nextAction, "SETUP_DEPOSIT_WALLET");
   assert.equal(result.recoverable, true);
+  assert.deepEqual(result.remainingActions, [
+    "SETUP_DEPOSIT_WALLET",
+    "COMPLETE_POLYMARKET_V2_SETUP",
+    "FUND_POLYGON_DEPOSIT_WALLET_PUSD",
+  ]);
 });
 
 test("readiness returns one actionable blocker in deterministic order", () => {
@@ -113,6 +128,10 @@ test("readiness returns one actionable blocker in deterministic order", () => {
     },
   }));
   assert.equal(setup.nextAction, "FUND_X_LAYER_USDT0");
+  assert.deepEqual(setup.remainingActions, [
+    "FUND_X_LAYER_USDT0",
+    "FUND_POLYGON_DEPOSIT_WALLET_PUSD",
+  ]);
 
   const polygon = classifyBuyerReadiness(ready({
     polygon: {
@@ -123,7 +142,7 @@ test("readiness returns one actionable blocker in deterministic order", () => {
       approvalsReady: true,
     },
   }));
-  assert.equal(polygon.nextAction, "FUND_POLYGON_PUSD");
+  assert.equal(polygon.nextAction, "FUND_POLYGON_DEPOSIT_WALLET_PUSD");
 });
 
 test("region states stop or request the official check", () => {

@@ -18,6 +18,7 @@ import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import { fetchExactOrder } from "../src/polymarket-open-orders.mjs";
 import { parsePolymarketShareAtoms } from "../src/polymarket-quantities.mjs";
 import { polymarketRuntimeEvidence } from "../src/polymarket-runtime.mjs";
+import { localSourceEvidence } from "../src/source-evidence.mjs";
 import { verifySourcePosition } from "../src/source-position.mjs";
 import {
   POSITION_MANAGER_SERVICE,
@@ -44,9 +45,21 @@ const take = (name, fallback = undefined) => {
 const mode = has("live") ? "live" : has("dry") ? "dry" : "offline";
 const productionOrigin = new URL(POSITION_MANAGER_SERVICE.resource).origin;
 const origin = String(take("origin", productionOrigin)).replace(/\/$/, "");
-const reportPath = take("report", path.join(HERE, "..", "acceptance-report-c.json"));
+const runId = new Date().toISOString().replace(/[:.]/g, "-");
+const reportPath = take(
+  "report",
+  path.join(
+    HERE,
+    "..",
+    mode === "live" ? `acceptance-report-c-live-${runId}.json` : `acceptance-report-c-${mode}.json`,
+  ),
+);
 const orchestratorPath = path.join(HERE, "take-profit-orchestrator.mjs");
 const productionRegistryPath = path.join(HERE, "..", "config", "trusted-issuer.production.json");
+const source = localSourceEvidence({ cwd: path.join(HERE, "..") });
+if (mode === "live" && !source.trackedTreeClean) {
+  throw new Error("Live acceptance requires a clean tracked source tree");
+}
 const results = [];
 let reconciliation;
 let executionRuntime = polymarketRuntimeEvidence({ verified: false });
@@ -509,5 +522,6 @@ const verdict = mode === "live"
   ? failed.length === 0 && pending.length === 0 ? "GATE C: PASS" : "GATE C: FAIL"
   : failed.length === 0 ? `NO FAILURES (${pending.length} pending; Gate C undecided)` : "FAILURES PRESENT";
 process.stdout.write(`\n${verdict}\n`);
-writeFileSync(reportPath, `${JSON.stringify({ mode, origin, at: new Date().toISOString(), verdict, executionRuntime, results, ...(reconciliation ? { reconciliation } : {}) }, null, 2)}\n`);
+writeFileSync(reportPath, `${JSON.stringify({ mode, origin, at: new Date().toISOString(), verdict, source, executionRuntime, results, ...(reconciliation ? { reconciliation } : {}) }, null, 2)}\n`, { flag: mode === "live" ? "wx" : "w" });
+process.stdout.write(`Evidence report: ${reportPath}${mode === "live" ? " (write-once)" : ""}\n`);
 process.exitCode = failed.length || (mode === "live" && pending.length) ? 1 : 0;

@@ -17,6 +17,7 @@ import {
 import { runOpenJourney } from "../src/buyer-orchestrator.mjs";
 import { parseDecimal } from "../src/decimal.mjs";
 import { polymarketRuntimeEvidence } from "../src/polymarket-runtime.mjs";
+import { localSourceEvidence } from "../src/source-evidence.mjs";
 import { trustedIssuerRegistry } from "../src/intent-issuer.mjs";
 import {
   evaluateOpenConsentAcceptance,
@@ -44,10 +45,22 @@ const take = (name, fallback = undefined) => {
 };
 const mode = has("live") ? "live" : has("dry") ? "dry" : "offline";
 const origin = String(take("origin", "https://conviction-bay.vercel.app")).replace(/\/$/, "");
-const reportPath = take("report", path.join(HERE, "..", "acceptance-report.json"));
+const runId = new Date().toISOString().replace(/[:.]/g, "-");
+const reportPath = take(
+  "report",
+  path.join(
+    HERE,
+    "..",
+    mode === "live" ? `acceptance-report-live-${runId}.json` : `acceptance-report-${mode}.json`,
+  ),
+);
 const orchestratorPath = path.join(HERE, "buyer-orchestrator.mjs");
 const productionRegistryPath = path.join(HERE, "..", "config", "trusted-issuer.production.json");
 const productionOrigin = new URL(SERVICE_RESOURCE).origin;
+const source = localSourceEvidence({ cwd: path.join(HERE, "..") });
+if (mode === "live" && !source.trackedTreeClean) {
+  throw new Error("Live acceptance requires a clean tracked source tree");
+}
 const results = [];
 let reconciliation = null;
 let executionRuntime = polymarketRuntimeEvidence({ verified: false });
@@ -335,8 +348,10 @@ writeFileSync(reportPath, `${JSON.stringify({
   origin,
   at: new Date().toISOString(),
   verdict,
+  source,
   executionRuntime,
   results,
   ...(reconciliation ? { reconciliation } : {}),
-}, null, 2)}\n`);
+}, null, 2)}\n`, { flag: mode === "live" ? "wx" : "w" });
+process.stdout.write(`Evidence report: ${reportPath}${mode === "live" ? " (write-once)" : ""}\n`);
 process.exitCode = failed.length || (mode === "live" && pending.length) ? 1 : 0;
