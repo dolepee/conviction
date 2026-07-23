@@ -6,6 +6,8 @@ import { ConvictionError, invariant } from "./errors.mjs";
 
 const CONDITION_ID_RE = /^0x[0-9a-f]{64}$/i;
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const MARKET_NOT_FOUND_MESSAGE =
+  "Polymarket market not found. Check the market URL or use a current Polymarket market slug.";
 
 function normalizeOutcome(value) {
   const outcome = String(value || "").trim().toLowerCase();
@@ -17,12 +19,19 @@ function normalizeOutcome(value) {
   return outcome;
 }
 
-async function fetchJson(url, fetchImpl) {
+async function fetchJson(url, fetchImpl, { notFound } = {}) {
   const response = await fetchImpl(url, {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) {
+    if (response.status === 404 && notFound) {
+      throw new ConvictionError(
+        notFound.code || "market_not_found",
+        notFound.message || MARKET_NOT_FOUND_MESSAGE,
+        notFound.details,
+      );
+    }
     throw new ConvictionError(
       "market_api_error",
       `Market API returned HTTP ${response.status}`,
@@ -84,9 +93,20 @@ export async function resolveMarket(
     gamma = await fetchJson(
       `${GAMMA_API_URL}/markets/slug/${encodeURIComponent(reference.value)}`,
       fetchImpl,
+      {
+        notFound: {
+          message: MARKET_NOT_FOUND_MESSAGE,
+          details: { market: reference.value },
+        },
+      },
     );
     if (Array.isArray(gamma)) gamma = gamma[0];
-    invariant(gamma && typeof gamma === "object", "market_not_found", "Market not found");
+    invariant(
+      gamma && typeof gamma === "object",
+      "market_not_found",
+      MARKET_NOT_FOUND_MESSAGE,
+      { market: reference.value },
+    );
     conditionId = String(gamma.conditionId || "").toLowerCase();
     invariant(CONDITION_ID_RE.test(conditionId), "invalid_market_data", "Market has no valid condition ID");
   }
@@ -94,6 +114,12 @@ export async function resolveMarket(
   const clob = await fetchJson(
     `${CLOB_API_URL}/markets/${conditionId}`,
     fetchImpl,
+    {
+      notFound: {
+        message: MARKET_NOT_FOUND_MESSAGE,
+        details: { market: reference.value },
+      },
+    },
   );
   const rawFeeBps = clob.maker_base_fee;
   const feeBps = Number(rawFeeBps);

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createManagePreviewHandler } from "../api/manage-preview.js";
+import { ConvictionError } from "../src/errors.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
 const WALLET = "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe";
@@ -81,6 +82,46 @@ test("free manager preview re-verifies the OPEN source and returns no executable
   assert.equal("executionCard" in body, false);
   assert.equal("intentHash" in body, false);
   assert.deepEqual(calls.map((entry) => entry[0]).sort(), ["market", "position", "source"]);
+});
+
+test("free manager preview returns a clean 404 for unknown slugs", async () => {
+  const handler = createManagePreviewHandler({
+    trustedIssuers: new Map(),
+    async resolveMarketImpl() {
+      throw new ConvictionError(
+        "market_not_found",
+        "Polymarket market not found. Check the market URL or use a current Polymarket market slug.",
+        { market: "unknown-market" },
+      );
+    },
+    async verifySourceImpl() {
+      return source();
+    },
+    async fetchPositionImpl() {
+      throw new Error("position lookup should not run after a market lookup miss");
+    },
+  });
+  const response = responseRecorder();
+
+  await handler({
+    method: "POST",
+    body: {
+      action: "close",
+      market: "unknown-market",
+      outcome: "yes",
+      shares: "5",
+      minPrice: "0.26",
+      wallet: WALLET,
+      sourcePosition: { supplied: true },
+    },
+  }, response);
+
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 404);
+  assert.equal(body.error.code, "market_not_found");
+  assert.match(body.error.message, /current Polymarket market slug/);
+  assert.deepEqual(body.error.details, { market: "unknown-market" });
+  assert.equal(JSON.stringify(body).includes("gamma-api.polymarket.com"), false);
 });
 
 test("free manager preview dispatches TAKE_PROFIT and remains non-executable", async () => {

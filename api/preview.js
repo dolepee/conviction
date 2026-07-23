@@ -47,7 +47,8 @@ export function createPreviewHandler({
       }
       if (error instanceof ConvictionError) {
         const upstream = ["market_api_error", "rpc_error"].includes(error.code);
-        return send(response, upstream ? 502 : 422, {
+        const status = error.code === "market_not_found" ? 404 : upstream ? 502 : 422;
+        return send(response, status, {
           ok: false,
           error: { code: error.code, message: error.message, details: error.details },
         });

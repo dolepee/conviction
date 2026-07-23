@@ -14,6 +14,7 @@ import {
   SERVICE_NETWORK,
   SERVICE_PAYEE,
 } from "../src/service-payment.mjs";
+import { ConvictionError } from "../src/errors.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
 const WALLET = "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe";
@@ -129,6 +130,43 @@ function managerRequestBody() {
     sourcePosition: { supplied: true },
   };
 }
+
+test("paid manager compiler returns a clean 404 for unknown slugs", async () => {
+  const handler = createManageHandler({
+    environment: {},
+    issueIntentImpl: async (compilation) => compilation,
+    trustedIssuers: new Map(),
+    async resolveMarketImpl() {
+      throw new ConvictionError(
+        "market_not_found",
+        "Polymarket market not found. Check the market URL or use a current Polymarket market slug.",
+        { market: "unknown-market" },
+      );
+    },
+    async verifySourceImpl() {
+      return source();
+    },
+    async fetchPositionImpl() {
+      throw new Error("position lookup should not run after a market lookup miss");
+    },
+  });
+  const response = responseRecorder();
+
+  await handler(
+    {
+      method: "POST",
+      body: { ...managerRequestBody(), market: "unknown-market" },
+    },
+    response,
+  );
+
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 404);
+  assert.equal(body.error.code, "market_not_found");
+  assert.match(body.error.message, /current Polymarket market slug/);
+  assert.deepEqual(body.error.details, { market: "unknown-market" });
+  assert.equal(JSON.stringify(body).includes("gamma-api.polymarket.com"), false);
+});
 
 test("paid manager re-verifies source and holdings before compiling CLOSE", async () => {
   const calls = [];

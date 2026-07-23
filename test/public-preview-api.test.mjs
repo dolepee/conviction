@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createIntentHandler, PUBLIC_INTENT_QUOTE_TTL_MS } from "../api/intent.js";
 import { createMarketHandler } from "../api/market.js";
-import { PUBLIC_INTENT_QUOTE_TTL_MS } from "../api/intent.js";
 import { createPreviewHandler } from "../api/preview.js";
 import { ConvictionError } from "../src/errors.mjs";
 import { createPublicApiGuard } from "../src/public-api-guard.mjs";
@@ -230,6 +230,38 @@ test("preview APIs preserve method and fail-closed error behavior", async () => 
   await createMarketHandler()({ method: "POST", body: {} }, missingResponse);
   assert.equal(missingResponse.statusCode, 422);
   assert.equal(JSON.parse(missingResponse.body).error.code, "missing_market");
+});
+
+test("public market and intent APIs return clean 404s for unknown slugs", async () => {
+  const missing = new ConvictionError(
+    "market_not_found",
+    "Polymarket market not found. Check the market URL or use a current Polymarket market slug.",
+    { market: "unknown-market" },
+  );
+  const handlers = [
+    createMarketHandler({ async resolveMarketImpl() { throw missing; } }),
+    createPreviewHandler({ async resolveMarketImpl() { throw missing; } }),
+    createIntentHandler({ async resolveMarketImpl() { throw missing; } }),
+  ];
+  const payload = {
+    market: "unknown-market",
+    outcome: "yes",
+    spend: "1.35",
+    maxPrice: "0.27",
+    wallet: "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe",
+  };
+
+  for (const handler of handlers) {
+    const response = responseRecorder();
+    await handler({ method: "POST", body: payload }, response);
+    const body = JSON.parse(response.body);
+    assert.equal(response.statusCode, 404);
+    assert.equal(body.error.code, "market_not_found");
+    assert.match(body.error.message, /current Polymarket market slug/);
+    assert.deepEqual(body.error.details, { market: "unknown-market" });
+    assert.equal(JSON.stringify(body).includes("gamma-api.polymarket.com"), false);
+    assert.equal(JSON.stringify(body).includes('"url"'), false);
+  }
 });
 
 test("the final public card has a five-minute handoff window", () => {
