@@ -119,6 +119,31 @@ const checkpoint = {
   journalPath,
 };
 
+export function bindPaidOpenPreflight(requestBody, {
+  walletReadiness,
+  pluginPreview,
+} = {}) {
+  if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)) {
+    throw Object.assign(new Error("OPEN request body is missing"), { code: "invalid_open_request" });
+  }
+  if (!walletReadiness || typeof walletReadiness !== "object" || Array.isArray(walletReadiness)) {
+    throw Object.assign(new Error("Official Polymarket quickstart result is missing"), {
+      code: "missing_wallet_readiness",
+    });
+  }
+  if (!pluginPreview || typeof pluginPreview !== "object" || Array.isArray(pluginPreview)) {
+    throw Object.assign(new Error("Official Polymarket dry run is missing"), {
+      code: "missing_plugin_preview",
+    });
+  }
+  Object.assign(requestBody, {
+    executionMode: "deposit-wallet",
+    walletReadiness,
+    pluginPreview,
+  });
+  return requestBody;
+}
+
 function journalRevision(value, label = "Reconciliation journal") {
   const revision = value?.journalRevision ?? 0;
   if (!Number.isSafeInteger(revision) || revision < 0) {
@@ -5007,6 +5032,7 @@ async function main() {
   checkpoint.sourcePositionProofHash = sourcePosition?.positionProofHash || null;
   let latestReadiness;
   let latestCloseReadiness;
+  let latestWalletReadiness;
   const emit = options.json
     ? (event) => process.stderr.write(`${JSON.stringify(event)}\n`)
     : (event) => {
@@ -5149,6 +5175,7 @@ async function main() {
       pUsdBalanceRaw,
       pUsdAllowanceRaw,
     });
+    latestWalletReadiness = quickstart;
     return latestReadiness;
   };
 
@@ -5277,6 +5304,15 @@ async function main() {
           code: json?.error?.code || "preview_failed",
         });
       }
+      const pluginPreview = await commandJson(
+        polymarketPluginCommand(),
+        [...json.preview.executionCard.argv, "--dry-run"],
+        "Pre-payment Polymarket dry run",
+      );
+      bindPaidOpenPreflight(requestBody, {
+        walletReadiness: latestWalletReadiness,
+        pluginPreview,
+      });
       return {
         preview: json.preview,
         conditionId: json.preview.market.conditionId,

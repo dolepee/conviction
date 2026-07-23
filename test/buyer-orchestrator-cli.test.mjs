@@ -8,6 +8,7 @@ const writeFile = (file, data, options = {}) => fsWriteFile(file, data, { ...opt
 
 import { sha256 } from "../src/canonical.mjs";
 import {
+  bindPaidOpenPreflight,
   claimCloseReplayLock,
   claimExecutionLock,
   claimVerifiedPaymentTransaction,
@@ -130,6 +131,40 @@ test("buyer CLI rejects direct EOA OPEN before payment", () => {
       (error) => error?.code === "maker_not_eligible",
     );
   }
+});
+
+test("buyer CLI binds official readiness and dry-run evidence into the paid OPEN replay", () => {
+  const requestBody = {
+    market: "example-market",
+    outcome: "yes",
+    spend: "1.35",
+    maxPrice: "0.27",
+    wallet: "0x2222222222222222222222222222222222222222",
+  };
+  const walletReadiness = {
+    ok: true,
+    status: "deposit_wallet_ready",
+    wallet: {
+      eoa: "0x1111111111111111111111111111111111111111",
+      deposit_wallet: requestBody.wallet,
+    },
+  };
+  const pluginPreview = {
+    ok: true,
+    dry_run: true,
+    data: { note: "dry-run: order not submitted" },
+  };
+  assert.equal(bindPaidOpenPreflight(requestBody, {
+    walletReadiness,
+    pluginPreview,
+  }), requestBody);
+  assert.equal(requestBody.executionMode, "deposit-wallet");
+  assert.equal(requestBody.walletReadiness, walletReadiness);
+  assert.equal(requestBody.pluginPreview, pluginPreview);
+  assert.throws(
+    () => bindPaidOpenPreflight({}, { walletReadiness }),
+    (error) => error?.code === "missing_plugin_preview",
+  );
 });
 
 test("buyer CLI requires the finite EOA allowance to equal the signed debit ceiling", () => {
