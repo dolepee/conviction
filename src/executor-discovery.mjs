@@ -2,6 +2,11 @@ import { sha256 } from "./canonical.mjs";
 import {
   POLYMARKET_RUNTIME_COMMIT,
 } from "./polymarket-runtime.mjs";
+import {
+  BUYER_READINESS_URL,
+  buyerReadinessContract,
+} from "./buyer-readiness.mjs";
+import { SERVICE_PAYEE } from "./service-payment.mjs";
 
 export const EXECUTOR_DISCOVERY_URL = "https://conviction-bay.vercel.app/api/executor";
 export const EXECUTOR_DISCOVERY_LINK = `<${EXECUTOR_DISCOVERY_URL}>; rel="service-desc"; type="application/json"`;
@@ -244,5 +249,11 @@ export function executorDiscoveryDocument() {
     supportedActions: ["OPEN", "CLOSE", "TAKE_PROFIT"],
     nativeOkxSupportedActions: NATIVE_OKX_EXECUTION.supportedActions,
     fallbackRequiredActions: NATIVE_OKX_EXECUTION.fallbackRequiredActions,
+    buyerReadiness: {
+      url: BUYER_READINESS_URL,
+      contract: buyerReadinessContract(),
+      servicePayee: SERVICE_PAYEE,
+      selfPaymentAllowed: false,
+    },
   });
 }
