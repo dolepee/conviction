@@ -28,16 +28,26 @@ function requireState(state) {
   return state;
 }
 
-function cachedAuthorization(record) {
-  return typeof record?.authorized === "boolean" ? record.authorized : undefined;
+function cachedAuthorization(record, currentTime) {
+  if (
+    typeof record?.authorized !== "boolean" ||
+    !Number.isSafeInteger(record?.expiresAt) ||
+    record.expiresAt <= currentTime
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    authorized: record.authorized,
+    expiresAt: record.expiresAt,
+  });
 }
 
-async function persistAuthorization(state, statusId, authorized) {
+async function persistAuthorization(state, statusId, authorized, expiresAt) {
   try {
     await state.put(
       BUILDER_AUTH_STATUS_NAMESPACE,
       statusId,
-      { authorized },
+      { authorized, expiresAt },
       BUILDER_AUTH_CACHE_TTL_SECONDS,
     );
   } catch {
@@ -80,6 +90,13 @@ export function createBuilderAuthorizationProbe({
   let cached;
   let cachedUntil = 0;
   let inFlight;
+  function cacheRecord(record, currentTime) {
+    cached = record.authorized;
+    // A durable record can be read immediately before its Redis TTL ends.
+    // Never turn that remaining few milliseconds into another full local TTL.
+    cachedUntil = Math.min(currentTime + cacheTtlMilliseconds, record.expiresAt);
+    return record.authorized;
+  }
   return async function builderAuthorization() {
     const currentTime = now();
     if (cached !== undefined && currentTime < cachedUntil) return cached;
@@ -90,13 +107,11 @@ export function createBuilderAuthorizationProbe({
           const credentials = builderCredentialsFromEnvironment(environment);
           if (!credentials) return false;
           const statusId = authorizationStatusId(credentials, environment);
-          const stored = cachedAuthorization(
-            await statusState.get(BUILDER_AUTH_STATUS_NAMESPACE, statusId),
-          );
+          const storedRecord = await statusState.get(BUILDER_AUTH_STATUS_NAMESPACE, statusId);
+          const storedAt = now();
+          const stored = cachedAuthorization(storedRecord, storedAt);
           if (stored !== undefined) {
-            cached = stored;
-            cachedUntil = now() + cacheTtlMilliseconds;
-            return stored;
+            return cacheRecord(stored, storedAt);
           }
           const claimed = await statusState.claimOnce(
             BUILDER_AUTH_LOCK_NAMESPACE,
@@ -104,13 +119,11 @@ export function createBuilderAuthorizationProbe({
             BUILDER_AUTH_LOCK_TTL_SECONDS,
           );
           if (!claimed) {
-            const contenderResult = cachedAuthorization(
-              await statusState.get(BUILDER_AUTH_STATUS_NAMESPACE, statusId),
-            );
+            const contenderRecord = await statusState.get(BUILDER_AUTH_STATUS_NAMESPACE, statusId);
+            const contenderAt = now();
+            const contenderResult = cachedAuthorization(contenderRecord, contenderAt);
             if (contenderResult !== undefined) {
-              cached = contenderResult;
-              cachedUntil = now() + cacheTtlMilliseconds;
-              return contenderResult;
+              return cacheRecord(contenderResult, contenderAt);
             }
             // Another instance owns the full bounded relayer request. This is
             // neither proof of failure nor permission to proceed; expose a
@@ -122,16 +135,14 @@ export function createBuilderAuthorizationProbe({
           try {
             result = await relayer.run({ operation: "builder-auth", body: {} });
           } catch {
-            await persistAuthorization(statusState, statusId, false);
-            cached = false;
-            cachedUntil = now() + cacheTtlMilliseconds;
-            return false;
+            const expiresAt = now() + BUILDER_AUTH_CACHE_TTL_MILLISECONDS;
+            await persistAuthorization(statusState, statusId, false, expiresAt);
+            return cacheRecord({ authorized: false, expiresAt }, currentTime);
           }
           authorized = result?.ok === true && result.authentication === "builder";
-          await persistAuthorization(statusState, statusId, authorized);
-          cached = authorized;
-          cachedUntil = now() + cacheTtlMilliseconds;
-          return authorized;
+          const expiresAt = now() + BUILDER_AUTH_CACHE_TTL_MILLISECONDS;
+          await persistAuthorization(statusState, statusId, authorized, expiresAt);
+          return cacheRecord({ authorized, expiresAt }, currentTime);
         } catch {
           authorized = false;
         }

@@ -243,6 +243,46 @@ test("Builder authorization status is shared durably across setup-handler instan
   assert.equal(runs, 1);
 });
 
+test("shared Builder authorization cannot extend its local cache past the durable TTL", async () => {
+  const environment = {
+    VERCEL_ENV: "production",
+    POLYMARKET_BUILDER_API_KEY: "builder-key",
+    POLYMARKET_BUILDER_SECRET: "builder-secret",
+    POLYMARKET_BUILDER_PASSPHRASE: "builder-passphrase",
+  };
+  let currentTime = 1_000;
+  const state = createInMemoryWalletSetupState({ now: () => currentTime });
+  let runs = 0;
+  const createRelayer = () => ({
+    run: async () => {
+      runs += 1;
+      return { ok: true, authentication: "builder" };
+    },
+  });
+  const first = createBuilderAuthorizationProbe({
+    environment,
+    state,
+    createRelayer,
+    now: () => currentTime,
+  });
+  assert.equal(await first(), true);
+  assert.equal(runs, 1);
+
+  currentTime += 59_999;
+  const second = createBuilderAuthorizationProbe({
+    environment,
+    state,
+    createRelayer,
+    now: () => currentTime,
+  });
+  assert.equal(await second(), true);
+  assert.equal(runs, 1);
+
+  currentTime += 1;
+  assert.equal(await second(), true);
+  assert.equal(runs, 2);
+});
+
 test("contending Builder authorization probes report retryable checking until the owner finishes", async () => {
   const environment = {
     VERCEL_ENV: "production",

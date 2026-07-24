@@ -141,6 +141,11 @@ assert.ok(
   "browser OPEN does not use the official Polymarket TypeScript client",
 );
 assert.ok(walletSetupApp.includes('relay("auth")'), "browser setup does not verify Builder authorization before deployment consent");
+assert.match(
+  walletSetupHtml,
+  /<button[^>]*id="connect-wallet"[^>]*\bdisabled\b[^>]*>/,
+  "browser wallet connection must remain disabled until the asynchronous authorization probe succeeds",
+);
 assert.ok(
   browserOpenSource.indexOf('element("confirm-open-payment")') <
     browserOpenSource.indexOf('element("confirm-open-trade")'),
