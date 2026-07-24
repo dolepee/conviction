@@ -1,4 +1,5 @@
 node_modules/
+public/
 assets/browser-open.js
 assets/browser-open.js.map
 __pycache__/

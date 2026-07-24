@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Non-custodial bounded prediction-market execution for OKX.AI",
   "scripts": {
-    "build": "esbuild src/browser-open-entry.mjs --bundle --platform=browser --format=esm --minify --outfile=assets/browser-open.js",
+    "build": "node scripts/build-site.mjs && esbuild src/browser-open-entry.mjs --bundle --platform=browser --format=esm --minify --outfile=public/assets/browser-open.js",
     "test": "node --test",
     "typecheck": "node --check app.js wallet-setup.js && node --check src/*.mjs && node --check scripts/*.mjs && node --check api/*.js && node --check test/*.test.mjs && python3 -m py_compile scripts/conviction_fast_responder.py scripts/conviction_review_watch.py scripts/state-release-mutex.py scripts/telegram_outbox.py",
     "agent:verify": "python3 scripts/conviction_fast_responder.py --self-test && python3 scripts/conviction_review_watch.py --self-test",

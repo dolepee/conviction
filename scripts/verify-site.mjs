@@ -14,7 +14,7 @@ const browserOpenSource = await readFile(
   "utf8",
 );
 const browserOpenBundle = await readFile(
-  new URL("../assets/browser-open.js", import.meta.url),
+  new URL("../public/assets/browser-open.js", import.meta.url),
   "utf8",
 );
 const privacy = await readFile(new URL("../privacy.html", import.meta.url), "utf8");
