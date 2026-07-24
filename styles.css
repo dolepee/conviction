@@ -39,11 +39,27 @@ code { font-family: var(--font-mono); }
 .site-header { min-height: 84px; border-bottom: 1px solid var(--line); }
 .brand { display: inline-flex; align-items: center; gap: .65rem; font-weight: 800; text-decoration: none; letter-spacing: -.03em; }
 .brand img { display: block; }
-nav { display: flex; gap: 1.8rem; }
-nav a { text-decoration: none; color: var(--muted); font-size: .92rem; font-weight: 700; }
-nav a:hover { color: var(--ink); }
+
+.site-nav { margin-left: auto; display: flex; gap: 1.2rem; }
+.site-nav a { text-decoration: none; color: var(--muted); font-size: .92rem; font-weight: 700; white-space: nowrap; }
+.site-nav a:hover { color: var(--ink); }
+.site-nav a.is-active { color: var(--ink); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; }
+
+.site-footer nav { display: flex; }
+.site-footer a { text-decoration: none; }
+.site-footer a:hover { color: var(--ink); }
 .network-pill { display: inline-flex; align-items: center; gap: .5rem; border: 1px solid var(--line); border-radius: 999px; padding: .48rem .75rem; font: 500 .72rem var(--font-mono); text-transform: uppercase; }
 .network-pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px rgb(22 115 75 / .12); }
+
+/* SPA route sessions */
+.page-session { display: none; }
+.page-session.is-active { display: block; animation: fadein 180ms ease-out; }
+.page-session[hidden] { display: none !important; }
+
+@keyframes fadein {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 
 main { overflow: hidden; }
 .hero, .loop, .proof-section, .compiler-section, .safety-section {
