@@ -57,6 +57,8 @@ test("buyer readiness contract exposes the free classifier and approval disclosu
   assert.equal(contract.approvalDisclosure.ctfOperatorApprovalScope, "blanket");
   assert.equal(contract.approvalDisclosure.revokeCommandAvailable, false);
   assert.equal(contract.approvalDisclosure.convictionCanBypassWalletPolicy, false);
+  assert.equal(contract.browserSetupHandoff.page, "https://conviction-bay.vercel.app/wallet-setup");
+  assert.equal(contract.browserSetupHandoff.activationCheckRequired, true);
 });
 
 test("ready buyer advances to the free preview", () => {
@@ -151,6 +153,8 @@ test("missing deposit wallet is a no-payment stop, not an in-session setup loop"
   assert.equal(result.paymentAllowed, false);
   assert.equal(result.recoverable, false);
   assert.equal(result.canResumeWithReadyDepositWallet, true);
+  assert.equal(result.browserSetupHandoff.page, "https://conviction-bay.vercel.app/wallet-setup");
+  assert.equal(result.browserSetupHandoff.fundingOrPaymentAllowedBeforeSetup, false);
   assert.equal(result.service, undefined);
   assert.equal(result.funding, undefined);
   assert.deepEqual(result.remainingActions, ["USE_READY_DEPOSIT_WALLET_OR_STOP"]);

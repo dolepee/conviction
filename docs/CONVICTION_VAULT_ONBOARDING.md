@@ -1,6 +1,6 @@
 # Conviction browser wallet onboarding
 
-Status: the wallet-setup lane is activated in production. It connects a browser EVM wallet, authenticates wallet ownership, deploys the buyer-controlled Polymarket Deposit Wallet, and submits the official five-call venue approval batch after two explicit consents.
+Status: the wallet-setup lane is configured in production. It connects a browser EVM wallet, authenticates wallet ownership, performs a read-only Builder-authorization check, then can deploy the buyer-controlled Polymarket Deposit Wallet and submit the official five-call venue approval batch after two explicit consents. A failed Builder check stops before deployment, funding, payment, or trade.
 
 The browser OPEN adapter is implemented in source and remains unproven live until a controlled funded acceptance run completes. It adds a free preview, an exact 0.05 USD₮0 buyer-local x402 confirmation on X Layer, a fresh issuer-signed card, a separate trade confirmation, an official Polymarket TypeScript SDK FAK BUY from the Deposit Wallet, and the existing issuer-signed Polygon receipt proof. It does not fund or bridge assets, and it does not manage an existing position.
 
@@ -12,12 +12,13 @@ The separate onboarding path uses Polymarket's current official Builder route: a
 
 ## Implemented boundary
 
-`GET /api/wallet-setup` publishes the no-secret capability contract and reports only whether all seven activation variables exist. `/wallet-setup` remains disabled unless the contract reports `BROWSER_SETUP_BETA_READY`.
+`GET /api/wallet-setup` publishes the no-secret capability contract and reports whether the seven activation variables are structurally present. After a buyer signs only the wallet-session authentication message, `/wallet-setup` performs an authenticated, read-only Builder-relayer check before it enables deployment consent. `/wallet-setup` remains disabled unless the contract reports `BROWSER_SETUP_BETA_READY`, and it stops before any deployment or funding if Builder authorization is unavailable.
 
 `POST /api/wallet-session` issues a two-minute wallet challenge, verifies the buyer's message signature, and returns a ten-minute wallet-bound session. The authentication signature explicitly grants no deploy, approval, funding, payment, or trading authority. A separate one-time, wallet-signed deployment-consent message is required before the server may submit a wallet-create request.
 
-`POST /api/wallet-relayer` is a fixed-origin proxy to `https://relayer-v2.polymarket.com`. It accepts only three operations:
+`POST /api/wallet-relayer` is a fixed-origin proxy to `https://relayer-v2.polymarket.com`. It accepts only four operations:
 
+- an authenticated, read-only Builder authorization check before deployment consent is enabled;
 - a nonce lookup scoped to the authenticated buyer;
 - `POST /submit` for either the exact official Deposit Wallet factory create request or the exact official five-call approval batch;
 - polling only via a short-lived, HMAC-signed capability minted for the exact relayer transaction returned to that buyer session.

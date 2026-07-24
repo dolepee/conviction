@@ -248,6 +248,41 @@ export function createWalletSetupAuth({
     });
   }
 
+  function setupSession(session) {
+    const wallet = address(session?.wallet);
+    const sessionId = String(session?.sessionId || "");
+    const expiresAt = Number(session?.expiresAt);
+    if (!/^[0-9a-f]{48}$/.test(sessionId) || !Number.isSafeInteger(expiresAt) || expiresAt <= now()) {
+      throw new WalletSetupAuthError(401, "invalid_wallet_session", "Wallet session is invalid");
+    }
+    return Object.freeze({ wallet, sessionId, expiresAt });
+  }
+
+  async function recordBuilderAuthorization(session) {
+    const verified = setupSession(session);
+    const currentTime = now();
+    await walletState.put(
+      "builder-authorization",
+      verified.sessionId,
+      { wallet: verified.wallet, verifiedAt: currentTime },
+      Math.max(1, verified.expiresAt - currentTime),
+    );
+    return Object.freeze({ wallet: verified.wallet, sessionId: verified.sessionId });
+  }
+
+  async function requireBuilderAuthorization(session) {
+    const verified = setupSession(session);
+    const authorization = await walletState.get("builder-authorization", verified.sessionId);
+    if (!authorization || authorization.wallet !== verified.wallet) {
+      throw new WalletSetupAuthError(
+        409,
+        "builder_authorization_required",
+        "Polymarket Builder authorization must be verified before deployment consent",
+      );
+    }
+    return Object.freeze({ wallet: verified.wallet, sessionId: verified.sessionId });
+  }
+
   function issueDeploymentChallenge(session) {
     const currentTime = now();
     const payload = {
@@ -375,6 +410,8 @@ export function createWalletSetupAuth({
     issueChallenge,
     authenticate,
     verifySession,
+    recordBuilderAuthorization,
+    requireBuilderAuthorization,
     issueDeploymentChallenge,
     authorizeDeployment,
     consumeDeploymentConsent,

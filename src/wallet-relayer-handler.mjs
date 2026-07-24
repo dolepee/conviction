@@ -189,6 +189,7 @@ export function createWalletRelayerHandler({
     const expected = expectedRequest(body);
     let depositWallet;
     if (expected.action === "DEPLOY_DEPOSIT_WALLET") {
+      await walletAuth.requireBuilderAuthorization(session);
       const consent = await walletAuth.consumeDeploymentConsent(deploymentConsentToken, session);
       if (!sameAddress(consent.wallet, session.wallet) || !sameAddress(consent.factory, DEPOSIT_WALLET_FACTORY)) {
         throw relayerError(403, "deployment_session_mismatch", "Deployment consent does not match this buyer session");
@@ -293,6 +294,11 @@ export function createWalletRelayerHandler({
     try {
       return await apiGuard.run(request, async () => {
         const session = walletAuth.verifySession(bearer(request));
+        if (request.body?.operation === "auth") {
+          const result = await walletRelayer.run({ operation: "builder-auth", session, body: {} });
+          await walletAuth.recordBuilderAuthorization(session);
+          return response.status(200).json(result);
+        }
         if (request.body?.operation === "nonce") {
           const result = await walletRelayer.run({ operation: "nonce", session, body: {} });
           return response.status(200).json(result);
@@ -307,7 +313,7 @@ export function createWalletRelayerHandler({
         if (request.body?.operation === "transaction") {
           return response.status(200).json(await poll({ pollToken: request.body?.pollToken, session }));
         }
-        throw relayerError(422, "unsupported_relayer_operation", "Relayer operation must be nonce, submit, or transaction");
+        throw relayerError(422, "unsupported_relayer_operation", "Relayer operation must be auth, nonce, submit, or transaction");
       });
     } catch (error) {
       return errorResponse(response, error);

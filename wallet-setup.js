@@ -157,11 +157,15 @@ async function connect() {
     });
     sessionToken = session.sessionToken;
     owner = session.wallet;
+    const builderAuth = await relay("auth");
+    if (builderAuth?.authentication !== "builder") {
+      throw new Error("Conviction could not verify Polymarket Builder authorization. Do not fund or continue setup.");
+    }
     eoaOutput.textContent = owner;
     connectButton.textContent = "Buyer wallet authenticated";
     deployButton.disabled = false;
     setStep("deploy");
-    setStatus("Buyer wallet authenticated. Nothing has been deployed or approved.");
+    setStatus("Buyer wallet authenticated and Builder authorization verified. Nothing has been deployed or approved.");
   } catch (error) {
     connectButton.disabled = false;
     setStatus(errorMessage(error), "error");

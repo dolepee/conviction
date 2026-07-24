@@ -5,6 +5,14 @@ export const BUYER_READINESS_VERSION = "conviction-buyer-readiness-v3";
 export const BUYER_READINESS_URL = "https://conviction-bay.vercel.app/api/readiness";
 export const OPEN_SERVICE_PRICE_ATOMIC = "50000";
 export const DEFAULT_OPEN_BUDGET_RAW = "1250000";
+export const BROWSER_SETUP_HANDOFF = Object.freeze({
+  statusEndpoint: "https://conviction-bay.vercel.app/api/wallet-setup",
+  page: "https://conviction-bay.vercel.app/wallet-setup",
+  activationCheckRequired: true,
+  browserWalletRequired: true,
+  fundingOrPaymentAllowedBeforeSetup: false,
+  note: "This is a separate browser-only handoff. A caller must check its current status and obtain its own explicit wallet consents before funding, payment, or trade.",
+});
 
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
 export const APPROVAL_DISCLOSURE = Object.freeze({
@@ -135,6 +143,7 @@ function result(status, nextAction, input, missing = []) {
     ...(venueWalletStop ? {
       canResumeWithReadyDepositWallet: true,
       stopReason: "A fresh or unfinished Polymarket deposit-wallet setup is not a Conviction in-session path. Do not fund, approve, pay, or trade until a buyer-controlled ready deposit wallet is independently available.",
+      browserSetupHandoff: BROWSER_SETUP_HANDOFF,
     } : {}),
   });
 }
@@ -145,7 +154,7 @@ export function buyerReadinessContract() {
     endpoint: BUYER_READINESS_URL,
     method: "POST",
     readOnly: true,
-    description: "Classifies buyer-local OKX and Polymarket readiness before preview or payment. A fresh or unfinished deposit-wallet setup is not an in-session Conviction onboarding path.",
+    description: "Classifies buyer-local OKX and Polymarket readiness before preview or payment. A fresh or unfinished deposit-wallet setup is not an in-session agent onboarding path; when applicable it exposes a separate browser-only handoff that must be checked before any funding.",
     statuses: [
       "READY_FOR_CONVICTION",
       "BUYER_SETUP_REQUIRED",
@@ -179,6 +188,7 @@ export function buyerReadinessContract() {
       requestedOpenBudget: "decimal string; optional, default 1.25",
     },
     approvalDisclosure: APPROVAL_DISCLOSURE,
+    browserSetupHandoff: BROWSER_SETUP_HANDOFF,
   });
 }
 

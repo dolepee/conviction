@@ -76,7 +76,7 @@ export function walletSetupScaffold({ configured = false } = {}) {
     },
     approvalDisclosure: APPROVAL_DISCLOSURE,
     notice: configured
-      ? "Setup can deploy and approve after two explicit browser-wallet consents, then run one buyer-local paid OPEN with a separate trade confirmation. It cannot fund or bridge."
+      ? "Setup first verifies Builder authorization through a read-only relayer check. Only then can it deploy and approve after two explicit browser-wallet consents, then run one buyer-local paid OPEN with a separate trade confirmation. It cannot fund or bridge."
       : "Browser setup is not activated. Do not fund a new wallet from this screen.",
   });
 }
