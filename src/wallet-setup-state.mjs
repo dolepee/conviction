@@ -1,3 +1,5 @@
+import { walletSetupStateEnvironment } from "./wallet-setup-config.mjs";
+
 const STORE_VERSION = "conviction-wallet-setup-state-v1";
 const KEY_PART_RE = /^[a-z0-9][a-z0-9._:-]{0,511}$/i;
 
@@ -156,8 +158,9 @@ export function createRedisWalletSetupState({
 }
 
 export function createWalletSetupStateFromEnvironment(environment = process.env) {
+  const state = walletSetupStateEnvironment(environment);
   return createRedisWalletSetupState({
-    url: environment.CONVICTION_WALLET_STATE_REST_URL,
-    token: environment.CONVICTION_WALLET_STATE_REST_TOKEN,
+    url: state.url,
+    token: state.token,
   });
 }

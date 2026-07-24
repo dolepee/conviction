@@ -29,7 +29,7 @@ The relayer wallet nonce makes approval-batch replay fail closed. Wallet creatio
 1. Create a Polymarket Builder profile and Builder API credentials at `polymarket.com → Settings → Builders`.
 2. Store the API key, secret, and passphrase only in encrypted server environment variables. They must never enter browser JavaScript, Git, client logs, x402 responses, or chat.
 3. Generate an independent random `CONVICTION_WALLET_SESSION_SECRET` with at least 32 bytes and store it only in the encrypted server environment.
-4. Configure a server-only Redis-compatible REST endpoint and token as `CONVICTION_WALLET_STATE_REST_URL` and `CONVICTION_WALLET_STATE_REST_TOKEN`; do not activate with in-memory state.
+4. Configure a server-only Redis-compatible REST endpoint and token as `CONVICTION_WALLET_STATE_REST_URL` and `CONVICTION_WALLET_STATE_REST_TOKEN`, or use Vercel's injected `KV_REST_API_URL` and `KV_REST_API_TOKEN`; do not activate with in-memory state.
 5. Configure `CONVICTION_POLYGON_RPC_URL` as a fixed server-side Polygon RPC used only for receipt, wallet-code, and approval-state verification.
 6. Deploy a preview and confirm that inactive production remains fail closed.
 7. In a controlled unfunded browser test, explicitly consent to wallet deployment and verify the submitted Polygon receipt plus the factory's buyer-wallet deployment event.
