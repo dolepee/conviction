@@ -1,6 +1,7 @@
 import { getAddress } from "viem";
 
 import { BuilderGuardError, DEPOSIT_WALLET_FACTORY } from "./polymarket-builder-guard.mjs";
+import { builderCredentialsFromEnvironment } from "./polymarket-builder-credentials.mjs";
 import { createPolymarketRelayerProxy } from "./polymarket-relayer-proxy.mjs";
 import {
   createPolygonWalletSetupVerifierFromEnvironment,
@@ -21,20 +22,6 @@ const TRANSACTION_TTL_SECONDS = 900;
 function bearer(request) {
   const raw = String(request.headers?.authorization || "");
   return raw.startsWith("Bearer ") ? raw.slice(7).trim() : "";
-}
-
-function credentialsFromEnvironment() {
-  const key = process.env.POLYMARKET_BUILDER_API_KEY;
-  const secret = process.env.POLYMARKET_BUILDER_SECRET;
-  const passphrase = process.env.POLYMARKET_BUILDER_PASSPHRASE;
-  if (![key, secret, passphrase].every((value) => typeof value === "string" && value.trim().length > 0)) {
-    return undefined;
-  }
-  return {
-    key: key.trim(),
-    secret: secret.trim(),
-    passphrase: passphrase.trim(),
-  };
 }
 
 function relayerCredentialsFromEnvironment() {
@@ -170,7 +157,7 @@ export function createWalletRelayerHandler({
     state: walletState,
   });
   const walletRelayer = relayer || createPolymarketRelayerProxy({
-    credentials: credentialsFromEnvironment(),
+    credentials: builderCredentialsFromEnvironment(),
     relayerCredentials: relayerCredentialsFromEnvironment(),
   });
   let polygonVerifier = verifier;

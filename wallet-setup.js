@@ -332,7 +332,12 @@ async function initialize() {
       scaffold?.browserSetup?.approvalCalls?.length !== 5
     ) {
       connectButton.disabled = true;
-      setStatus("Browser wallet setup is not activated yet. Do not connect or fund a new wallet here.", "error");
+      setStatus(
+        scaffold?.status === "BROWSER_SETUP_AUTH_UNAVAILABLE"
+          ? "Browser setup authorization is temporarily unavailable. Do not connect or fund a new wallet here."
+          : "Browser wallet setup is not activated yet. Do not connect or fund a new wallet here.",
+        "error",
+      );
       return;
     }
     setStatus("Setup is available. Connect a dedicated buyer wallet to begin; no chain action occurs on connect.");

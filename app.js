@@ -113,7 +113,10 @@ async function loadWalletSetupScaffold() {
       return;
     }
     if (
-      scaffold.status !== "BROWSER_SETUP_REQUIRES_ACTIVATION" ||
+      ![
+        "BROWSER_SETUP_REQUIRES_ACTIVATION",
+        "BROWSER_SETUP_AUTH_UNAVAILABLE",
+      ].includes(scaffold.status) ||
       scaffold.chainWritesAllowed !== false ||
       scaffold?.paymentAllowed !== false ||
       scaffold?.actions?.pay !== false ||
@@ -121,7 +124,9 @@ async function loadWalletSetupScaffold() {
     ) {
       throw new Error("unexpected wallet setup contract");
     }
-    walletSetupStatus.textContent = "Browser setup is not activated yet. Use an already-ready buyer-controlled Deposit Wallet.";
+    walletSetupStatus.textContent = scaffold.status === "BROWSER_SETUP_AUTH_UNAVAILABLE"
+      ? "Browser setup authorization is temporarily unavailable. Do not connect or fund a new wallet here."
+      : "Browser setup is not activated yet. Use an already-ready buyer-controlled Deposit Wallet.";
   } catch {
     walletSetupStatus.textContent = "Wallet Setup status is unavailable. Do not fund or connect a new wallet here.";
   }
