@@ -1,4 +1,9 @@
 import { APPROVAL_DISCLOSURE } from "./buyer-readiness.mjs";
+import {
+  DEPOSIT_WALLET_FACTORY,
+  OFFICIAL_APPROVAL_CALLS,
+  POLYGON_CHAIN_ID,
+} from "./polymarket-builder-guard.mjs";
 
 export const WALLET_SETUP_SCAFFOLD_VERSION = "conviction-wallet-setup-v1";
 
@@ -8,23 +13,23 @@ function freeze(value) {
   return Object.freeze(value);
 }
 
-// This is deliberately a static, no-secret contract. It is the Phase A boundary
-// for a future browser-signer + Polymarket Builder onboarding lane, not an API
-// that can create a wallet, sign a relayer request, or accept credentials.
-export function walletSetupScaffold() {
+// This contract never exposes credentials. `configured` only reports whether
+// the server has the Builder values, an independent session secret, durable
+// one-time state, and a fixed Polygon verification RPC.
+export function walletSetupScaffold({ configured = false } = {}) {
   return freeze({
     ok: true,
     version: WALLET_SETUP_SCAFFOLD_VERSION,
-    status: "FEASIBILITY_ONLY_NOT_CONFIGURED",
-    readOnly: true,
+    status: configured ? "BROWSER_SETUP_BETA_READY" : "BROWSER_SETUP_REQUIRES_ACTIVATION",
+    readOnly: !configured,
     paymentAllowed: false,
-    chainWritesAllowed: false,
+    chainWritesAllowed: configured,
     credentialsAccepted: false,
     buyerKeysAccepted: false,
     actions: {
-      connect: false,
-      deploy: false,
-      approve: false,
+      connect: configured,
+      deploy: configured,
+      approve: configured,
       fund: false,
       bridge: false,
       pay: false,
@@ -48,11 +53,27 @@ export function walletSetupScaffold() {
     activationPrerequisites: {
       builderCredentials: "Server-only Builder API key, secret, and passphrase",
       buyerSession: "Authenticated wallet-bound browser session",
-      serverRuntime: "Node 24 or newer for the current official Polymarket TypeScript SDK",
+      durableState: "Server-only Redis-compatible REST URL and token for one-time consent and relayer-state binding",
+      polygonVerifier: "Server-only fixed Polygon RPC URL for receipt and approval-state verification",
+      serverRuntime: "Node 22 runtime with the pinned official Builder signing SDK",
       consent: "Explicit buyer consent for wallet deployment and the official approval batch",
-      securityBoundary: "Allowlisted relayer requests, anti-replay state, rate limiting, and transaction-status polling",
+      securityBoundary: "Allowlisted relayer requests, durable one-time state, fixed-RPC Polygon receipt and post-state verification",
+    },
+    browserSetup: {
+      page: "/wallet-setup",
+      chainId: POLYGON_CHAIN_ID,
+      walletFactory: DEPOSIT_WALLET_FACTORY,
+      approvalCalls: OFFICIAL_APPROVAL_CALLS,
+      consents: [
+        "Deploy the buyer-controlled Polymarket Deposit Wallet",
+        "Grant the official reusable five-call venue approval batch",
+      ],
+      fundingAfterSetupOnly: true,
+      existingPaidRouteUnchanged: true,
     },
     approvalDisclosure: APPROVAL_DISCLOSURE,
-    notice: "This feasibility endpoint cannot connect, deploy, approve, fund, pay, or trade. Do not fund a new wallet from this screen.",
+    notice: configured
+      ? "Setup can deploy and approve only after two explicit browser-wallet consents. It cannot fund, bridge, pay, or trade."
+      : "Browser setup is not activated. Do not fund a new wallet from this screen.",
   });
 }

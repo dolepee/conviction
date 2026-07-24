@@ -1,7 +1,10 @@
 import { walletSetupScaffold } from "../src/wallet-setup-scaffold.mjs";
+export { browserSetupConfigured } from "../src/wallet-setup-config.mjs";
+import { browserSetupConfigured } from "../src/wallet-setup-config.mjs";
 
 export function createWalletSetupHandler({
   scaffold = walletSetupScaffold,
+  configured = browserSetupConfigured(),
 } = {}) {
   return function handler(request, response) {
     if (!["GET", "HEAD"].includes(request.method)) {
@@ -11,7 +14,7 @@ export function createWalletSetupHandler({
     response.setHeader("cache-control", "no-store");
     response.setHeader("content-type", "application/json; charset=utf-8");
     if (request.method === "HEAD") return response.status(200).end();
-    return response.status(200).json(scaffold());
+    return response.status(200).json(scaffold({ configured }));
   };
 }
 

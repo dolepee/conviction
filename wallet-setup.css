@@ -1,0 +1,105 @@
+.setup-page {
+  width: min(1100px, calc(100% - 40px));
+  margin: 0 auto;
+  overflow: visible;
+}
+.setup-home { min-height: 40px; padding: .55rem .8rem; font-size: .78rem; }
+.setup-intro { padding: 80px 0 70px; }
+.setup-intro h1 { max-width: 960px; }
+.setup-boundary {
+  display: grid;
+  gap: .35rem;
+  max-width: 760px;
+  margin-top: 2rem;
+  padding: 1rem;
+  border-left: 5px solid var(--orange);
+  background: #fff5eb;
+}
+.setup-boundary span { color: var(--muted); line-height: 1.55; }
+.setup-workspace { padding: 80px 0 110px; border-top: 1px solid var(--line); }
+.setup-progress {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  list-style: none;
+  padding: 0;
+  margin: 2.5rem 0 1.4rem;
+  border: 1px solid var(--ink);
+}
+.setup-progress li {
+  padding: .9rem;
+  border-right: 1px solid var(--ink);
+  color: var(--muted);
+  font: 700 .74rem var(--font-mono);
+  text-transform: uppercase;
+}
+.setup-progress li:last-child { border-right: 0; }
+.setup-progress li span { color: var(--orange); margin-right: .45rem; }
+.setup-progress li.is-current { background: var(--blue); color: white; }
+.setup-progress li.is-done { background: #e8f6ed; color: var(--green); }
+.setup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.setup-card {
+  padding: 1.4rem;
+  border: 1px solid var(--ink);
+  background: var(--paper-bright);
+}
+.setup-card-wide { grid-column: 1 / -1; }
+.setup-card h3 { margin: .4rem 0 .8rem; font-size: 1.35rem; }
+.setup-card > p:not(.setup-kicker) { color: var(--muted); line-height: 1.65; text-wrap: pretty; }
+.setup-kicker {
+  margin: 0;
+  color: var(--blue);
+  font: 700 .7rem var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.setup-card .button { width: 100%; margin-top: 1rem; }
+.setup-card button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+  box-shadow: none;
+}
+.setup-facts { margin: 1.2rem 0 0; border: 1px solid var(--line); }
+.setup-facts div { display: grid; grid-template-columns: 140px 1fr; gap: 1rem; padding: .7rem; border-bottom: 1px solid var(--line); }
+.setup-facts div:last-child { border-bottom: 0; }
+.setup-facts dt { color: var(--muted); font: 600 .65rem var(--font-mono); text-transform: uppercase; }
+.setup-facts dd { margin: 0; overflow-wrap: anywhere; font: 700 .72rem var(--font-mono); }
+.approval-disclosure { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--orange); }
+.approval-disclosure div { padding: 1rem; border-right: 1px solid var(--orange); }
+.approval-disclosure div:last-child { border-right: 0; }
+.approval-disclosure strong, .approval-disclosure span { display: block; }
+.approval-disclosure strong { font-size: .86rem; }
+.approval-disclosure span { margin-top: .5rem; color: var(--muted); font-size: .76rem; line-height: 1.55; }
+.setup-ack {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: .75rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--ink);
+  font-weight: 800;
+  line-height: 1.5;
+}
+.setup-ack input { width: 18px; height: 18px; accent-color: var(--blue); }
+.setup-status {
+  margin-top: 1rem;
+  min-height: 54px;
+  padding: 1rem;
+  border-left: 5px solid var(--blue);
+  background: #edf0ff;
+  line-height: 1.5;
+}
+.setup-status.is-error { border-left-color: var(--orange); background: #fff0e9; }
+.setup-status.is-success { border-left-color: var(--green); background: #e8f6ed; }
+.setup-ready { grid-column: 1 / -1; border-color: var(--green); background: #e8f6ed; }
+.setup-ready code { display: block; padding: 1rem; background: var(--ink); color: white; overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+  .setup-page { width: min(1100px, calc(100% - 28px)); }
+  .setup-intro { padding-top: 55px; }
+  .setup-progress, .setup-grid, .approval-disclosure { grid-template-columns: 1fr; }
+  .setup-progress li { border-right: 0; border-bottom: 1px solid var(--ink); }
+  .setup-progress li:last-child { border-bottom: 0; }
+  .setup-card-wide { grid-column: auto; }
+  .approval-disclosure div { border-right: 0; border-bottom: 1px solid var(--orange); }
+  .approval-disclosure div:last-child { border-bottom: 0; }
+}

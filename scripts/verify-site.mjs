@@ -6,6 +6,9 @@ import { sha256 } from "../src/canonical.mjs";
 const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 const css = await readFile(new URL("../styles.css", import.meta.url), "utf8");
 const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+const walletSetupHtml = await readFile(new URL("../wallet-setup.html", import.meta.url), "utf8");
+const walletSetupCss = await readFile(new URL("../wallet-setup.css", import.meta.url), "utf8");
+const walletSetupApp = await readFile(new URL("../wallet-setup.js", import.meta.url), "utf8");
 const privacy = await readFile(new URL("../privacy.html", import.meta.url), "utf8");
 const terms = await readFile(new URL("../terms.html", import.meta.url), "utf8");
 const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
@@ -86,7 +89,8 @@ assert.ok(css.includes("--muted: #5f6964"), "muted text token does not meet AA c
 assert.ok(css.includes("--orange: #c23c20"), "accent text token does not meet AA contrast");
 assert.ok(app.includes('postJson("/api/market"'), "one-field market lookup is not connected");
 assert.ok(app.includes('fetch("/api/wallet-setup"'), "wallet setup scaffold is not connected");
-assert.ok(app.includes('FEASIBILITY_ONLY_NOT_CONFIGURED'), "wallet setup scaffold is not fail-closed in the UI");
+assert.ok(app.includes('BROWSER_SETUP_BETA_READY'), "wallet setup beta is not discoverable in the UI");
+assert.ok(app.includes('BROWSER_SETUP_REQUIRES_ACTIVATION'), "wallet setup UI does not fail closed when inactive");
 assert.ok(app.includes('postJson("/api/preview"'), "wallet-free preview is not connected");
 assert.ok(app.includes('postJson("/api/intent"'), "final compiler UI is not connected to intent API");
 assert.ok(app.includes('postJson("/api/receipt"'), "receipt verification is not connected");
@@ -125,12 +129,12 @@ assert.ok(
   "landing page omits the current ready-deposit-wallet requirement",
 );
 assert.ok(
-  html.includes("First-time Conviction Wallet Setup is a feasibility preview."),
-  "landing page does not label first-time wallet setup as unavailable",
+  html.includes("Prepare a dedicated Polymarket Deposit Wallet first."),
+  "landing page does not route first-time buyers to setup",
 );
 assert.ok(
-  html.includes("Do not fund a new wallet from this screen."),
-  "landing page does not prevent premature funding for the setup scaffold",
+  html.includes("Setup is separate from payment and trading."),
+  "landing page does not separate setup from the paid trading journey",
 );
 assert.doesNotMatch(
   html,
@@ -142,6 +146,27 @@ assert.equal(
   false,
   "house wallet must never be prefilled or exposed in the first-user form",
 );
+for (const required of [
+  "Consent 1 of 2",
+  "Consent 2 of 2",
+  "2 maximum pUSD allowances",
+  "3 blanket ERC-1155 operator approvals",
+  "This page cannot fund, bridge, pay Conviction, or place a trade.",
+  'id="connect-wallet"',
+  'id="deploy-wallet"',
+  'id="approve-wallet"',
+]) {
+  assert.ok(walletSetupHtml.includes(required), `missing wallet setup marker: ${required}`);
+}
+assert.ok(walletSetupApp.includes('method: "personal_sign"'), "wallet setup does not authenticate buyer ownership");
+assert.ok(walletSetupApp.includes('method: "eth_signTypedData_v4"'), "wallet setup does not sign the approval batch locally");
+assert.ok(walletSetupApp.includes('relay("submit"'), "wallet setup does not use the guarded relayer proxy");
+assert.ok(walletSetupApp.includes('action: "deploy_challenge"'), "wallet setup does not request a separate deployment consent");
+assert.ok(walletSetupApp.includes('action: "deploy_authorize"'), "wallet setup does not submit the deployment-consent signature");
+assert.ok(walletSetupApp.includes('relay("transaction"'), "wallet setup does not poll the bound relayer transaction");
+assert.ok(walletSetupApp.includes("approvalAck.checked"), "wallet setup does not require explicit approval acknowledgement");
+assert.ok(walletSetupHtml.includes("Do not send pUSD to the connected EOA"), "wallet setup omits the funding-address boundary");
+assert.ok(walletSetupCss.includes("@media (max-width: 760px)"), "wallet setup lacks a mobile layout");
 assert.equal(
   html.toLowerCase().includes("invade-iran") || html.toLowerCase().includes("invade iran"),
   false,

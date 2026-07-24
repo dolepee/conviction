@@ -96,14 +96,24 @@ async function loadWalletSetupScaffold() {
     });
     if (!response.ok) throw new Error("wallet setup scaffold unavailable");
     const scaffold = await response.json();
+    if (scaffold?.paymentAllowed !== false || scaffold?.actions?.pay !== false || scaffold?.actions?.trade !== false) {
+      throw new Error("unexpected wallet setup contract");
+    }
+    if (scaffold.status === "BROWSER_SETUP_BETA_READY" && scaffold?.browserSetup?.page === "/wallet-setup") {
+      walletSetupStatus.textContent = "Browser setup is available: ";
+      const link = document.createElement("a");
+      link.href = scaffold.browserSetup.page;
+      link.textContent = "prepare a buyer-controlled wallet";
+      walletSetupStatus.append(link, ".");
+      return;
+    }
     if (
-      scaffold?.status !== "FEASIBILITY_ONLY_NOT_CONFIGURED" ||
-      scaffold?.chainWritesAllowed !== false ||
-      scaffold?.paymentAllowed !== false
+      scaffold.status !== "BROWSER_SETUP_REQUIRES_ACTIVATION" ||
+      scaffold.chainWritesAllowed !== false
     ) {
       throw new Error("unexpected wallet setup contract");
     }
-    walletSetupStatus.textContent = "Not configured yet: this screen cannot connect, deploy, approve, fund, pay, or trade.";
+    walletSetupStatus.textContent = "Browser setup is not activated yet. Use an already-ready buyer-controlled Deposit Wallet.";
   } catch {
     walletSetupStatus.textContent = "Wallet Setup status is unavailable. Do not fund or connect a new wallet here.";
   }
