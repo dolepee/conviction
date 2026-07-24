@@ -9,7 +9,7 @@ export default function handler(request, response) {
   return response.status(200).json({
     ok: true,
     product: "Conviction",
-    version: "0.4.19",
+    version: "0.4.20",
     execution: "non-custodial",
     executorDiscovery: "/api/executor",
     buyerReadiness: "/api/readiness",
