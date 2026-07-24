@@ -22,7 +22,7 @@ export function walletSetupScaffold({ configured = false } = {}) {
     version: WALLET_SETUP_SCAFFOLD_VERSION,
     status: configured ? "BROWSER_SETUP_BETA_READY" : "BROWSER_SETUP_REQUIRES_ACTIVATION",
     readOnly: !configured,
-    paymentAllowed: false,
+    paymentAllowed: configured,
     chainWritesAllowed: configured,
     credentialsAccepted: false,
     buyerKeysAccepted: false,
@@ -32,8 +32,8 @@ export function walletSetupScaffold({ configured = false } = {}) {
       approve: configured,
       fund: false,
       bridge: false,
-      pay: false,
-      trade: false,
+      pay: configured,
+      trade: configured,
     },
     existingReadyWallet: {
       endpoint: "/api/readiness",
@@ -41,8 +41,10 @@ export function walletSetupScaffold({ configured = false } = {}) {
     },
     compatibility: {
       existingPaidOpenRoute: "unchanged-ready-deposit-wallet-only",
-      currentNativeOkxExecutor: "not-compatible-until-a-browser-execution-adapter-proves-the-same-readiness-and-exact-dry-run-invariants",
-      xLayerPayment: "separate-buyer-controlled-integration-not-implemented-in-this-scaffold",
+      currentNativeOkxExecutor: "existing agent/plugin route remains supported; browser Deposit Wallet OPEN is an additional buyer-local route",
+      xLayerPayment: configured
+        ? "buyer-local EIP-3009 x402 signature with a separate later trade confirmation"
+        : "inactive",
     },
     target: {
       walletType: "Polymarket Deposit Wallet",
@@ -56,6 +58,7 @@ export function walletSetupScaffold({ configured = false } = {}) {
       durableState: "Server-only Redis-compatible REST URL and token for one-time consent and relayer-state binding",
       polygonVerifier: "Server-only fixed Polygon RPC URL for receipt and approval-state verification",
       serverRuntime: "Node 22 runtime with the pinned official Builder signing SDK",
+      browserRuntime: "Digest-pinned browser bundle with Polymarket TypeScript SDK 0.1.0",
       consent: "Explicit buyer consent for wallet deployment and the official approval batch",
       securityBoundary: "Allowlisted relayer requests, durable one-time state, fixed-RPC Polygon receipt and post-state verification",
     },
@@ -73,7 +76,7 @@ export function walletSetupScaffold({ configured = false } = {}) {
     },
     approvalDisclosure: APPROVAL_DISCLOSURE,
     notice: configured
-      ? "Setup can deploy and approve only after two explicit browser-wallet consents. It cannot fund, bridge, pay, or trade."
+      ? "Setup can deploy and approve after two explicit browser-wallet consents, then run one buyer-local paid OPEN with a separate trade confirmation. It cannot fund or bridge."
       : "Browser setup is not activated. Do not fund a new wallet from this screen.",
   });
 }

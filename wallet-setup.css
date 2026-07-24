@@ -92,6 +92,14 @@
 .setup-status.is-success { border-left-color: var(--green); background: #e8f6ed; }
 .setup-ready { grid-column: 1 / -1; border-color: var(--green); background: #e8f6ed; }
 .setup-ready code { display: block; padding: 1rem; background: var(--ink); color: white; overflow-wrap: anywhere; }
+.browser-open { display: grid; gap: 1rem; }
+.browser-open[hidden] { display: none; }
+.browser-open-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.browser-open-fields label { display: grid; gap: .45rem; }
+.browser-open-fields label:first-child, .browser-open-fields .button { grid-column: 1 / -1; }
+.browser-open-fields input, .browser-open-fields select { width: 100%; }
+.open-bounds, .open-result { border: 1px solid var(--ink); padding: 1rem; }
+.open-result code { overflow-wrap: anywhere; }
 
 @media (max-width: 760px) {
   .setup-page { width: min(1100px, calc(100% - 28px)); }
@@ -102,4 +110,5 @@
   .setup-card-wide { grid-column: auto; }
   .approval-disclosure div { border-right: 0; border-bottom: 1px solid var(--orange); }
   .approval-disclosure div:last-child { border-bottom: 0; }
+  .browser-open-fields { grid-template-columns: 1fr; }
 }

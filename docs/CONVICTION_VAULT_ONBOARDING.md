@@ -1,12 +1,14 @@
 # Conviction browser wallet onboarding
 
-Status: implemented behind a configuration gate and not activated in production. When activated, it can connect a browser EVM wallet, authenticate wallet ownership, deploy the buyer-controlled Polymarket Deposit Wallet, and submit the official five-call venue approval batch after two explicit consents. It cannot fund, bridge, collect a Conviction payment, place an order, or manage a position.
+Status: the wallet-setup lane is activated in production. It connects a browser EVM wallet, authenticates wallet ownership, deploys the buyer-controlled Polymarket Deposit Wallet, and submits the official five-call venue approval batch after two explicit consents.
+
+The browser OPEN adapter is implemented in source and remains unproven live until a controlled funded acceptance run completes. It adds a free preview, an exact 0.05 USD₮0 buyer-local x402 confirmation on X Layer, a fresh issuer-signed card, a separate trade confirmation, an official Polymarket TypeScript SDK FAK BUY from the Deposit Wallet, and the existing issuer-signed Polygon receipt proof. It does not fund or bridge assets, and it does not manage an existing position.
 
 ## Why this exists
 
 Conviction's existing paid OPEN path is intentionally limited to an already-ready buyer-controlled Polymarket Deposit Wallet. A fresh OKX Agentic Wallet cannot complete Polymarket's current official Deposit Wallet setup when its policy refuses the venue's maximum pUSD allowances and ERC-1155 operator approvals.
 
-The separate onboarding path uses Polymarket's current Builder route: a buyer-controlled browser EVM signer, server-held Builder credentials, and the official relayer. It does not bypass an Agentic Wallet policy and it never takes custody of a buyer key or CLOB credential. It prepares the venue wallet only. The existing paid OPEN route remains ready-Deposit-Wallet-only until a separate browser execution adapter passes the same readiness, payment, dry-run, card, consent, and proof invariants.
+The separate onboarding path uses Polymarket's current Builder route: a buyer-controlled browser EVM signer, server-held Builder credentials, and the official relayer. It does not bypass an Agentic Wallet policy and it never takes custody of a buyer key or CLOB credential. After setup, the browser adapter keeps the buyer's ephemeral CLOB authentication local and executes only after the paid card is displayed and the buyer gives separate trade consent. The existing agent/plugin paid route remains unchanged.
 
 ## Implemented boundary
 
@@ -24,6 +26,8 @@ The server rejects noncanonical JSON, extra fields, another buyer, another facto
 
 The relayer wallet nonce makes approval-batch replay fail closed. Wallet creation is factory-idempotent. Durable Redis-compatible state consumes authentication and deployment-consent nonces exactly once, binds the relayer transaction to the buyer session, and stores the factory-verified Deposit Wallet before the approval batch can proceed. A fixed server-side Polygon RPC must confirm the factory deployment event and deployed code; it must then confirm both pUSD allowances and all three CTF operator approvals before the UI reports readiness.
 
+Before presenting an x402 signature request, the paid service independently rechecks the factory owner binding, deployed code, all five current venue permissions, and that the Deposit Wallet holds at least the buyer's stated pUSD budget. Browser readiness is a distinct `browser-deposit-wallet` execution mode; it cannot satisfy or weaken the official agent/plugin preview contract.
+
 ## Activation sequence
 
 1. Create a Polymarket Builder profile and Builder API credentials at `polymarket.com → Settings → Builders`.
@@ -31,11 +35,11 @@ The relayer wallet nonce makes approval-batch replay fail closed. Wallet creatio
 3. Generate an independent random `CONVICTION_WALLET_SESSION_SECRET` with at least 32 bytes and store it only in the encrypted server environment.
 4. Configure a server-only Redis-compatible REST endpoint and token as `CONVICTION_WALLET_STATE_REST_URL` and `CONVICTION_WALLET_STATE_REST_TOKEN`, or use Vercel's injected `KV_REST_API_URL` and `KV_REST_API_TOKEN`; do not activate with in-memory state.
 5. Configure `CONVICTION_POLYGON_RPC_URL` as a fixed server-side Polygon RPC used only for receipt, wallet-code, and approval-state verification.
-6. Deploy a preview and confirm that inactive production remains fail closed.
+6. Deploy a preview and confirm configuration failures remain fail closed.
 7. In a controlled unfunded browser test, explicitly consent to wallet deployment and verify the submitted Polygon receipt plus the factory's buyer-wallet deployment event.
 8. Review the exact venue-managed disclosure and explicitly consent to the five-call approval batch: two maximum pUSD allowances and three blanket CTF operator approvals. The current official flow exposes no Deposit Wallet revoke command.
 9. Verify the approval transaction, derived wallet identity, and readiness output before giving any funding instruction.
-10. Build and prove a separate browser execution adapter. It must reproduce Conviction's ready-wallet, X Layer payment, exact dry-run/card, trade-consent, and receipt-proof invariants before it can replace the current Agentic Wallet route.
+10. Run a controlled funded browser acceptance: preview, x402 payment, signed card, separate trade consent, buyer-held Polygon fill, and issuer-signed proof. Do not call the browser adapter production-verified before that run passes.
 
 ## Non-negotiable controls
 
@@ -46,7 +50,7 @@ The relayer wallet nonce makes approval-batch replay fail closed. Wallet creatio
 - Allowlist only official wallet-create and approval batch request shapes.
 - Use durable one-time state and edge rate limits; rely on the factory and wallet nonce for on-chain idempotency, and expose failed Polygon receipts as terminal failures.
 - Keep deployment consent, approval consent, service payment consent, and trade consent as separate events.
-- Do not claim compatibility with the existing native Agentic Wallet runner until the browser adapter has passed the same readiness and exact dry-run/card invariants.
+- Do not claim the browser execution adapter is live-proven until the funded acceptance run has produced both chain receipts and the issuer-signed proof.
 
 ## Source of truth
 

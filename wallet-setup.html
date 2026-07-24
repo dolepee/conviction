@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/wallet-setup.css" />
     <script src="/wallet-setup.js" type="module"></script>
+    <script src="/assets/browser-open.js" type="module"></script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to main content</a>
@@ -119,7 +120,71 @@
               X Layer USD₮0 for the service payment remains separate.
             </p>
             <code id="ready-wallet"></code>
-            <a class="button button-primary" href="/#try">Return to Conviction</a>
+            <a class="button button-quiet" href="/#try">Return to free preview</a>
+          </section>
+
+          <section class="setup-card setup-card-wide browser-open" id="browser-open-form" hidden>
+            <p class="setup-kicker">Live browser OPEN</p>
+            <h3>Pay once. Confirm the trade separately.</h3>
+            <p>
+              The first confirmation signs exactly 0.05 USD₮0 on X Layer. Only after a fresh issuer-signed card appears can the
+              second confirmation place one bounded FAK order from your buyer-controlled Deposit Wallet.
+            </p>
+            <form class="browser-open-fields">
+              <label>
+                <span>Polymarket URL or slug</span>
+                <input name="market" required autocomplete="off" />
+              </label>
+              <label>
+                <span>Outcome</span>
+                <select name="outcome" required>
+                  <option value="YES">YES</option>
+                  <option value="NO">NO</option>
+                </select>
+              </label>
+              <label>
+                <span>Total pUSD budget</span>
+                <input name="spend" inputmode="decimal" value="1.25" required />
+              </label>
+              <label>
+                <span>Hard maximum price</span>
+                <input name="maxPrice" inputmode="decimal" value="0.35" required />
+              </label>
+              <button class="button button-primary" type="submit">Run free preview</button>
+            </form>
+            <dl class="setup-facts open-preview">
+              <div><dt>Outcome</dt><dd id="open-preview-outcome">—</dd></div>
+              <div><dt>Maximum debit</dt><dd id="open-preview-debit">—</dd></div>
+              <div><dt>Maximum price</dt><dd id="open-preview-price">—</dd></div>
+            </dl>
+            <button class="button button-primary" id="confirm-open-payment" type="button" disabled>
+              Confirm 0.05 USD₮0 payment
+            </button>
+            <section class="open-bounds" id="open-bounds" hidden aria-label="Fresh signed trade bounds">
+              <p class="setup-kicker">Consent boundary 2 of 2</p>
+              <h3>Review the issuer-signed trade card</h3>
+              <dl class="setup-facts">
+                <div><dt>Outcome</dt><dd id="open-bound-outcome">—</dd></div>
+                <div><dt>Maximum principal</dt><dd id="open-bound-principal">—</dd></div>
+                <div><dt>Maximum total debit</dt><dd id="open-bound-debit">—</dd></div>
+                <div><dt>Maximum price</dt><dd id="open-bound-price">—</dd></div>
+                <div><dt>Expires</dt><dd id="open-bound-expiry">—</dd></div>
+              </dl>
+              <button class="button button-primary" id="confirm-open-trade" type="button" disabled>
+                Confirm this exact trade
+              </button>
+            </section>
+            <section class="open-result" id="open-result" hidden aria-label="Verified OPEN result">
+              <h3>Buyer-held position verified</h3>
+              <dl class="setup-facts">
+                <div><dt>X Layer payment</dt><dd><code id="open-payment-hash"></code></dd></div>
+                <div><dt>Polygon fill</dt><dd><code id="open-fill-hash"></code></dd></div>
+                <div><dt>Position proof</dt><dd><code id="open-proof-hash"></code></dd></div>
+              </dl>
+            </section>
+            <div class="setup-status" id="open-status" role="status" aria-live="polite">
+              Complete wallet setup before starting an OPEN.
+            </div>
           </section>
         </div>
 

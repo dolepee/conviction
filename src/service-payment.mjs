@@ -80,8 +80,20 @@ export const POSITION_CARD_SERVICE = Object.freeze({
           }),
           executionMode: Object.freeze({
             type: "string",
-            const: "deposit-wallet",
-            description: "OPEN is charged only for an already-ready deposit wallet.",
+            enum: Object.freeze(["deposit-wallet", "browser-deposit-wallet"]),
+            description: "Use deposit-wallet for the official agent/plugin lane or browser-deposit-wallet for Conviction's browser execution lane.",
+          }),
+          browserWalletReadiness: Object.freeze({
+            type: "object",
+            description: "Required only for browser-deposit-wallet: wallet-bound readiness produced by Conviction's browser setup.",
+            required: Object.freeze(["ok", "version", "status", "owner", "depositWallet"]),
+            properties: Object.freeze({
+              ok: Object.freeze({ const: true }),
+              version: Object.freeze({ const: "conviction-browser-wallet-readiness-v1" }),
+              status: Object.freeze({ const: "ready" }),
+              owner: Object.freeze({ type: "string", pattern: "^0x[0-9a-fA-F]{40}$" }),
+              depositWallet: Object.freeze({ type: "string", pattern: "^0x[0-9a-fA-F]{40}$" }),
+            }),
           }),
           walletReadiness: Object.freeze({
             type: "object",
@@ -172,15 +184,20 @@ export const POSITION_CARD_SERVICE = Object.freeze({
             description: "Optional buyer-authored rationale, 20 to 500 characters when present.",
           }),
         }),
-        required: Object.freeze([
-          "market",
-          "outcome",
-          "spend",
-          "maxPrice",
-          "wallet",
-          "executionMode",
-          "walletReadiness",
-          "pluginPreview",
+        required: Object.freeze(["market", "outcome", "spend", "maxPrice", "wallet", "executionMode"]),
+        allOf: Object.freeze([
+          Object.freeze({
+            if: Object.freeze({
+              properties: Object.freeze({ executionMode: Object.freeze({ const: "deposit-wallet" }) }),
+            }),
+            then: Object.freeze({ required: Object.freeze(["walletReadiness", "pluginPreview"]) }),
+          }),
+          Object.freeze({
+            if: Object.freeze({
+              properties: Object.freeze({ executionMode: Object.freeze({ const: "browser-deposit-wallet" }) }),
+            }),
+            then: Object.freeze({ required: Object.freeze(["browserWalletReadiness"]) }),
+          }),
         ]),
         additionalProperties: true,
       }),

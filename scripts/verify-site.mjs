@@ -9,6 +9,14 @@ const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
 const walletSetupHtml = await readFile(new URL("../wallet-setup.html", import.meta.url), "utf8");
 const walletSetupCss = await readFile(new URL("../wallet-setup.css", import.meta.url), "utf8");
 const walletSetupApp = await readFile(new URL("../wallet-setup.js", import.meta.url), "utf8");
+const browserOpenSource = await readFile(
+  new URL("../src/browser-open-entry.mjs", import.meta.url),
+  "utf8",
+);
+const browserOpenBundle = await readFile(
+  new URL("../assets/browser-open.js", import.meta.url),
+  "utf8",
+);
 const privacy = await readFile(new URL("../privacy.html", import.meta.url), "utf8");
 const terms = await readFile(new URL("../terms.html", import.meta.url), "utf8");
 const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
@@ -91,6 +99,29 @@ assert.ok(app.includes('postJson("/api/market"'), "one-field market lookup is no
 assert.ok(app.includes('fetch("/api/wallet-setup"'), "wallet setup scaffold is not connected");
 assert.ok(app.includes('BROWSER_SETUP_BETA_READY'), "wallet setup beta is not discoverable in the UI");
 assert.ok(app.includes('BROWSER_SETUP_REQUIRES_ACTIVATION'), "wallet setup UI does not fail closed when inactive");
+for (const marker of [
+  'src="/assets/browser-open.js"',
+  'id="browser-open-form"',
+  'id="confirm-open-payment"',
+  'id="confirm-open-trade"',
+  'id="open-proof-hash"',
+]) {
+  assert.ok(walletSetupHtml.includes(marker), `browser OPEN UI is missing ${marker}`);
+}
+assert.ok(
+  browserOpenSource.includes("createBrowserX402Client"),
+  "browser OPEN does not create a buyer-local x402 authorization",
+);
+assert.ok(
+  browserOpenSource.includes("createSecureClient"),
+  "browser OPEN does not use the official Polymarket TypeScript client",
+);
+assert.ok(
+  browserOpenSource.indexOf('element("confirm-open-payment")') <
+    browserOpenSource.indexOf('element("confirm-open-trade")'),
+  "browser OPEN does not preserve payment-before-trade consent order",
+);
+assert.ok(browserOpenBundle.length > 100_000, "browser OPEN bundle was not built");
 assert.ok(app.includes('postJson("/api/preview"'), "wallet-free preview is not connected");
 assert.ok(app.includes('postJson("/api/intent"'), "final compiler UI is not connected to intent API");
 assert.ok(app.includes('postJson("/api/receipt"'), "receipt verification is not connected");

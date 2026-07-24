@@ -1,6 +1,7 @@
 import { POLYGON_CHAIN_ID, POLYGON_RPC_URL } from "./constants.mjs";
 import { parseDecimal } from "./decimal.mjs";
 import { ConvictionError, invariant } from "./errors.mjs";
+import { createPolygonWalletSetupVerifier } from "./polygon-wallet-setup-verifier.mjs";
 
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
 const DEPOSIT_WALLET_FACTORY = "0x00000000000fb5c9adea0298d729a0cb3823cc07";
@@ -126,6 +127,9 @@ export async function verifyDepositWalletExecution(
     owner,
     rpcUrl = POLYGON_RPC_URL,
     fetchImpl = fetch,
+    verifyApprovalStateImpl = undefined,
+    verifyBalanceImpl = undefined,
+    minimumBalanceRaw = "0",
   } = {},
 ) {
   const wallet = String(walletValue || "").trim().toLowerCase();
@@ -193,6 +197,19 @@ export async function verifyDepositWalletExecution(
       nextAction: "USE_READY_DEPOSIT_WALLET_OR_STOP",
     },
   );
+  const requiresBalanceCheck = BigInt(minimumBalanceRaw) > 0n;
+  const setupVerifier =
+    verifyApprovalStateImpl && (!requiresBalanceCheck || verifyBalanceImpl)
+      ? null
+      : createPolygonWalletSetupVerifier({ rpcUrl, fetchImpl });
+  const approvalState = verifyApprovalStateImpl
+    ? await verifyApprovalStateImpl({ wallet })
+    : await setupVerifier.verifyApprovalState({ wallet });
+  const balanceState = !requiresBalanceCheck
+    ? { balanceRaw: null }
+    : verifyBalanceImpl
+      ? await verifyBalanceImpl({ wallet, minimumRaw: minimumBalanceRaw })
+      : await setupVerifier.verifyPusdBalance({ wallet, minimumRaw: minimumBalanceRaw });
   return Object.freeze({
     ok: true,
     executionMode: "deposit-wallet",
@@ -201,6 +218,43 @@ export async function verifyDepositWalletExecution(
     contractCodePresent: true,
     factoryPredictionMatched: true,
     factoryPredictionKind: predictionKind,
+    venueApprovalsVerified: approvalState?.approvalCalls === 5,
+    pUsdBalanceRaw: balanceState?.balanceRaw,
+    minimumPusdBalanceRaw: String(minimumBalanceRaw),
+  });
+}
+
+export function verifyBrowserWalletReadiness(walletValue, readinessInput) {
+  const wallet = String(walletValue || "").trim().toLowerCase();
+  const input =
+    readinessInput &&
+    typeof readinessInput === "object" &&
+    !Array.isArray(readinessInput)
+      ? readinessInput
+      : null;
+  const owner = String(input?.owner || "").trim().toLowerCase();
+  const depositWallet = String(input?.depositWallet || "").trim().toLowerCase();
+  invariant(
+    input?.ok === true &&
+      input?.version === "conviction-browser-wallet-readiness-v1" &&
+      input?.status === "ready" &&
+      ADDRESS_RE.test(owner) &&
+      depositWallet === wallet,
+    "missing_browser_wallet_readiness",
+    "Browser OPEN requires the exact buyer owner and ready Deposit Wallet",
+    {
+      wallet,
+      observedDepositWallet: ADDRESS_RE.test(depositWallet) ? depositWallet : null,
+      paymentAllowed: false,
+      nextAction: "COMPLETE_BROWSER_WALLET_SETUP",
+    },
+  );
+  return Object.freeze({
+    ok: true,
+    source: "conviction-browser-wallet-setup",
+    status: "ready",
+    wallet,
+    owner,
   });
 }
 
@@ -253,9 +307,10 @@ export function verifyDepositWalletReadiness(walletValue, readinessInput) {
 
 export function requirePaidOpenExecutionMode(body) {
   invariant(
-    body?.executionMode === "deposit-wallet",
+    body?.executionMode === "deposit-wallet" ||
+      body?.executionMode === "browser-deposit-wallet",
     "maker_not_eligible",
-    "OPEN is charged only for an already-ready Polymarket deposit wallet",
+    "OPEN is charged only for a verified ready Polymarket Deposit Wallet",
     {
       paymentAllowed: false,
       nextAction: "USE_READY_DEPOSIT_WALLET_OR_STOP",

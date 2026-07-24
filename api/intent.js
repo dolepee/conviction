@@ -1,9 +1,11 @@
 import { ConvictionError } from "../src/errors.mjs";
+import { parseDecimal } from "../src/decimal.mjs";
 import { compileIntent } from "../src/intent-compiler.mjs";
 import { resolveMarket } from "../src/market-client.mjs";
 import { createPublicApiGuard, PublicApiError } from "../src/public-api-guard.mjs";
 import {
   requirePaidOpenExecutionMode,
+  verifyBrowserWalletReadiness,
   verifyDepositWalletExecution,
   verifyDepositWalletReadiness,
   verifyOpenPluginPreview,
@@ -17,9 +19,12 @@ export async function preflightPaidOpenExecution(
   { verifyExecutionWalletImpl = verifyDepositWalletExecution } = {},
 ) {
   requirePaidOpenExecutionMode(body);
-  const walletReadiness = verifyDepositWalletReadiness(body.wallet, body.walletReadiness);
+  const walletReadiness = body.executionMode === "browser-deposit-wallet"
+    ? verifyBrowserWalletReadiness(body.wallet, body.browserWalletReadiness)
+    : verifyDepositWalletReadiness(body.wallet, body.walletReadiness);
   const walletExecution = await verifyExecutionWalletImpl(body.wallet, {
     owner: walletReadiness.owner,
+    minimumBalanceRaw: parseDecimal(String(body.spend || ""), 6, "spend").toString(),
   });
   return Object.freeze({ walletReadiness, walletExecution });
 }
@@ -56,7 +61,7 @@ export function createIntentHandler({
         }
         const market = await resolveMarketImpl(body.market, { outcome: body.outcome });
         const compilation = compileIntent(body, market, compileOptions);
-        if (!publicAccess) {
+        if (!publicAccess && body.executionMode === "deposit-wallet") {
           verifyOpenPluginPreview(compilation, body.pluginPreview, {
             verifiedWallet: paidPreflight.walletReadiness.wallet,
           });
