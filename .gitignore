@@ -17,3 +17,4 @@ acceptance-report-c-*.json
 .vercel/
 .conviction-tools/
 .vercel
+.env*

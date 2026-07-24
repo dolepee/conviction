@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createWalletSetupHandler } from "../api/wallet-setup.js";
+import { browserSetupConfigured, createWalletSetupHandler } from "../api/wallet-setup.js";
 import {
   WALLET_SETUP_SCAFFOLD_VERSION,
   walletSetupScaffold,
@@ -27,7 +27,7 @@ test("wallet setup scaffold is a frozen no-write feasibility contract", () => {
   assert.equal(Object.isFrozen(result.compatibility), true);
   assert.equal(Object.isFrozen(result.approvalDisclosure), true);
   assert.equal(result.version, WALLET_SETUP_SCAFFOLD_VERSION);
-  assert.equal(result.status, "FEASIBILITY_ONLY_NOT_CONFIGURED");
+  assert.equal(result.status, "BROWSER_SETUP_REQUIRES_ACTIVATION");
   assert.equal(result.readOnly, true);
   assert.equal(result.paymentAllowed, false);
   assert.equal(result.chainWritesAllowed, false);
@@ -42,6 +42,8 @@ test("wallet setup scaffold is a frozen no-write feasibility contract", () => {
     pay: false,
     trade: false,
   });
+  assert.equal(result.browserSetup.chainId, 137);
+  assert.equal(result.browserSetup.approvalCalls.length, 5);
   assert.strictEqual(result.approvalDisclosure, APPROVAL_DISCLOSURE);
   assert.equal(result.approvalDisclosure.pUsdAllowances, 2);
   assert.equal(result.approvalDisclosure.ctfOperatorApprovals, 3);
@@ -52,8 +54,23 @@ test("wallet setup scaffold is a frozen no-write feasibility contract", () => {
   assert.match(result.notice, /Do not fund a new wallet/);
 });
 
+test("activated wallet setup publishes the two-consent browser lane without enabling payment or trade", () => {
+  const result = walletSetupScaffold({ configured: true });
+  assert.equal(result.status, "BROWSER_SETUP_BETA_READY");
+  assert.equal(result.readOnly, false);
+  assert.equal(result.chainWritesAllowed, true);
+  assert.equal(result.actions.connect, true);
+  assert.equal(result.actions.deploy, true);
+  assert.equal(result.actions.approve, true);
+  assert.equal(result.actions.fund, false);
+  assert.equal(result.actions.pay, false);
+  assert.equal(result.actions.trade, false);
+  assert.equal(result.browserSetup.consents.length, 2);
+  assert.match(result.notice, /two explicit browser-wallet consents/);
+});
+
 test("wallet setup endpoint exposes only GET and HEAD", () => {
-  const handler = createWalletSetupHandler();
+  const handler = createWalletSetupHandler({ configured: false });
   const get = response();
   handler({ method: "GET", body: { ignored: "do-not-expose" } }, get);
   assert.equal(get.statusCode, 200);
@@ -73,4 +90,19 @@ test("wallet setup endpoint exposes only GET and HEAD", () => {
   assert.equal(rejected.statusCode, 405);
   assert.equal(rejected.headers.allow, "GET, HEAD");
   assert.equal(rejected.body.error.code, "method_not_allowed");
+});
+
+test("wallet setup activation requires a complete secure server configuration", () => {
+  const environment = {
+    CONVICTION_WALLET_SESSION_SECRET: "x".repeat(32),
+    POLYMARKET_BUILDER_API_KEY: "key",
+    POLYMARKET_BUILDER_SECRET: "secret",
+    POLYMARKET_BUILDER_PASSPHRASE: "passphrase",
+    CONVICTION_WALLET_STATE_REST_URL: "https://state.example.com",
+    CONVICTION_WALLET_STATE_REST_TOKEN: "token-that-is-at-least-sixteen-bytes",
+    CONVICTION_POLYGON_RPC_URL: "https://polygon.example.com",
+  };
+  assert.equal(browserSetupConfigured(environment), true);
+  assert.equal(browserSetupConfigured({ ...environment, CONVICTION_WALLET_STATE_REST_URL: "http://state.example.com" }), false);
+  assert.equal(browserSetupConfigured({ ...environment, CONVICTION_WALLET_SESSION_SECRET: "short" }), false);
 });

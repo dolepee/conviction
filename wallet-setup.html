@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Prepare a buyer wallet — Conviction</title>
+    <meta
+      name="description"
+      content="Prepare a buyer-controlled Polymarket Deposit Wallet through two explicit browser-wallet consents."
+    />
+    <meta name="robots" content="noindex,nofollow" />
+    <meta name="theme-color" content="#f6f0df" />
+    <link rel="icon" href="/assets/conviction-logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/wallet-setup.css" />
+    <script src="/wallet-setup.js" type="module"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Conviction home">
+        <img src="/assets/conviction-logo.svg" alt="" width="38" height="38" />
+        <span>Conviction</span>
+      </a>
+      <a class="button button-quiet setup-home" href="/">Back to preview</a>
+      <span class="network-pill"><i aria-hidden="true"></i> Polygon setup</span>
+    </header>
+
+    <main id="main" class="setup-page">
+      <section class="setup-intro" aria-labelledby="setup-title">
+        <p class="eyebrow">One-time buyer preparation</p>
+        <h1 id="setup-title">Prepare your own <em>trading wallet.</em></h1>
+        <p class="lede">
+          Conviction never receives your private key or Polymarket credentials. Your browser wallet signs locally.
+          Setup stops twice for consent: once to deploy the wallet and once to grant Polymarket’s reusable venue permissions.
+        </p>
+        <div class="setup-boundary">
+          <strong>This page cannot fund, bridge, pay Conviction, or place a trade.</strong>
+          <span>Use a dedicated low-balance buyer wallet. Read the approval scope before continuing.</span>
+        </div>
+      </section>
+
+      <section class="setup-workspace" aria-labelledby="workspace-title">
+        <div class="section-heading">
+          <p class="eyebrow">Guided setup</p>
+          <h2 id="workspace-title">Two consents. No hidden action.</h2>
+        </div>
+
+        <ol class="setup-progress" aria-label="Wallet setup progress">
+          <li class="is-current" data-setup-step="connect"><span>1</span> Connect</li>
+          <li data-setup-step="deploy"><span>2</span> Deploy</li>
+          <li data-setup-step="approve"><span>3</span> Approve</li>
+          <li data-setup-step="ready"><span>4</span> Ready</li>
+        </ol>
+
+        <div class="setup-grid">
+          <section class="setup-card" aria-labelledby="connect-title">
+            <p class="setup-kicker">Buyer wallet</p>
+            <h3 id="connect-title">Connect on Polygon</h3>
+            <p>
+              The connected EOA remains the owner. Conviction requests one message signature only to bind a short-lived setup session.
+              That signature cannot move funds.
+            </p>
+            <dl class="setup-facts">
+              <div><dt>Connected EOA</dt><dd id="setup-eoa">Not connected</dd></div>
+              <div><dt>Deposit wallet</dt><dd id="setup-deposit-wallet">Not deployed</dd></div>
+              <div><dt>Network</dt><dd>Polygon · 137</dd></div>
+            </dl>
+            <button class="button button-primary" id="connect-wallet" type="button">Connect buyer wallet</button>
+          </section>
+
+          <section class="setup-card" aria-labelledby="deploy-title">
+            <p class="setup-kicker">Consent 1 of 2</p>
+            <h3 id="deploy-title">Deploy the buyer-held wallet</h3>
+            <p>
+              Polymarket’s official Builder relayer pays deployment gas. This action creates the smart wallet controlled by your connected EOA.
+              It grants no token allowance and cannot place an order.
+            </p>
+            <button class="button button-primary" id="deploy-wallet" type="button" disabled>
+              Review and deploy
+            </button>
+          </section>
+
+          <section class="setup-card setup-card-wide" aria-labelledby="approve-title">
+            <p class="setup-kicker">Consent 2 of 2</p>
+            <h3 id="approve-title">Review the reusable venue permissions</h3>
+            <p>
+              Polymarket’s current Deposit Wallet setup requires five reusable permissions. These are broad venue permissions,
+              not a Conviction trade authorization. The current official flow does not expose a Deposit Wallet revoke command.
+            </p>
+            <div class="approval-disclosure" role="note" aria-label="Approval disclosure">
+              <div>
+                <strong>2 maximum pUSD allowances</strong>
+                <span>Standard V2 exchange and neg-risk V2 exchange may spend wallet collateral.</span>
+              </div>
+              <div>
+                <strong>3 blanket ERC-1155 operator approvals</strong>
+                <span>Standard V2, neg-risk V2, and neg-risk adapter may move outcome tokens for sell and redemption paths.</span>
+              </div>
+              <div>
+                <strong>Risk boundary</strong>
+                <span>Use a dedicated low-balance wallet and fund only after setup completes.</span>
+              </div>
+            </div>
+            <label class="setup-ack" for="approval-ack">
+              <input id="approval-ack" type="checkbox" disabled />
+              <span>I understand these reusable Polymarket permissions are broader than one trade.</span>
+            </label>
+            <button class="button button-primary" id="approve-wallet" type="button" disabled>
+              Sign and submit five approvals
+            </button>
+          </section>
+
+          <section class="setup-card setup-ready" id="ready-panel" aria-labelledby="ready-title" hidden>
+            <p class="setup-kicker">Ready for funding</p>
+            <h3 id="ready-title">Setup complete</h3>
+            <p>
+              Send Polygon pUSD only to the Deposit Wallet shown below. Do not send pUSD to the connected EOA.
+              X Layer USD₮0 for the service payment remains separate.
+            </p>
+            <code id="ready-wallet"></code>
+            <a class="button button-primary" href="/#try">Return to Conviction</a>
+          </section>
+        </div>
+
+        <div class="setup-status" id="setup-status" role="status" aria-live="polite">
+          Checking whether browser setup is activated…
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

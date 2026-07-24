@@ -15,7 +15,7 @@
   ],
   "rewrites": [
     {
-      "source": "/((?!api/|assets/|styles.css|app.js|privacy\\.html|terms\\.html|robots\\.txt|manifest\\.webmanifest).*)",
+      "source": "/((?!api/|assets/|styles.css|app.js|wallet-setup\\.css|wallet-setup\\.js|wallet-setup\\.html|privacy\\.html|terms\\.html|robots\\.txt|manifest\\.webmanifest).*)",
       "destination": "/index.html"
     }
   ]

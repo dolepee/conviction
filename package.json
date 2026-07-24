@@ -6,7 +6,7 @@
   "description": "Non-custodial bounded prediction-market execution for OKX.AI",
   "scripts": {
     "test": "node --test",
-    "typecheck": "node --check src/*.mjs && node --check scripts/*.mjs && node --check api/*.js && node --check test/*.test.mjs && python3 -m py_compile scripts/conviction_fast_responder.py scripts/conviction_review_watch.py scripts/state-release-mutex.py scripts/telegram_outbox.py",
+    "typecheck": "node --check app.js wallet-setup.js && node --check src/*.mjs && node --check scripts/*.mjs && node --check api/*.js && node --check test/*.test.mjs && python3 -m py_compile scripts/conviction_fast_responder.py scripts/conviction_review_watch.py scripts/state-release-mutex.py scripts/telegram_outbox.py",
     "agent:verify": "python3 scripts/conviction_fast_responder.py --self-test && python3 scripts/conviction_review_watch.py --self-test",
     "site:verify": "node scripts/verify-site.mjs",
     "gate": "npm run typecheck && npm test && npm run site:verify && npm run agent:verify && npm run acceptance:gate-a -- --offline && npm run acceptance:gate-b -- --offline && npm run acceptance:gate-c -- --offline",
@@ -29,6 +29,8 @@
     "@okxweb3/x402-core": "0.1.0",
     "@okxweb3/x402-evm": "0.2.1",
     "@okxweb3/x402-express": "0.1.1",
-    "express": "5.2.1"
+    "@polymarket/builder-signing-sdk": "1.0.0",
+    "express": "5.2.1",
+    "viem": "2.55.8"
   }
 }
