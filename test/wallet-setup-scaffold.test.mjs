@@ -104,6 +104,16 @@ test("wallet setup activation requires a complete secure server configuration", 
     CONVICTION_POLYGON_RPC_URL: "https://polygon.example.com",
   };
   assert.equal(browserSetupConfigured(environment), true);
+  const relayerEnvironment = {
+    ...environment,
+    POLYMARKET_BUILDER_API_KEY: undefined,
+    POLYMARKET_BUILDER_SECRET: undefined,
+    POLYMARKET_BUILDER_PASSPHRASE: undefined,
+    POLYMARKET_RELAYER_API_KEY: "relayer-key",
+    POLYMARKET_RELAYER_API_KEY_ADDRESS: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  };
+  assert.equal(browserSetupConfigured(relayerEnvironment), true);
+  assert.equal(browserSetupConfigured({ ...relayerEnvironment, POLYMARKET_RELAYER_API_KEY_ADDRESS: "0x1234" }), false);
   assert.equal(browserSetupConfigured({ ...environment, CONVICTION_WALLET_STATE_REST_URL: "http://state.example.com" }), false);
   assert.equal(browserSetupConfigured({ ...environment, CONVICTION_WALLET_SESSION_SECRET: "short" }), false);
   const vercelKvEnvironment = {

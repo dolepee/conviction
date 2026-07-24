@@ -15,6 +15,10 @@ const CREDENTIALS = {
   secret: Buffer.from("builder-secret").toString("base64"),
   passphrase: "builder-passphrase",
 };
+const RELAYER_CREDENTIALS = {
+  key: "relayer-key",
+  address: WALLET,
+};
 
 function jsonResponse(body, { status = 200 } = {}) {
   const bytes = new TextEncoder().encode(JSON.stringify(body));
@@ -82,6 +86,47 @@ test("relayer proxy forwards only a validated wallet-create body with body-bound
   assert.equal(calls[0].options.headers.POLY_BUILDER_API_KEY, CREDENTIALS.key);
   assert.equal(calls[0].options.headers.POLY_BUILDER_TIMESTAMP, "1000");
   assert.match(calls[0].options.headers.POLY_BUILDER_SIGNATURE, /^[A-Za-z0-9_-]+=*$/);
+});
+
+test("relayer proxy can authenticate submit with a fixed Relayer API key", async () => {
+  const calls = [];
+  const proxy = createPolymarketRelayerProxy({
+    credentials: CREDENTIALS,
+    relayerCredentials: RELAYER_CREDENTIALS,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse({ transactionID: "tx-relayer", state: "STATE_NEW" });
+    },
+  });
+  const request = JSON.stringify({
+    type: "WALLET-CREATE",
+    from: WALLET,
+    to: DEPOSIT_WALLET_FACTORY,
+  });
+  const result = await proxy.run({
+    operation: "submit",
+    session: { wallet: WALLET },
+    body: { request },
+  });
+  assert.equal(result.action, "DEPLOY_DEPOSIT_WALLET");
+  assert.equal(calls[0].options.headers.RELAYER_API_KEY, RELAYER_CREDENTIALS.key);
+  assert.equal(calls[0].options.headers.RELAYER_API_KEY_ADDRESS, RELAYER_CREDENTIALS.address);
+  assert.equal(calls[0].options.headers.POLY_BUILDER_API_KEY, undefined);
+});
+
+test("relayer proxy rejects malformed or missing authentication", () => {
+  assert.throws(
+    () => createPolymarketRelayerProxy({ relayerCredentials: { key: "", address: WALLET } }),
+    /invalid relayer credentials/,
+  );
+  assert.throws(
+    () => createPolymarketRelayerProxy({ relayerCredentials: { key: "key", address: "0x1234" } }),
+    /invalid relayer credentials/,
+  );
+  assert.throws(
+    () => createPolymarketRelayerProxy(),
+    /relayer authentication is required/,
+  );
 });
 
 test("relayer proxy polls only the exact transaction record from the fixed origin", async () => {

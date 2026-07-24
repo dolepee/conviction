@@ -22,7 +22,34 @@ const HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 function builderConfigFromCredentials(credentials) {
+  if (!credentials) return undefined;
+  if (
+    typeof credentials.key !== "string" ||
+    credentials.key.trim().length === 0 ||
+    typeof credentials.secret !== "string" ||
+    credentials.secret.trim().length === 0 ||
+    typeof credentials.passphrase !== "string" ||
+    credentials.passphrase.trim().length === 0
+  ) {
+    return undefined;
+  }
   return new BuilderConfig({ localBuilderCreds: credentials });
+}
+
+function relayerHeaders(credentials) {
+  if (!credentials) return undefined;
+  if (
+    typeof credentials.key !== "string" ||
+    credentials.key.trim().length === 0 ||
+    typeof credentials.address !== "string" ||
+    !ADDRESS_RE.test(credentials.address)
+  ) {
+    throw new TypeError("invalid relayer credentials");
+  }
+  return Object.freeze({
+    RELAYER_API_KEY: credentials.key.trim(),
+    RELAYER_API_KEY_ADDRESS: credentials.address.toLowerCase(),
+  });
 }
 
 function transactionId(value) {
@@ -116,6 +143,7 @@ async function boundedJson(response) {
 
 export function createPolymarketRelayerProxy({
   credentials,
+  relayerCredentials,
   fetchImpl = fetch,
   validate = validateBuilderRequest,
   nowSeconds = () => Math.floor(Date.now() / 1_000),
@@ -128,6 +156,10 @@ export function createPolymarketRelayerProxy({
     throw new TypeError("fetchImpl and nowSeconds must be functions");
   }
   const builderConfig = builderConfigFromCredentials(credentials);
+  const fixedRelayerHeaders = relayerHeaders(relayerCredentials);
+  if (!builderConfig && !fixedRelayerHeaders) {
+    throw new TypeError("relayer authentication is required");
+  }
 
   async function request(path, options = {}) {
     const response = await fetchImpl(`${POLYMARKET_RELAYER_ORIGIN}${path}`, {
@@ -180,18 +212,18 @@ export function createPolymarketRelayerProxy({
       nowSeconds: nowSeconds(),
     });
     const timestamp = nowSeconds();
-    const builderHeaders = await builderConfig.generateBuilderHeaders(
+    const authenticationHeaders = fixedRelayerHeaders || await builderConfig.generateBuilderHeaders(
       "POST",
       RELAYER_SUBMIT_PATH,
       body.request,
       timestamp,
     );
-    if (!builderHeaders) throw new Error("Builder credentials are unavailable");
+    if (!authenticationHeaders) throw new Error("Relayer credentials are unavailable");
     const relayer = await request(RELAYER_SUBMIT_PATH, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        ...builderHeaders,
+        ...authenticationHeaders,
       },
       body: body.request,
     });
