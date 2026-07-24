@@ -16,8 +16,9 @@ The separate onboarding path uses Polymarket's current official Builder route: a
 
 `POST /api/wallet-session` issues a two-minute wallet challenge, verifies the buyer's message signature, and returns a ten-minute wallet-bound session. The authentication signature explicitly grants no deploy, approval, funding, payment, or trading authority. A separate one-time, wallet-signed deployment-consent message is required before the server may submit a wallet-create request.
 
-`POST /api/wallet-relayer` is a fixed-origin proxy to `https://relayer-v2.polymarket.com`. It accepts only three operations:
+`POST /api/wallet-relayer` is a fixed-origin proxy to `https://relayer-v2.polymarket.com`. It accepts only four operations:
 
+- an authenticated, read-only Builder authorization check before deployment consent is enabled;
 - a nonce lookup scoped to the authenticated buyer;
 - `POST /submit` for either the exact official Deposit Wallet factory create request or the exact official five-call approval batch;
 - polling only via a short-lived, HMAC-signed capability minted for the exact relayer transaction returned to that buyer session.
