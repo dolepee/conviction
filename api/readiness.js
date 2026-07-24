@@ -3,6 +3,9 @@ import {
   classifyBuyerReadiness,
 } from "../src/buyer-readiness.mjs";
 import { createPublicApiGuard, PublicApiError } from "../src/public-api-guard.mjs";
+import { createWalletSetupHandler } from "../src/wallet-setup-handler.mjs";
+import { createWalletSessionHandler } from "../src/wallet-session-handler.mjs";
+import { createWalletRelayerHandler } from "../src/wallet-relayer-handler.mjs";
 
 function send(response, status, body) {
   response.status(status).setHeader("content-type", "application/json; charset=utf-8");
@@ -10,10 +13,27 @@ function send(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
+function rewrittenWalletRoute(request) {
+  const fromQuery = request.query?.walletRoute;
+  if (typeof fromQuery === "string") return fromQuery;
+  try {
+    return new URL(request.url || "/api/readiness", "https://conviction.invalid").searchParams.get("walletRoute") || "";
+  } catch {
+    return "";
+  }
+}
+
 export function createReadinessHandler({
   publicGuard = createPublicApiGuard(),
+  walletSetupHandler = createWalletSetupHandler(),
+  walletSessionHandler = createWalletSessionHandler(),
+  walletRelayerHandler = createWalletRelayerHandler(),
 } = {}) {
   return async function handler(request, response) {
+    const walletRoute = rewrittenWalletRoute(request);
+    if (walletRoute === "setup") return walletSetupHandler(request, response);
+    if (walletRoute === "session") return walletSessionHandler(request, response);
+    if (walletRoute === "relayer") return walletRelayerHandler(request, response);
     if (request.method === "GET" || request.method === "HEAD") {
       response.setHeader("cache-control", "no-store");
       return response.status(200).json({

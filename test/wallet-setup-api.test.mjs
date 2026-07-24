@@ -3,8 +3,9 @@ import test from "node:test";
 
 import { privateKeyToAccount } from "viem/accounts";
 
-import { createWalletRelayerHandler } from "../api/wallet-relayer.js";
-import { createWalletSessionHandler } from "../api/wallet-session.js";
+import { createWalletRelayerHandler } from "../src/wallet-relayer-handler.mjs";
+import { createWalletSessionHandler } from "../src/wallet-session-handler.mjs";
+import { createReadinessHandler } from "../api/readiness.js";
 import {
   DEPOSIT_WALLET_FACTORY,
   OFFICIAL_APPROVAL_CALLS,
@@ -86,6 +87,32 @@ async function approvalRequest(account, { nonce = "7", deadline = "3300" } = {})
     },
   });
 }
+
+test("existing readiness function dispatches the three rewritten browser setup routes", async () => {
+  const calls = [];
+  const handler = createReadinessHandler({
+    publicGuard: passGuard,
+    walletSetupHandler: async (_request, result) => {
+      calls.push("setup");
+      return result.status(200).json({ route: "setup" });
+    },
+    walletSessionHandler: async (_request, result) => {
+      calls.push("session");
+      return result.status(200).json({ route: "session" });
+    },
+    walletRelayerHandler: async (_request, result) => {
+      calls.push("relayer");
+      return result.status(200).json({ route: "relayer" });
+    },
+  });
+  for (const route of ["setup", "session", "relayer"]) {
+    const result = response();
+    await handler({ method: "POST", query: { walletRoute: route }, headers: {}, body: {} }, result);
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.route, route);
+  }
+  assert.deepEqual(calls, ["setup", "session", "relayer"]);
+});
 
 test("wallet session API completes challenge authentication without granting an action", async () => {
   let now = 1_000;

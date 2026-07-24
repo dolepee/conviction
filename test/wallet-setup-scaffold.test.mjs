@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { browserSetupConfigured, createWalletSetupHandler } from "../api/wallet-setup.js";
+import { browserSetupConfigured, createWalletSetupHandler } from "../src/wallet-setup-handler.mjs";
 import {
   WALLET_SETUP_SCAFFOLD_VERSION,
   walletSetupScaffold,

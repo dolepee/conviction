@@ -1,19 +1,19 @@
 import { getAddress } from "viem";
 
-import { BuilderGuardError, DEPOSIT_WALLET_FACTORY } from "../src/polymarket-builder-guard.mjs";
-import { createPolymarketRelayerProxy } from "../src/polymarket-relayer-proxy.mjs";
+import { BuilderGuardError, DEPOSIT_WALLET_FACTORY } from "./polymarket-builder-guard.mjs";
+import { createPolymarketRelayerProxy } from "./polymarket-relayer-proxy.mjs";
 import {
   createPolygonWalletSetupVerifierFromEnvironment,
   PolygonWalletSetupVerificationError,
-} from "../src/polygon-wallet-setup-verifier.mjs";
-import { createPublicApiGuard, PublicApiError } from "../src/public-api-guard.mjs";
-import { createWalletSetupAuth, WalletSetupAuthError } from "../src/wallet-setup-auth.mjs";
-import { browserSetupConfigured } from "../src/wallet-setup-config.mjs";
+} from "./polygon-wallet-setup-verifier.mjs";
+import { createPublicApiGuard, PublicApiError } from "./public-api-guard.mjs";
+import { createWalletSetupAuth, WalletSetupAuthError } from "./wallet-setup-auth.mjs";
+import { browserSetupConfigured } from "./wallet-setup-config.mjs";
 import {
   createInMemoryWalletSetupState,
   createWalletSetupStateFromEnvironment,
   WalletSetupStateError,
-} from "../src/wallet-setup-state.mjs";
+} from "./wallet-setup-state.mjs";
 
 const guard = createPublicApiGuard({ limit: 20, maxBodyBytes: 32_768, maxInFlight: 4 });
 const TRANSACTION_TTL_SECONDS = 900;
@@ -287,12 +287,4 @@ export function createWalletRelayerHandler({
       return errorResponse(response, error);
     }
   };
-}
-
-export default function handler(request, response) {
-  try {
-    return createWalletRelayerHandler()(request, response);
-  } catch (error) {
-    return errorResponse(response, error);
-  }
 }

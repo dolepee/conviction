@@ -1,10 +1,10 @@
-import { createWalletSetupAuth, WalletSetupAuthError } from "../src/wallet-setup-auth.mjs";
-import { createPublicApiGuard, PublicApiError } from "../src/public-api-guard.mjs";
-import { browserSetupConfigured } from "../src/wallet-setup-config.mjs";
+import { createWalletSetupAuth, WalletSetupAuthError } from "./wallet-setup-auth.mjs";
+import { createPublicApiGuard, PublicApiError } from "./public-api-guard.mjs";
+import { browserSetupConfigured } from "./wallet-setup-config.mjs";
 import {
   createWalletSetupStateFromEnvironment,
   WalletSetupStateError,
-} from "../src/wallet-setup-state.mjs";
+} from "./wallet-setup-state.mjs";
 
 const guard = createPublicApiGuard({ limit: 20, maxBodyBytes: 8_192, maxInFlight: 4 });
 
@@ -92,12 +92,4 @@ export function createWalletSessionHandler({
       return errorResponse(response, error);
     }
   };
-}
-
-export default function handler(request, response) {
-  try {
-    return createWalletSessionHandler()(request, response);
-  } catch (error) {
-    return errorResponse(response, error);
-  }
 }

@@ -15,6 +15,18 @@
   ],
   "rewrites": [
     {
+      "source": "/api/wallet-setup",
+      "destination": "/api/readiness?walletRoute=setup"
+    },
+    {
+      "source": "/api/wallet-session",
+      "destination": "/api/readiness?walletRoute=session"
+    },
+    {
+      "source": "/api/wallet-relayer",
+      "destination": "/api/readiness?walletRoute=relayer"
+    },
+    {
       "source": "/((?!api/|assets/|styles.css|app.js|wallet-setup\\.css|wallet-setup\\.js|wallet-setup\\.html|privacy\\.html|terms\\.html|robots\\.txt|manifest\\.webmanifest).*)",
       "destination": "/index.html"
     }
