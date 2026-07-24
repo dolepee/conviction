@@ -67,6 +67,7 @@ test("activated wallet setup publishes setup plus buyer-local payment and OPEN",
   assert.equal(result.actions.pay, true);
   assert.equal(result.actions.trade, true);
   assert.equal(result.browserSetup.consents.length, 2);
+  assert.match(result.notice, /read-only relayer check/);
   assert.match(result.notice, /separate trade confirmation/);
 });
 

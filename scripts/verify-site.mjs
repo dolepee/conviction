@@ -99,6 +99,10 @@ assert.ok(app.includes('postJson("/api/market"'), "one-field market lookup is no
 assert.ok(app.includes('fetch("/api/wallet-setup"'), "wallet setup scaffold is not connected");
 assert.ok(app.includes('BROWSER_SETUP_BETA_READY'), "wallet setup beta is not discoverable in the UI");
 assert.ok(app.includes('BROWSER_SETUP_REQUIRES_ACTIVATION'), "wallet setup UI does not fail closed when inactive");
+assert.ok(
+  app.includes('scaffold?.paymentAllowed === false || scaffold?.actions?.pay === false || scaffold?.actions?.trade === false'),
+  "homepage must expose an active wallet-setup handoff while rejecting explicitly inactive contracts",
+);
 for (const marker of [
   'src="/assets/browser-open.js"',
   '<section class="setup-card setup-card-wide browser-open" id="browser-open-panel" hidden>',
@@ -118,6 +122,7 @@ assert.ok(
   browserOpenSource.includes("createSecureClient"),
   "browser OPEN does not use the official Polymarket TypeScript client",
 );
+assert.ok(walletSetupApp.includes('relay("auth")'), "browser setup does not verify Builder authorization before deployment consent");
 assert.ok(
   browserOpenSource.indexOf('element("confirm-open-payment")') <
     browserOpenSource.indexOf('element("confirm-open-trade")'),

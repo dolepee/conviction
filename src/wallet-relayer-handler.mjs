@@ -293,6 +293,10 @@ export function createWalletRelayerHandler({
     try {
       return await apiGuard.run(request, async () => {
         const session = walletAuth.verifySession(bearer(request));
+        if (request.body?.operation === "auth") {
+          const result = await walletRelayer.run({ operation: "builder-auth", session, body: {} });
+          return response.status(200).json(result);
+        }
         if (request.body?.operation === "nonce") {
           const result = await walletRelayer.run({ operation: "nonce", session, body: {} });
           return response.status(200).json(result);
@@ -307,7 +311,7 @@ export function createWalletRelayerHandler({
         if (request.body?.operation === "transaction") {
           return response.status(200).json(await poll({ pollToken: request.body?.pollToken, session }));
         }
-        throw relayerError(422, "unsupported_relayer_operation", "Relayer operation must be nonce, submit, or transaction");
+        throw relayerError(422, "unsupported_relayer_operation", "Relayer operation must be auth, nonce, submit, or transaction");
       });
     } catch (error) {
       return errorResponse(response, error);

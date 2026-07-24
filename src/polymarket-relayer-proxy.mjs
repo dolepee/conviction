@@ -180,7 +180,55 @@ export function createPolymarketRelayerProxy({
     return boundedJson(response);
   }
 
+  async function verifyBuilderAuthentication() {
+    if (!builderConfig) {
+      throw new BuilderGuardError(
+        503,
+        "builder_auth_required",
+        "Builder credentials are required to create a Deposit Wallet for a new buyer",
+      );
+    }
+    const timestamp = nowSeconds();
+    let headers;
+    try {
+      headers = await builderConfig.generateBuilderHeaders("GET", "/transactions", "", timestamp);
+    } catch {
+      throw new BuilderGuardError(
+        503,
+        "builder_auth_unavailable",
+        "Polymarket Builder authorization is unavailable. Do not fund or continue setup.",
+      );
+    }
+    const response = await fetchImpl(`${POLYMARKET_RELAYER_ORIGIN}/transactions`, {
+      headers,
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (response.ok) {
+      await response.body?.cancel?.();
+      return Object.freeze({ ok: true, operation: "builder-auth", authentication: "builder" });
+    }
+    try {
+      await boundedJson(response);
+    } catch (error) {
+      if (error instanceof BuilderGuardError && error.code === "relayer_request_failed") {
+        throw new BuilderGuardError(
+          503,
+          "builder_auth_unavailable",
+          "Polymarket Builder authorization is unavailable. Do not fund or continue setup.",
+        );
+      }
+      throw error;
+    }
+    throw new BuilderGuardError(
+      503,
+      "builder_auth_unavailable",
+      "Polymarket Builder authorization is unavailable. Do not fund or continue setup.",
+    );
+  }
+
   async function run({ operation, session, body }) {
+    if (operation === "builder-auth") return verifyBuilderAuthentication();
     if (operation === "nonce") {
       const query = new URLSearchParams({ address: session.wallet, type: "WALLET" });
       const headers = fixedRelayerHeaders &&

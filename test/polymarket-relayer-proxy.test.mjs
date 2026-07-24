@@ -81,6 +81,35 @@ test("matching-account nonce fetch uses the dedicated Relayer API key", async ()
   assert.equal(calls[0].options.headers.RELAYER_API_KEY_ADDRESS, RELAYER_CREDENTIALS.address);
 });
 
+test("builder authentication is a read-only signed probe with no relayer payload returned", async () => {
+  const calls = [];
+  const proxy = createPolymarketRelayerProxy({
+    credentials: CREDENTIALS,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse([]);
+    },
+    nowSeconds: () => 1_000,
+  });
+  const result = await proxy.run({ operation: "builder-auth", session: { wallet: WALLET }, body: {} });
+  assert.deepEqual(result, { ok: true, operation: "builder-auth", authentication: "builder" });
+  assert.equal(calls[0].url, `${POLYMARKET_RELAYER_ORIGIN}/transactions`);
+  assert.equal(calls[0].options.headers.POLY_BUILDER_API_KEY, CREDENTIALS.key);
+  assert.equal(calls[0].options.headers.POLY_BUILDER_TIMESTAMP, "1000");
+  assert.equal(calls[0].options.headers.RELAYER_API_KEY, undefined);
+});
+
+test("builder authentication fails closed before new-buyer setup when credentials are rejected", async () => {
+  const proxy = createPolymarketRelayerProxy({
+    credentials: CREDENTIALS,
+    fetchImpl: async () => jsonResponse({ error: "invalid authorization" }, { status: 401 }),
+  });
+  await assert.rejects(
+    proxy.run({ operation: "builder-auth", session: { wallet: WALLET }, body: {} }),
+    (error) => error.code === "builder_auth_unavailable" && error.status === 503,
+  );
+});
+
 test("relayer proxy forwards only a validated wallet-create body with body-bound headers", async () => {
   const calls = [];
   const proxy = createPolymarketRelayerProxy({

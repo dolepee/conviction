@@ -231,6 +231,9 @@ test("wallet relayer API requires a session bearer and passes no credentials to 
     relayer: {
       run: async (input) => {
         observed.push(input);
+        if (input.operation === "builder-auth") {
+          return { ok: true, operation: "builder-auth", authentication: "builder" };
+        }
         return { ok: true, relayer: { nonce: "3" } };
       },
     },
@@ -244,6 +247,16 @@ test("wallet relayer API requires a session bearer and passes no credentials to 
   assert.equal(result.statusCode, 200);
   assert.equal(observed[0].session.wallet, account.address);
   assert.equal(JSON.stringify(result.body).includes("secret"), false);
+
+  const authResult = response();
+  await handler({
+    method: "POST",
+    headers: { authorization: `Bearer ${authenticated.sessionToken}` },
+    body: { operation: "auth" },
+  }, authResult);
+  assert.equal(authResult.statusCode, 200);
+  assert.equal(observed[1].operation, "builder-auth");
+  assert.deepEqual(authResult.body, { ok: true, operation: "builder-auth", authentication: "builder" });
 
   const unauthenticated = response();
   await handler({

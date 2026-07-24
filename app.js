@@ -96,7 +96,7 @@ async function loadWalletSetupScaffold() {
     });
     if (!response.ok) throw new Error("wallet setup scaffold unavailable");
     const scaffold = await response.json();
-    if (scaffold?.paymentAllowed !== false || scaffold?.actions?.pay !== false || scaffold?.actions?.trade !== false) {
+    if (scaffold?.paymentAllowed === false || scaffold?.actions?.pay === false || scaffold?.actions?.trade === false) {
       throw new Error("unexpected wallet setup contract");
     }
     if (scaffold.status === "BROWSER_SETUP_BETA_READY" && scaffold?.browserSetup?.page === "/wallet-setup") {
