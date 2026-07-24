@@ -71,9 +71,11 @@ export function createWalletSessionHandler({
         }
         const session = walletAuth.verifySession(bearer(request));
         if (request.body?.action === "deploy_challenge") {
+          await walletAuth.requireBuilderAuthorization(session);
           return response.status(200).json(walletAuth.issueDeploymentChallenge(session));
         }
         if (request.body?.action === "deploy_authorize") {
+          await walletAuth.requireBuilderAuthorization(session);
           return response.status(200).json(await walletAuth.authorizeDeployment({
             deploymentChallengeToken: request.body?.deploymentChallengeToken,
             signature: request.body?.signature,

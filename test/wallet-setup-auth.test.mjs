@@ -99,6 +99,33 @@ test("wallet authentication and deployment consent are each one-time and separat
   );
 });
 
+test("Builder authorization is bound to the exact short-lived wallet setup session", async () => {
+  const clock = { now: 3_500 };
+  const auth = authAt(clock);
+  const alice = privateKeyToAccount(ALICE_KEY);
+  const bob = privateKeyToAccount(BOB_KEY);
+  const challenge = auth.issueChallenge(alice.address);
+  const session = auth.verifySession((await auth.authenticate({
+    challengeToken: challenge.challengeToken,
+    signature: await alice.signMessage({ message: challenge.message }),
+  })).sessionToken);
+  await assert.rejects(
+    auth.requireBuilderAuthorization(session),
+    (error) => error instanceof WalletSetupAuthError && error.code === "builder_authorization_required",
+  );
+  await auth.recordBuilderAuthorization(session);
+  assert.equal((await auth.requireBuilderAuthorization(session)).wallet, alice.address);
+  const bobChallenge = auth.issueChallenge(bob.address);
+  const bobSession = auth.verifySession((await auth.authenticate({
+    challengeToken: bobChallenge.challengeToken,
+    signature: await bob.signMessage({ message: bobChallenge.message }),
+  })).sessionToken);
+  await assert.rejects(
+    auth.requireBuilderAuthorization(bobSession),
+    (error) => error instanceof WalletSetupAuthError && error.code === "builder_authorization_required",
+  );
+});
+
 test("poll capabilities are session-bound and do not authorize another wallet", async () => {
   const clock = { now: 4_000 };
   const auth = authAt(clock);

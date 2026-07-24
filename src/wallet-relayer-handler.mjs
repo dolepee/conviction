@@ -189,6 +189,7 @@ export function createWalletRelayerHandler({
     const expected = expectedRequest(body);
     let depositWallet;
     if (expected.action === "DEPLOY_DEPOSIT_WALLET") {
+      await walletAuth.requireBuilderAuthorization(session);
       const consent = await walletAuth.consumeDeploymentConsent(deploymentConsentToken, session);
       if (!sameAddress(consent.wallet, session.wallet) || !sameAddress(consent.factory, DEPOSIT_WALLET_FACTORY)) {
         throw relayerError(403, "deployment_session_mismatch", "Deployment consent does not match this buyer session");
@@ -295,6 +296,7 @@ export function createWalletRelayerHandler({
         const session = walletAuth.verifySession(bearer(request));
         if (request.body?.operation === "auth") {
           const result = await walletRelayer.run({ operation: "builder-auth", session, body: {} });
+          await walletAuth.recordBuilderAuthorization(session);
           return response.status(200).json(result);
         }
         if (request.body?.operation === "nonce") {

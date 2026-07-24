@@ -281,6 +281,7 @@ test("wallet relayer requires separate deployment consent, session-bound polling
   const account = privateKeyToAccount(KEY);
   const authenticated = await authenticatedSession(auth, account);
   const verifiedSession = auth.verifySession(authenticated.sessionToken);
+  await auth.recordBuilderAuthorization(verifiedSession);
   const observed = [];
   const relayer = {
     async run(input) {
@@ -385,6 +386,72 @@ test("wallet relayer requires separate deployment consent, session-bound polling
   assert.equal(approved.body.status, "confirmed");
   assert.equal(approved.body.approvalCalls, 5);
   assert.equal(observed.filter((entry) => entry.operation === "transaction").length, 2);
+});
+
+test("browser deployment consent and wallet creation require a session-bound Builder authorization", async () => {
+  let now = 3_500;
+  const state = createInMemoryWalletSetupState({ now: () => now * 1_000 });
+  const auth = createWalletSetupAuth({
+    secret: SECRET,
+    now: () => now,
+    randomBytes: (size) => Buffer.alloc(size, 6),
+    state,
+  });
+  const account = privateKeyToAccount(KEY);
+  const authenticated = await authenticatedSession(auth, account);
+  const session = auth.verifySession(authenticated.sessionToken);
+  const header = { authorization: `Bearer ${authenticated.sessionToken}` };
+  let submitted = false;
+  const relayer = {
+    async run(input) {
+      if (input.operation === "builder-auth") {
+        return { ok: true, operation: "builder-auth", authentication: "builder" };
+      }
+      submitted = true;
+      return { ok: true, action: "DEPLOY_DEPOSIT_WALLET", relayer: { transactionId: "deploy-1", state: "STATE_NEW" } };
+    },
+  };
+  const sessionHandler = createWalletSessionHandler({ auth, apiGuard: passGuard, configured: true });
+  const relayerHandler = createWalletRelayerHandler({
+    auth,
+    state,
+    relayer,
+    verifier: { verifyDeployment: async () => { throw new Error("must not verify"); } },
+    apiGuard: passGuard,
+    configured: true,
+  });
+
+  const blockedChallenge = response();
+  await sessionHandler({ method: "POST", headers: header, body: { action: "deploy_challenge" } }, blockedChallenge);
+  assert.equal(blockedChallenge.statusCode, 409);
+  assert.equal(blockedChallenge.body.error.code, "builder_authorization_required");
+
+  const staleChallenge = auth.issueDeploymentChallenge(session);
+  const staleConsent = await auth.authorizeDeployment({
+    deploymentChallengeToken: staleChallenge.deploymentChallengeToken,
+    signature: await account.signMessage({ message: staleChallenge.message }),
+    session,
+  });
+  const blockedSubmit = response();
+  await relayerHandler({
+    method: "POST",
+    headers: header,
+    body: {
+      operation: "submit",
+      request: JSON.stringify({ type: "WALLET-CREATE", from: account.address, to: DEPOSIT_WALLET_FACTORY }),
+      deploymentConsentToken: staleConsent.deploymentConsentToken,
+    },
+  }, blockedSubmit);
+  assert.equal(blockedSubmit.statusCode, 409);
+  assert.equal(blockedSubmit.body.error.code, "builder_authorization_required");
+  assert.equal(submitted, false);
+
+  const authResult = response();
+  await relayerHandler({ method: "POST", headers: header, body: { operation: "auth" } }, authResult);
+  assert.equal(authResult.statusCode, 200);
+  const permittedChallenge = response();
+  await sessionHandler({ method: "POST", headers: header, body: { action: "deploy_challenge" } }, permittedChallenge);
+  assert.equal(permittedChallenge.statusCode, 200);
 });
 
 test("wallet relayer rejects approval submission before a factory-confirmed Deposit Wallet exists", async () => {
