@@ -1,7 +1,10 @@
 import { POLYGON_CHAIN_ID, POLYGON_RPC_URL } from "./constants.mjs";
 import { parseDecimal } from "./decimal.mjs";
 import { ConvictionError, invariant } from "./errors.mjs";
-import { createPolygonWalletSetupVerifier } from "./polygon-wallet-setup-verifier.mjs";
+import {
+  createPolygonWalletSetupVerifier,
+  PolygonWalletSetupVerificationError,
+} from "./polygon-wallet-setup-verifier.mjs";
 
 const ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
 const DEPOSIT_WALLET_FACTORY = "0x00000000000fb5c9adea0298d729a0cb3823cc07";
@@ -121,6 +124,20 @@ async function polygonRpc(method, params, { rpcUrl, fetchImpl }) {
   return body.result;
 }
 
+function setupPreflightError(error) {
+  if (!(error instanceof PolygonWalletSetupVerificationError)) return error;
+  const upstream = Number(error.status) >= 500;
+  return new ConvictionError(
+    upstream ? "rpc_error" : error.code,
+    error.message,
+    {
+      paymentAllowed: false,
+      nextAction: upstream ? "RETRY_READINESS_LATER" : "COMPLETE_BROWSER_WALLET_SETUP",
+      ...(upstream ? { upstreamCode: error.code } : {}),
+    },
+  );
+}
+
 export async function verifyDepositWalletExecution(
   walletValue,
   {
@@ -202,14 +219,20 @@ export async function verifyDepositWalletExecution(
     verifyApprovalStateImpl && (!requiresBalanceCheck || verifyBalanceImpl)
       ? null
       : createPolygonWalletSetupVerifier({ rpcUrl, fetchImpl });
-  const approvalState = verifyApprovalStateImpl
-    ? await verifyApprovalStateImpl({ wallet })
-    : await setupVerifier.verifyApprovalState({ wallet });
-  const balanceState = !requiresBalanceCheck
-    ? { balanceRaw: null }
-    : verifyBalanceImpl
-      ? await verifyBalanceImpl({ wallet, minimumRaw: minimumBalanceRaw })
-      : await setupVerifier.verifyPusdBalance({ wallet, minimumRaw: minimumBalanceRaw });
+  let approvalState;
+  let balanceState;
+  try {
+    approvalState = verifyApprovalStateImpl
+      ? await verifyApprovalStateImpl({ wallet })
+      : await setupVerifier.verifyApprovalState({ wallet });
+    balanceState = !requiresBalanceCheck
+      ? { balanceRaw: null }
+      : verifyBalanceImpl
+        ? await verifyBalanceImpl({ wallet, minimumRaw: minimumBalanceRaw })
+        : await setupVerifier.verifyPusdBalance({ wallet, minimumRaw: minimumBalanceRaw });
+  } catch (error) {
+    throw setupPreflightError(error);
+  }
   return Object.freeze({
     ok: true,
     executionMode: "deposit-wallet",

@@ -101,6 +101,8 @@ assert.ok(app.includes('BROWSER_SETUP_BETA_READY'), "wallet setup beta is not di
 assert.ok(app.includes('BROWSER_SETUP_REQUIRES_ACTIVATION'), "wallet setup UI does not fail closed when inactive");
 for (const marker of [
   'src="/assets/browser-open.js"',
+  '<section class="setup-card setup-card-wide browser-open" id="browser-open-panel" hidden>',
+  '<form class="browser-open-fields" id="browser-open-form">',
   'id="browser-open-form"',
   'id="confirm-open-payment"',
   'id="confirm-open-trade"',
@@ -122,6 +124,14 @@ assert.ok(
   "browser OPEN does not preserve payment-before-trade consent order",
 );
 assert.ok(browserOpenBundle.length > 100_000, "browser OPEN bundle was not built");
+const contentSecurityPolicy = vercel.headers
+  .flatMap((entry) => entry.headers || [])
+  .find((header) => header.key === "Content-Security-Policy")?.value;
+assert.match(
+  contentSecurityPolicy || "",
+  /connect-src 'self' https:\/\/clob\.polymarket\.com https:\/\/polygon\.drpc\.org/,
+  "browser OPEN CSP must allow only the official CLOB and SDK Polygon RPC origins",
+);
 assert.ok(app.includes('postJson("/api/preview"'), "wallet-free preview is not connected");
 assert.ok(app.includes('postJson("/api/intent"'), "final compiler UI is not connected to intent API");
 assert.ok(app.includes('postJson("/api/receipt"'), "receipt verification is not connected");

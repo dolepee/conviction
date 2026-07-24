@@ -87,13 +87,14 @@ function renderBounds(card, request) {
 }
 
 export function activateBrowserOpen({ owner, depositWallet }) {
+  const panel = element("browser-open-panel");
   const form = element("browser-open-form");
   const paymentButton = element("confirm-open-payment");
   const tradeButton = element("confirm-open-trade");
   let request;
   let card;
   let payment;
-  form.hidden = false;
+  panel.hidden = false;
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();

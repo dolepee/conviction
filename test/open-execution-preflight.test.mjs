@@ -10,6 +10,7 @@ import {
   verifyDepositWalletReadiness,
   verifyOpenPluginPreview,
 } from "../src/open-execution-preflight.mjs";
+import { PolygonWalletSetupVerificationError } from "../src/polygon-wallet-setup-verifier.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
 const WALLET = "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe";
@@ -226,6 +227,25 @@ test("maker check rejects EOAs and accepts a Polygon contract wallet", async () 
   assert.equal(ready.factoryPredictionMatched, true);
   assert.equal(ready.factoryPredictionKind, "beacon");
   assert.deepEqual(calls.sort(), ["eth_call", "eth_call", "eth_chainId", "eth_getCode"]);
+
+  await assert.rejects(
+    verifyDepositWalletExecution(WALLET, {
+      owner: OWNER,
+      rpcUrl: "https://polygon.test",
+      fetchImpl,
+      async verifyApprovalStateImpl() {
+        throw new PolygonWalletSetupVerificationError(
+          422,
+          "deposit_wallet_approval_incomplete",
+          "Polygon did not confirm every required outcome-token permission",
+        );
+      },
+    }),
+    (error) =>
+      error?.code === "deposit_wallet_approval_incomplete" &&
+      error?.details?.paymentAllowed === false &&
+      error?.details?.nextAction === "COMPLETE_BROWSER_WALLET_SETUP",
+  );
 
   const legacyReady = await verifyDepositWalletExecution(WALLET, {
     owner: OWNER,
