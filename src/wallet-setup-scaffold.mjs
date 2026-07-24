@@ -16,14 +16,21 @@ function freeze(value) {
 // This contract never exposes credentials. `configured` only reports whether
 // the server has the Builder values, an independent session secret, durable
 // one-time state, and a fixed Polygon verification RPC.
-export function walletSetupScaffold({ configured = false, builderAuthorized = false } = {}) {
+export function walletSetupScaffold({
+  configured = false,
+  builderAuthorized = false,
+  builderAuthorizationPending = false,
+} = {}) {
   const active = configured && builderAuthorized;
-  const authorizationUnavailable = configured && !builderAuthorized;
+  const authorizationChecking = configured && !active && builderAuthorizationPending;
+  const authorizationUnavailable = configured && !active && !authorizationChecking;
   return freeze({
     ok: true,
     version: WALLET_SETUP_SCAFFOLD_VERSION,
     status: active
       ? "BROWSER_SETUP_BETA_READY"
+      : authorizationChecking
+        ? "BROWSER_SETUP_AUTH_CHECKING"
       : authorizationUnavailable
         ? "BROWSER_SETUP_AUTH_UNAVAILABLE"
         : "BROWSER_SETUP_REQUIRES_ACTIVATION",
@@ -32,6 +39,7 @@ export function walletSetupScaffold({ configured = false, builderAuthorized = fa
     chainWritesAllowed: active,
     credentialsAccepted: false,
     buyerKeysAccepted: false,
+    retryAfterSeconds: authorizationChecking ? 15 : null,
     actions: {
       connect: active,
       deploy: active,
@@ -83,6 +91,8 @@ export function walletSetupScaffold({ configured = false, builderAuthorized = fa
     approvalDisclosure: APPROVAL_DISCLOSURE,
     notice: active
       ? "Setup first verifies Builder authorization through a read-only relayer check. Only then can it deploy and approve after two explicit browser-wallet consents, then run one buyer-local paid OPEN with a separate trade confirmation. It cannot fund or bridge."
+      : authorizationChecking
+        ? "Browser setup authorization is still being checked. Do not connect or fund a new wallet here; this page will retry shortly."
       : authorizationUnavailable
         ? "Browser setup authorization is temporarily unavailable. Do not connect or fund a new wallet here."
         : "Browser setup is not activated. Do not fund a new wallet from this screen.",

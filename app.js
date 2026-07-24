@@ -88,6 +88,8 @@ const defaultSpendHelp = "After market lookup, Conviction suggests the selected 
 
 document.querySelector("#year").textContent = String(new Date().getFullYear());
 
+let walletSetupRetryTimer = null;
+
 async function loadWalletSetupScaffold() {
   if (!walletSetupStatus) return;
   try {
@@ -115,6 +117,7 @@ async function loadWalletSetupScaffold() {
     if (
       ![
         "BROWSER_SETUP_REQUIRES_ACTIVATION",
+        "BROWSER_SETUP_AUTH_CHECKING",
         "BROWSER_SETUP_AUTH_UNAVAILABLE",
       ].includes(scaffold.status) ||
       scaffold.chainWritesAllowed !== false ||
@@ -123,6 +126,19 @@ async function loadWalletSetupScaffold() {
       scaffold?.actions?.trade !== false
     ) {
       throw new Error("unexpected wallet setup contract");
+    }
+    if (scaffold.status === "BROWSER_SETUP_AUTH_CHECKING") {
+      walletSetupStatus.textContent = "Browser setup authorization is still being checked. Retrying shortly; do not connect or fund a new wallet here.";
+      if (!walletSetupRetryTimer) {
+        const delay = Number.isSafeInteger(scaffold.retryAfterSeconds)
+          ? scaffold.retryAfterSeconds * 1_000
+          : 15_000;
+        walletSetupRetryTimer = window.setTimeout(() => {
+          walletSetupRetryTimer = null;
+          void loadWalletSetupScaffold();
+        }, delay);
+      }
+      return;
     }
     walletSetupStatus.textContent = scaffold.status === "BROWSER_SETUP_AUTH_UNAVAILABLE"
       ? "Browser setup authorization is temporarily unavailable. Do not connect or fund a new wallet here."

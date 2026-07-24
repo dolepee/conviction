@@ -99,6 +99,7 @@ assert.ok(app.includes('postJson("/api/market"'), "one-field market lookup is no
 assert.ok(app.includes('fetch("/api/wallet-setup"'), "wallet setup scaffold is not connected");
 assert.ok(app.includes('BROWSER_SETUP_BETA_READY'), "wallet setup beta is not discoverable in the UI");
 assert.ok(app.includes('BROWSER_SETUP_REQUIRES_ACTIVATION'), "wallet setup UI does not fail closed when inactive");
+assert.ok(app.includes('BROWSER_SETUP_AUTH_CHECKING'), "wallet setup UI does not expose a retryable Builder authorization state");
 assert.ok(app.includes('BROWSER_SETUP_AUTH_UNAVAILABLE'), "wallet setup UI does not fail closed when Builder authorization is unavailable");
 assert.match(
   app,
@@ -107,13 +108,13 @@ assert.match(
 );
 assert.match(
   app,
-  /BROWSER_SETUP_REQUIRES_ACTIVATION[\s\S]*?BROWSER_SETUP_AUTH_UNAVAILABLE[\s\S]*?scaffold\.chainWritesAllowed !== false[\s\S]*?scaffold\?\.paymentAllowed !== false[\s\S]*?scaffold\?\.actions\?\.pay !== false[\s\S]*?scaffold\?\.actions\?\.trade !== false/,
+  /BROWSER_SETUP_REQUIRES_ACTIVATION[\s\S]*?BROWSER_SETUP_AUTH_CHECKING[\s\S]*?BROWSER_SETUP_AUTH_UNAVAILABLE[\s\S]*?scaffold\.chainWritesAllowed !== false[\s\S]*?scaffold\?\.paymentAllowed !== false[\s\S]*?scaffold\?\.actions\?\.pay !== false[\s\S]*?scaffold\?\.actions\?\.trade !== false/,
   "homepage must render explicit no-write guidance for inactive or Builder-unavailable setup",
 );
 assert.match(
   walletSetupApp,
-  /BROWSER_SETUP_AUTH_UNAVAILABLE[\s\S]*?Do not connect or fund a new wallet here/,
-  "wallet setup page must keep browser actions disabled when Builder authorization is unavailable",
+  /BROWSER_SETUP_AUTH_CHECKING[\s\S]*?Retrying shortly; do not connect or fund a new wallet here[\s\S]*?BROWSER_SETUP_AUTH_UNAVAILABLE[\s\S]*?Do not connect or fund a new wallet here/,
+  "wallet setup page must keep browser actions disabled while Builder authorization is checking or unavailable",
 );
 for (const marker of [
   'src="/assets/browser-open.js"',

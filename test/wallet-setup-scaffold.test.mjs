@@ -95,6 +95,20 @@ test("Builder-unavailable setup is an explicit no-write contract", () => {
   assert.match(result.notice, /Do not connect or fund a new wallet/);
 });
 
+test("Builder-authorization checking is a retryable no-write contract", () => {
+  const result = walletSetupScaffold({
+    configured: true,
+    builderAuthorizationPending: true,
+  });
+  assert.equal(result.status, "BROWSER_SETUP_AUTH_CHECKING");
+  assert.equal(result.retryAfterSeconds, 15);
+  assert.equal(result.readOnly, true);
+  assert.equal(result.paymentAllowed, false);
+  assert.equal(result.chainWritesAllowed, false);
+  assert.equal(result.actions.connect, false);
+  assert.match(result.notice, /still being checked/);
+});
+
 test("wallet setup endpoint exposes only GET and HEAD", async () => {
   let probeCalls = 0;
   const handler = createWalletSetupHandler({
@@ -144,6 +158,16 @@ test("wallet setup verifies Builder authorization before it advertises activatio
   assert.equal(active.statusCode, 200);
   assert.equal(active.body.status, "BROWSER_SETUP_BETA_READY");
   assert.equal(active.body.actions.connect, true);
+
+  const pending = response();
+  const pendingHandler = createWalletSetupHandler({
+    configured: true,
+    builderAuthorization: async () => undefined,
+  });
+  await pendingHandler({ method: "GET" }, pending);
+  assert.equal(pending.statusCode, 200);
+  assert.equal(pending.body.status, "BROWSER_SETUP_AUTH_CHECKING");
+  assert.equal(pending.body.actions.connect, false);
 });
 
 test("wallet setup derives its default configuration from an injected environment", async () => {
@@ -217,7 +241,7 @@ test("Builder authorization status is shared durably across setup-handler instan
   assert.equal(runs, 1);
 });
 
-test("contending Builder authorization probes wait for the lock owner's result", async () => {
+test("contending Builder authorization probes report retryable checking until the owner finishes", async () => {
   const environment = {
     VERCEL_ENV: "production",
     POLYMARKET_BUILDER_API_KEY: "builder-key",
@@ -248,13 +272,11 @@ test("contending Builder authorization probes wait for the lock owner's result",
         throw new Error("the contender must not create a second upstream probe");
       },
     }),
-    wait: async () => {
-      releaseOwner();
-      await ownerPromise;
-    },
   });
-  assert.equal(await contender(), true);
+  assert.equal(await contender(), undefined);
+  releaseOwner();
   assert.equal(await ownerPromise, true);
+  assert.equal(await contender(), true);
   assert.equal(runs, 1);
 });
 

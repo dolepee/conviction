@@ -11,8 +11,6 @@ import { createWalletSetupStateFromEnvironment } from "./wallet-setup-state.mjs"
 const BUILDER_AUTH_CACHE_TTL_MILLISECONDS = 60_000;
 const BUILDER_AUTH_CACHE_TTL_SECONDS = 60;
 const BUILDER_AUTH_LOCK_TTL_SECONDS = 30;
-const BUILDER_AUTH_LOCK_WAIT_MILLISECONDS = 2_500;
-const BUILDER_AUTH_LOCK_POLL_MILLISECONDS = 100;
 const BUILDER_AUTH_STATUS_NAMESPACE = "builder-authorization-status";
 const BUILDER_AUTH_LOCK_NAMESPACE = "builder-authorization-probe";
 const publicGuard = createPublicApiGuard({
@@ -65,32 +63,15 @@ function authorizationStatusId(credentials, environment) {
     .digest("hex");
 }
 
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function waitForAuthorizationStatus({ state, statusId, wait }) {
-  const attempts = Math.ceil(BUILDER_AUTH_LOCK_WAIT_MILLISECONDS / BUILDER_AUTH_LOCK_POLL_MILLISECONDS);
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    await wait(BUILDER_AUTH_LOCK_POLL_MILLISECONDS);
-    const stored = cachedAuthorization(
-      await state.get(BUILDER_AUTH_STATUS_NAMESPACE, statusId),
-    );
-    if (stored !== undefined) return stored;
-  }
-  return undefined;
-}
-
 export function createBuilderAuthorizationProbe({
   environment = process.env,
   createRelayer = createPolymarketRelayerProxy,
   now = () => Date.now(),
-  wait = sleep,
   cacheTtlMilliseconds = BUILDER_AUTH_CACHE_TTL_MILLISECONDS,
   state,
 } = {}) {
-  if (typeof createRelayer !== "function" || typeof now !== "function" || typeof wait !== "function") {
-    throw new TypeError("createRelayer, now, and wait must be functions");
+  if (typeof createRelayer !== "function" || typeof now !== "function") {
+    throw new TypeError("createRelayer and now must be functions");
   }
   if (!Number.isSafeInteger(cacheTtlMilliseconds) || cacheTtlMilliseconds <= 0) {
     throw new TypeError("cacheTtlMilliseconds must be a positive safe integer");
@@ -123,17 +104,18 @@ export function createBuilderAuthorizationProbe({
             BUILDER_AUTH_LOCK_TTL_SECONDS,
           );
           if (!claimed) {
-            const contenderResult = await waitForAuthorizationStatus({
-              state: statusState,
-              statusId,
-              wait,
-            });
+            const contenderResult = cachedAuthorization(
+              await statusState.get(BUILDER_AUTH_STATUS_NAMESPACE, statusId),
+            );
             if (contenderResult !== undefined) {
               cached = contenderResult;
               cachedUntil = now() + cacheTtlMilliseconds;
               return contenderResult;
             }
-            return false;
+            // Another instance owns the full bounded relayer request. This is
+            // neither proof of failure nor permission to proceed; expose a
+            // retryable no-write status instead of an incorrect hard failure.
+            return undefined;
           }
           const relayer = createRelayer({ credentials });
           let result;
@@ -196,12 +178,19 @@ export function createWalletSetupHandler({
     try {
       return await apiGuard.run(request, async () => {
         let builderAuthorized = false;
+        let builderAuthorizationPending = false;
         try {
-          builderAuthorized = await authorization();
+          const authorizationResult = await authorization();
+          builderAuthorized = authorizationResult === true;
+          builderAuthorizationPending = authorizationResult === undefined;
         } catch {
           builderAuthorized = false;
         }
-        return response.status(200).json(scaffold({ configured: true, builderAuthorized }));
+        return response.status(200).json(scaffold({
+          configured: true,
+          builderAuthorized,
+          builderAuthorizationPending,
+        }));
       });
     } catch (error) {
       if (error instanceof PublicApiError) {
