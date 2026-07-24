@@ -39,7 +39,7 @@ export function walletSetupScaffold({
     chainWritesAllowed: active,
     credentialsAccepted: false,
     buyerKeysAccepted: false,
-    retryAfterSeconds: authorizationChecking ? 15 : null,
+    retryAfterSeconds: authorizationChecking ? 15 : authorizationUnavailable ? 60 : null,
     actions: {
       connect: active,
       deploy: active,

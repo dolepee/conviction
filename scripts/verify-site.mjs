@@ -113,8 +113,13 @@ assert.match(
 );
 assert.match(
   walletSetupApp,
-  /BROWSER_SETUP_AUTH_CHECKING[\s\S]*?Retrying shortly; do not connect or fund a new wallet here[\s\S]*?BROWSER_SETUP_AUTH_UNAVAILABLE[\s\S]*?Do not connect or fund a new wallet here/,
-  "wallet setup page must keep browser actions disabled while Builder authorization is checking or unavailable",
+  /BROWSER_SETUP_AUTH_CHECKING[\s\S]*?Retrying shortly; do not connect or fund a new wallet here/,
+  "wallet setup page must keep browser actions disabled while Builder authorization is checking",
+);
+assert.match(
+  walletSetupApp,
+  /BROWSER_SETUP_AUTH_UNAVAILABLE[\s\S]*?Retrying automatically; do not connect or fund a new wallet here/,
+  "wallet setup page must retry safely after temporary Builder authorization failure",
 );
 for (const marker of [
   'src="/assets/browser-open.js"',

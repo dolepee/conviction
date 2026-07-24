@@ -333,8 +333,14 @@ async function initialize() {
       scaffold?.browserSetup?.approvalCalls?.length !== 5
     ) {
       connectButton.disabled = true;
-      if (scaffold?.status === "BROWSER_SETUP_AUTH_CHECKING") {
-        setStatus("Browser setup authorization is still being checked. Retrying shortly; do not connect or fund a new wallet here.");
+      if (["BROWSER_SETUP_AUTH_CHECKING", "BROWSER_SETUP_AUTH_UNAVAILABLE"].includes(scaffold?.status)) {
+        const checking = scaffold.status === "BROWSER_SETUP_AUTH_CHECKING";
+        setStatus(
+          checking
+            ? "Browser setup authorization is still being checked. Retrying shortly; do not connect or fund a new wallet here."
+            : "Browser setup authorization is temporarily unavailable. Retrying automatically; do not connect or fund a new wallet here.",
+          checking ? "info" : "error",
+        );
         if (!walletSetupRetryTimer) {
           const delay = Number.isSafeInteger(scaffold.retryAfterSeconds)
             ? scaffold.retryAfterSeconds * 1_000

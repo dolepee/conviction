@@ -127,8 +127,10 @@ async function loadWalletSetupScaffold() {
     ) {
       throw new Error("unexpected wallet setup contract");
     }
-    if (scaffold.status === "BROWSER_SETUP_AUTH_CHECKING") {
-      walletSetupStatus.textContent = "Browser setup authorization is still being checked. Retrying shortly; do not connect or fund a new wallet here.";
+    if (["BROWSER_SETUP_AUTH_CHECKING", "BROWSER_SETUP_AUTH_UNAVAILABLE"].includes(scaffold.status)) {
+      walletSetupStatus.textContent = scaffold.status === "BROWSER_SETUP_AUTH_CHECKING"
+        ? "Browser setup authorization is still being checked. Retrying shortly; do not connect or fund a new wallet here."
+        : "Browser setup authorization is temporarily unavailable. Retrying automatically; do not connect or fund a new wallet here.";
       if (!walletSetupRetryTimer) {
         const delay = Number.isSafeInteger(scaffold.retryAfterSeconds)
           ? scaffold.retryAfterSeconds * 1_000
@@ -140,9 +142,7 @@ async function loadWalletSetupScaffold() {
       }
       return;
     }
-    walletSetupStatus.textContent = scaffold.status === "BROWSER_SETUP_AUTH_UNAVAILABLE"
-      ? "Browser setup authorization is temporarily unavailable. Do not connect or fund a new wallet here."
-      : "Browser setup is not activated yet. Use an already-ready buyer-controlled Deposit Wallet.";
+    walletSetupStatus.textContent = "Browser setup is not activated yet. Use an already-ready buyer-controlled Deposit Wallet.";
   } catch {
     walletSetupStatus.textContent = "Wallet Setup status is unavailable. Do not fund or connect a new wallet here.";
   }

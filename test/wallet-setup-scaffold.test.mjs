@@ -83,6 +83,7 @@ test("Builder-unavailable setup is an explicit no-write contract", () => {
   assert.equal(result.readOnly, true);
   assert.equal(result.paymentAllowed, false);
   assert.equal(result.chainWritesAllowed, false);
+  assert.equal(result.retryAfterSeconds, 60);
   assert.deepEqual(result.actions, {
     connect: false,
     deploy: false,
@@ -147,6 +148,7 @@ test("wallet setup verifies Builder authorization before it advertises activatio
   assert.equal(unavailable.statusCode, 200);
   assert.equal(unavailable.body.status, "BROWSER_SETUP_AUTH_UNAVAILABLE");
   assert.equal(unavailable.body.actions.connect, false);
+  assert.equal(unavailable.body.retryAfterSeconds, 60);
   assert.doesNotMatch(JSON.stringify(unavailable.body), /invalid authorization|builder-secret/);
 
   const active = response();
