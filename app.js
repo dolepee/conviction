@@ -96,10 +96,15 @@ async function loadWalletSetupScaffold() {
     });
     if (!response.ok) throw new Error("wallet setup scaffold unavailable");
     const scaffold = await response.json();
-    if (scaffold?.paymentAllowed === false || scaffold?.actions?.pay === false || scaffold?.actions?.trade === false) {
-      throw new Error("unexpected wallet setup contract");
-    }
-    if (scaffold.status === "BROWSER_SETUP_BETA_READY" && scaffold?.browserSetup?.page === "/wallet-setup") {
+    if (scaffold.status === "BROWSER_SETUP_BETA_READY") {
+      if (
+        scaffold?.paymentAllowed !== true ||
+        scaffold?.actions?.pay !== true ||
+        scaffold?.actions?.trade !== true ||
+        scaffold?.browserSetup?.page !== "/wallet-setup"
+      ) {
+        throw new Error("unexpected active wallet setup contract");
+      }
       walletSetupStatus.textContent = "Browser setup is available: ";
       const link = document.createElement("a");
       link.href = scaffold.browserSetup.page;
@@ -109,7 +114,10 @@ async function loadWalletSetupScaffold() {
     }
     if (
       scaffold.status !== "BROWSER_SETUP_REQUIRES_ACTIVATION" ||
-      scaffold.chainWritesAllowed !== false
+      scaffold.chainWritesAllowed !== false ||
+      scaffold?.paymentAllowed !== false ||
+      scaffold?.actions?.pay !== false ||
+      scaffold?.actions?.trade !== false
     ) {
       throw new Error("unexpected wallet setup contract");
     }

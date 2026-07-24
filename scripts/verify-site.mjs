@@ -99,9 +99,15 @@ assert.ok(app.includes('postJson("/api/market"'), "one-field market lookup is no
 assert.ok(app.includes('fetch("/api/wallet-setup"'), "wallet setup scaffold is not connected");
 assert.ok(app.includes('BROWSER_SETUP_BETA_READY'), "wallet setup beta is not discoverable in the UI");
 assert.ok(app.includes('BROWSER_SETUP_REQUIRES_ACTIVATION'), "wallet setup UI does not fail closed when inactive");
-assert.ok(
-  app.includes('scaffold?.paymentAllowed === false || scaffold?.actions?.pay === false || scaffold?.actions?.trade === false'),
-  "homepage must expose an active wallet-setup handoff while rejecting explicitly inactive contracts",
+assert.match(
+  app,
+  /if \(scaffold\.status === "BROWSER_SETUP_BETA_READY"\) \{[\s\S]*?scaffold\?\.paymentAllowed !== true[\s\S]*?scaffold\?\.actions\?\.pay !== true[\s\S]*?scaffold\?\.actions\?\.trade !== true[\s\S]*?scaffold\?\.browserSetup\?\.page !== "\/wallet-setup"/,
+  "homepage must validate the active wallet-setup contract before exposing its handoff",
+);
+assert.match(
+  app,
+  /scaffold\.status !== "BROWSER_SETUP_REQUIRES_ACTIVATION"[\s\S]*?scaffold\.chainWritesAllowed !== false[\s\S]*?scaffold\?\.paymentAllowed !== false[\s\S]*?scaffold\?\.actions\?\.pay !== false[\s\S]*?scaffold\?\.actions\?\.trade !== false/,
+  "homepage must render the explicit inactive setup guidance only for the inactive contract",
 );
 for (const marker of [
   'src="/assets/browser-open.js"',
