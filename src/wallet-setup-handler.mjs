@@ -1,6 +1,6 @@
-import { walletSetupScaffold } from "../src/wallet-setup-scaffold.mjs";
-export { browserSetupConfigured } from "../src/wallet-setup-config.mjs";
-import { browserSetupConfigured } from "../src/wallet-setup-config.mjs";
+import { walletSetupScaffold } from "./wallet-setup-scaffold.mjs";
+export { browserSetupConfigured } from "./wallet-setup-config.mjs";
+import { browserSetupConfigured } from "./wallet-setup-config.mjs";
 
 export function createWalletSetupHandler({
   scaffold = walletSetupScaffold,
@@ -17,5 +17,3 @@ export function createWalletSetupHandler({
     return response.status(200).json(scaffold({ configured }));
   };
 }
-
-export default createWalletSetupHandler();

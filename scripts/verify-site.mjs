@@ -300,8 +300,18 @@ assert.deepEqual(await readPngSize("../assets/conviction-icon-192.png"), { width
 assert.deepEqual(await readPngSize("../assets/conviction-icon-512.png"), { width: 512, height: 512 });
 assert.match(robots, /User-agent: \*/);
 assert.match(robots, /Allow: \//);
-assert.match(vercel.rewrites[0].source, /robots/);
-assert.match(vercel.rewrites[0].source, /manifest/);
+const spaRewrite = vercel.rewrites.find((rewrite) => rewrite.destination === "/index.html");
+assert.match(spaRewrite?.source || "", /robots/);
+assert.match(spaRewrite?.source || "", /manifest/);
+assert.deepEqual(
+  vercel.rewrites.filter((rewrite) => rewrite.destination.startsWith("/api/readiness?walletRoute=")).map((rewrite) => [rewrite.source, rewrite.destination]),
+  [
+    ["/api/wallet-setup", "/api/readiness?walletRoute=setup"],
+    ["/api/wallet-session", "/api/readiness?walletRoute=session"],
+    ["/api/wallet-relayer", "/api/readiness?walletRoute=relayer"],
+  ],
+  "browser setup routes must share the existing readiness function on Hobby",
+);
 assert.deepEqual(vercel.regions, ["sin1"], "serverless APIs must avoid a US payment region");
 
 console.log("site verification passed: metadata, icons, robots, proof, compiler, mobile, and accessibility markers present");
