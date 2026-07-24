@@ -299,6 +299,11 @@ async function approve() {
     approveButton.textContent = "Venue permissions confirmed";
     readyWallet.textContent = depositWallet;
     readyPanel.hidden = false;
+    if (window.ConvictionBrowserOpen?.activateBrowserOpen) {
+      window.ConvictionBrowserOpen.activateBrowserOpen({ owner, depositWallet });
+    } else {
+      throw new Error("Browser execution adapter did not load. Reload before funding or paying.");
+    }
     setStep("ready");
     setStatus(
       `All five venue permissions were confirmed on Polygon: ${confirmed.transactionHash}. Fund only the Deposit Wallet address shown.`,

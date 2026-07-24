@@ -49,24 +49,25 @@ test("wallet setup scaffold is a frozen no-write feasibility contract", () => {
   assert.equal(result.approvalDisclosure.ctfOperatorApprovals, 3);
   assert.equal(result.approvalDisclosure.revokeCommandAvailable, false);
   assert.equal(result.approvalDisclosure.convictionCanBypassWalletPolicy, false);
-  assert.match(result.compatibility.currentNativeOkxExecutor, /not-compatible/);
-  assert.match(result.compatibility.xLayerPayment, /not-implemented/);
+  assert.match(result.compatibility.currentNativeOkxExecutor, /existing agent\/plugin route/);
+  assert.equal(result.compatibility.xLayerPayment, "inactive");
   assert.match(result.notice, /Do not fund a new wallet/);
 });
 
-test("activated wallet setup publishes the two-consent browser lane without enabling payment or trade", () => {
+test("activated wallet setup publishes setup plus buyer-local payment and OPEN", () => {
   const result = walletSetupScaffold({ configured: true });
   assert.equal(result.status, "BROWSER_SETUP_BETA_READY");
   assert.equal(result.readOnly, false);
+  assert.equal(result.paymentAllowed, true);
   assert.equal(result.chainWritesAllowed, true);
   assert.equal(result.actions.connect, true);
   assert.equal(result.actions.deploy, true);
   assert.equal(result.actions.approve, true);
   assert.equal(result.actions.fund, false);
-  assert.equal(result.actions.pay, false);
-  assert.equal(result.actions.trade, false);
+  assert.equal(result.actions.pay, true);
+  assert.equal(result.actions.trade, true);
   assert.equal(result.browserSetup.consents.length, 2);
-  assert.match(result.notice, /two explicit browser-wallet consents/);
+  assert.match(result.notice, /separate trade confirmation/);
 });
 
 test("wallet setup endpoint exposes only GET and HEAD", () => {

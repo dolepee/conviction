@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { preflightPaidOpenExecution } from "../api/intent.js";
 import { compileIntent } from "../src/intent-compiler.mjs";
 import {
   requirePaidOpenExecutionMode,
+  verifyBrowserWalletReadiness,
   verifyDepositWalletExecution,
   verifyDepositWalletReadiness,
   verifyOpenPluginPreview,
 } from "../src/open-execution-preflight.mjs";
+import { PolygonWalletSetupVerificationError } from "../src/polygon-wallet-setup-verifier.mjs";
 import { LIVE_MARKET_SNAPSHOT } from "./fixtures.mjs";
 
 const WALLET = "0x6a355e4971d9ac2ab97d22c3cf361d42faba33fe";
@@ -69,6 +72,7 @@ function walletReadiness() {
 
 test("paid OPEN accepts only the already-ready deposit-wallet mode", () => {
   assert.doesNotThrow(() => requirePaidOpenExecutionMode({ executionMode: "deposit-wallet" }));
+  assert.doesNotThrow(() => requirePaidOpenExecutionMode({ executionMode: "browser-deposit-wallet" }));
   for (const executionMode of [undefined, "", "eoa", "proxy"]) {
     assert.throws(
       () => requirePaidOpenExecutionMode({ executionMode }),
@@ -78,6 +82,69 @@ test("paid OPEN accepts only the already-ready deposit-wallet mode", () => {
         error?.details?.nextAction === "USE_READY_DEPOSIT_WALLET_OR_STOP",
     );
   }
+});
+
+test("browser readiness binds the owner and exact Deposit Wallet", () => {
+  const input = {
+    ok: true,
+    version: "conviction-browser-wallet-readiness-v1",
+    status: "ready",
+    owner: OWNER,
+    depositWallet: WALLET,
+  };
+  const ready = verifyBrowserWalletReadiness(WALLET, input);
+  assert.equal(ready.owner, OWNER);
+  assert.equal(ready.wallet, WALLET);
+  for (const mutate of [
+    (value) => { value.status = "setup"; },
+    (value) => { value.depositWallet = OWNER; },
+    (value) => { value.version = "other"; },
+  ]) {
+    const value = structuredClone(input);
+    mutate(value);
+    assert.throws(
+      () => verifyBrowserWalletReadiness(WALLET, value),
+      (error) => error?.code === "missing_browser_wallet_readiness",
+    );
+  }
+});
+
+test("paid browser OPEN verifies the bound Deposit Wallet and exact requested pUSD balance", async () => {
+  const calls = [];
+  const result = await preflightPaidOpenExecution({
+    executionMode: "browser-deposit-wallet",
+    wallet: WALLET,
+    spend: "1.350000",
+    browserWalletReadiness: {
+      ok: true,
+      version: "conviction-browser-wallet-readiness-v1",
+      status: "ready",
+      owner: OWNER,
+      depositWallet: WALLET,
+    },
+  }, {
+    async verifyExecutionWalletImpl(wallet, options) {
+      calls.push({ wallet, options });
+      return {
+        ok: true,
+        executionMode: "deposit-wallet",
+        wallet,
+        owner: options.owner,
+        pUsdBalanceRaw: "1980000",
+        minimumPusdBalanceRaw: options.minimumBalanceRaw,
+      };
+    },
+  });
+
+  assert.deepEqual(calls, [{
+    wallet: WALLET,
+    options: {
+      owner: OWNER,
+      minimumBalanceRaw: "1350000",
+    },
+  }]);
+  assert.equal(result.walletReadiness.owner, OWNER);
+  assert.equal(result.walletExecution.minimumPusdBalanceRaw, "1350000");
 });
 
 test("official plugin dry run must match every execution-critical OPEN field", () => {
@@ -154,11 +221,31 @@ test("maker check rejects EOAs and accepts a Polygon contract wallet", async () 
     owner: OWNER,
     rpcUrl: "https://polygon.test",
     fetchImpl,
+    verifyApprovalStateImpl: async () => ({ approvalCalls: 5 }),
   });
   assert.equal(ready.contractCodePresent, true);
   assert.equal(ready.factoryPredictionMatched, true);
   assert.equal(ready.factoryPredictionKind, "beacon");
   assert.deepEqual(calls.sort(), ["eth_call", "eth_call", "eth_chainId", "eth_getCode"]);
+
+  await assert.rejects(
+    verifyDepositWalletExecution(WALLET, {
+      owner: OWNER,
+      rpcUrl: "https://polygon.test",
+      fetchImpl,
+      async verifyApprovalStateImpl() {
+        throw new PolygonWalletSetupVerificationError(
+          422,
+          "deposit_wallet_approval_incomplete",
+          "Polygon did not confirm every required outcome-token permission",
+        );
+      },
+    }),
+    (error) =>
+      error?.code === "deposit_wallet_approval_incomplete" &&
+      error?.details?.paymentAllowed === false &&
+      error?.details?.nextAction === "COMPLETE_BROWSER_WALLET_SETUP",
+  );
 
   const legacyReady = await verifyDepositWalletExecution(WALLET, {
     owner: OWNER,
@@ -183,6 +270,7 @@ test("maker check rejects EOAs and accepts a Polygon contract wallet", async () 
         },
       };
     },
+    verifyApprovalStateImpl: async () => ({ approvalCalls: 5 }),
   });
   assert.equal(legacyReady.factoryPredictionKind, "legacy-uups");
 
@@ -208,6 +296,7 @@ test("maker check rejects EOAs and accepts a Polygon contract wallet", async () 
           },
         };
       },
+      verifyApprovalStateImpl: async () => ({ approvalCalls: 5 }),
     }),
     (error) =>
       error?.code === "maker_not_eligible" &&
@@ -236,6 +325,7 @@ test("maker check rejects EOAs and accepts a Polygon contract wallet", async () 
           },
         };
       },
+      verifyApprovalStateImpl: async () => ({ approvalCalls: 5 }),
     }),
     (error) => error?.code === "maker_not_eligible",
   );

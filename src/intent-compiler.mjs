@@ -337,7 +337,12 @@ export function compileIntent(request, market, options = {}) {
     chainId: POLYGON_CHAIN_ID,
     market: bounded.market,
     order,
-    buyer: { wallet },
+    buyer: {
+      wallet,
+      ...(request.executionMode === "browser-deposit-wallet"
+        ? { executionMode: "browser-deposit-wallet" }
+        : {}),
+    },
     rationale,
     snapshot: bounded.snapshot,
     exposure: bounded.exposure,

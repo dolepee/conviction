@@ -32,6 +32,13 @@ const ERC1155_APPROVAL_ABI = [{
   outputs: [{ type: "bool" }],
   stateMutability: "view",
 }];
+const ERC20_BALANCE_ABI = [{
+  type: "function",
+  name: "balanceOf",
+  inputs: [{ type: "address" }],
+  outputs: [{ type: "uint256" }],
+  stateMutability: "view",
+}];
 
 function indexed(address) {
   return `0x${address.slice(2).padStart(64, "0")}`;
@@ -122,5 +129,34 @@ test("approval verifier fails closed when a required venue permission is absent"
   await assert.rejects(
     verifier.verifyApprovals({ transactionHash: TX, wallet: WALLET }),
     (error) => error instanceof PolygonWalletSetupVerificationError && error.code === "deposit_wallet_approval_incomplete",
+  );
+});
+
+test("current balance verifier refuses an unfunded Deposit Wallet before payment", async () => {
+  const verifier = createPolygonWalletSetupVerifier({
+    rpcUrl: "https://polygon.example.com",
+    fetchImpl: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      assert.equal(request.method, "eth_call");
+      return jsonRpc(encodeFunctionResult({
+        abi: ERC20_BALANCE_ABI,
+        functionName: "balanceOf",
+        result: 1_250_000n,
+      }));
+    },
+  });
+  const ready = await verifier.verifyPusdBalance({
+    wallet: WALLET,
+    minimumRaw: "1250000",
+  });
+  assert.equal(ready.balanceRaw, "1250000");
+  await assert.rejects(
+    verifier.verifyPusdBalance({
+      wallet: WALLET,
+      minimumRaw: "1250001",
+    }),
+    (error) =>
+      error instanceof PolygonWalletSetupVerificationError &&
+      error.code === "insufficient_trading_balance",
   );
 });

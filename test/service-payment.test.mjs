@@ -259,10 +259,11 @@ test("returns a standards-compliant unpaid challenge before compiling", async ()
   assert.equal(challenge.outputSchema.input.method, "POST");
   assert.deepEqual(
       challenge.outputSchema.input.body.required,
-      ["market", "outcome", "spend", "maxPrice", "wallet", "executionMode", "walletReadiness", "pluginPreview"],
+      ["market", "outcome", "spend", "maxPrice", "wallet", "executionMode"],
   );
   const input = challenge.outputSchema.input.body;
   assert.equal(input.additionalProperties, true);
+  assert.equal(input.allOf.length, 2);
   assert.equal(input.properties.walletReadiness.anyOf.length, 2);
   assert.equal(input.properties.pluginPreview.properties.ok.const, true);
   assert.equal(input.properties.pluginPreview.properties.dry_run.const, true);

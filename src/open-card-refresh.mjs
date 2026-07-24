@@ -6,6 +6,7 @@ import {
 } from "./intent-issuer.mjs";
 import { resolveMarket } from "./market-client.mjs";
 import {
+  verifyBrowserWalletReadiness,
   verifyDepositWalletExecution,
   verifyDepositWalletReadiness,
   verifyOpenPluginPreview,
@@ -121,10 +122,17 @@ export async function refreshOpenCard(
     },
   );
 
-  const walletReadiness = verifyDepositWalletReadiness(
-    original.intent.buyer.wallet,
-    body?.walletReadiness,
-  );
+  const browserMode =
+    original.intent.buyer.executionMode === "browser-deposit-wallet";
+  const walletReadiness = browserMode
+    ? verifyBrowserWalletReadiness(
+        original.intent.buyer.wallet,
+        body?.browserWalletReadiness,
+      )
+    : verifyDepositWalletReadiness(
+        original.intent.buyer.wallet,
+        body?.walletReadiness,
+      );
   await verifyWalletImpl(original.intent.buyer.wallet, {
     owner: walletReadiness.owner,
   });
@@ -134,7 +142,7 @@ export async function refreshOpenCard(
     spend: original.intent.order.requestedBudget,
     maxPrice: original.intent.order.maxPrice,
     wallet: original.intent.buyer.wallet,
-    executionMode: "deposit-wallet",
+    executionMode: browserMode ? "browser-deposit-wallet" : "deposit-wallet",
     rationale: original.intent.rationale,
   };
   const market = await resolveMarketImpl(request.market, { outcome: request.outcome });
@@ -144,9 +152,11 @@ export async function refreshOpenCard(
     quoteTtlMs: 300_000,
     intentVersion: "conviction-intent-v4",
   });
-  verifyOpenPluginPreview(compilation, body?.pluginPreview, {
-    verifiedWallet: walletReadiness.wallet,
-  });
+  if (!browserMode) {
+    verifyOpenPluginPreview(compilation, body?.pluginPreview, {
+      verifiedWallet: walletReadiness.wallet,
+    });
+  }
   const issue = issueIntentImpl ?? createEnvironmentIntentIssuer(environment, { now });
   const refreshed = await issue(compilation);
   return Object.freeze({
@@ -157,6 +167,8 @@ export async function refreshOpenCard(
 }
 
 export function attachOpenRefreshContract(card) {
+  const browserMode =
+    card?.intent?.buyer?.executionMode === "browser-deposit-wallet";
   return Object.freeze({
     ...card,
     refresh: Object.freeze({
@@ -165,7 +177,9 @@ export function attachOpenRefreshContract(card) {
       method: "POST",
       windowSeconds: OPEN_CARD_REFRESH_WINDOW_MS / 1_000,
       additionalPaymentRequired: false,
-      requires: ["card", "paymentTx", "payer", "walletReadiness", "pluginPreview"],
+      requires: browserMode
+        ? ["card", "paymentTx", "payer", "browserWalletReadiness"]
+        : ["card", "paymentTx", "payer", "walletReadiness", "pluginPreview"],
       scope: "same-market-outcome-budget-cap-and-wallet",
     }),
   });

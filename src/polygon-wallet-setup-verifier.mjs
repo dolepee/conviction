@@ -32,6 +32,14 @@ const ERC20_ABI = [{
   outputs: [{ name: "", type: "uint256" }],
 }];
 
+const ERC20_BALANCE_ABI = [{
+  type: "function",
+  name: "balanceOf",
+  stateMutability: "view",
+  inputs: [{ name: "account", type: "address" }],
+  outputs: [{ name: "", type: "uint256" }],
+}];
+
 const ERC1155_ABI = [{
   type: "function",
   name: "isApprovedForAll",
@@ -235,16 +243,24 @@ export function createPolygonWalletSetupVerifier({ rpcUrl: configuredRpcUrl, fet
 
   async function verifyApprovals({ transactionHash, wallet }) {
     const record = canonicalRecord({ transactionHash, receipt: await receipt(transactionHash) });
+    return verifyApprovalState({ wallet, blockTag: record.blockNumber, transactionHash: record.transactionHash });
+  }
+
+  async function verifyApprovalState({
+    wallet,
+    blockTag = "latest",
+    transactionHash = undefined,
+  }) {
     const buyerWallet = address(wallet);
     const allowanceCalls = [CTF_EXCHANGE_V2, NEG_RISK_CTF_EXCHANGE_V2].map((spender) => ethCall(
       PUSD,
       encodeFunctionData({ abi: ERC20_ABI, functionName: "allowance", args: [buyerWallet, spender] }),
-      record.blockNumber,
+      blockTag,
     ));
     const operatorCalls = [CTF_EXCHANGE_V2, NEG_RISK_CTF_EXCHANGE_V2, NEG_RISK_ADAPTER].map((operator) => ethCall(
       CTF,
       encodeFunctionData({ abi: ERC1155_ABI, functionName: "isApprovedForAll", args: [buyerWallet, operator] }),
-      record.blockNumber,
+      blockTag,
     ));
     const [allowanceResults, approvalResults] = await Promise.all([
       Promise.all(allowanceCalls),
@@ -258,13 +274,62 @@ export function createPolygonWalletSetupVerifier({ rpcUrl: configuredRpcUrl, fet
     }
     return Object.freeze({
       wallet: buyerWallet,
-      transactionHash: record.transactionHash,
-      blockNumber: record.blockNumber,
+      transactionHash,
+      blockNumber: blockTag,
       approvalCalls: OFFICIAL_APPROVAL_CALLS.length,
     });
   }
 
-  return Object.freeze({ verifyDeployment, verifyApprovals });
+  async function verifyPusdBalance({ wallet, minimumRaw, blockTag = "latest" }) {
+    const buyerWallet = address(wallet);
+    let required;
+    try {
+      required = BigInt(minimumRaw);
+    } catch {
+      throw new PolygonWalletSetupVerificationError(422, "invalid_required_balance", "Required pUSD balance is invalid");
+    }
+    if (required < 0n) {
+      throw new PolygonWalletSetupVerificationError(422, "invalid_required_balance", "Required pUSD balance is invalid");
+    }
+    const result = await ethCall(
+      PUSD,
+      encodeFunctionData({
+        abi: ERC20_BALANCE_ABI,
+        functionName: "balanceOf",
+        args: [buyerWallet],
+      }),
+      blockTag,
+    );
+    let balance;
+    try {
+      balance = decodeFunctionResult({
+        abi: ERC20_BALANCE_ABI,
+        functionName: "balanceOf",
+        data: result,
+      });
+    } catch {
+      throw new PolygonWalletSetupVerificationError(502, "invalid_polygon_response", "Polygon returned an invalid pUSD balance");
+    }
+    if (balance < required) {
+      throw new PolygonWalletSetupVerificationError(
+        422,
+        "insufficient_trading_balance",
+        "Deposit Wallet does not hold the stated pUSD budget",
+      );
+    }
+    return Object.freeze({
+      wallet: buyerWallet,
+      balanceRaw: balance.toString(),
+      minimumRaw: required.toString(),
+    });
+  }
+
+  return Object.freeze({
+    verifyDeployment,
+    verifyApprovals,
+    verifyApprovalState,
+    verifyPusdBalance,
+  });
 }
 
 export function createPolygonWalletSetupVerifierFromEnvironment(environment = process.env) {
