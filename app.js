@@ -113,8 +113,10 @@ async function loadWalletSetupScaffold() {
       headers: { accept: "application/json" },
     });
     if (!response.ok) {
-      if (response.status === 429) {
-        walletSetupStatus.textContent = "Browser setup status is temporarily rate limited. Retrying automatically; do not connect or fund a new wallet here.";
+      if ([429, 503].includes(response.status) && response.headers.get("retry-after")) {
+        walletSetupStatus.textContent = response.status === 429
+          ? "Browser setup status is temporarily rate limited. Retrying automatically; do not connect or fund a new wallet here."
+          : "Browser setup status is temporarily busy. Retrying automatically; do not connect or fund a new wallet here.";
         retryWalletSetupScaffold(retryDelayMilliseconds(response.headers.get("retry-after"), 60));
         return;
       }

@@ -402,6 +402,28 @@ test("wallet setup public status is rate limited before an authorization probe",
   assert.equal(second.headers["retry-after"], "60");
 });
 
+test("wallet setup capacity response advises a bounded retry", async () => {
+  const apiGuard = createPublicApiGuard({ limit: 6, maxBodyBytes: 256, maxInFlight: 1 });
+  let releaseAuthorization;
+  const handler = createWalletSetupHandler({
+    configured: true,
+    apiGuard,
+    builderAuthorization: async () => new Promise((resolve) => { releaseAuthorization = resolve; }),
+  });
+  const first = response();
+  const firstRequest = handler({ method: "GET" }, first);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const second = response();
+  await handler({ method: "GET" }, second);
+  assert.equal(second.statusCode, 503);
+  assert.equal(second.body.error.code, "preview_capacity_reached");
+  assert.equal(second.headers["retry-after"], "1");
+
+  releaseAuthorization(false);
+  await firstRequest;
+});
+
 test("wallet setup activation requires a complete secure server configuration", () => {
   const environment = {
     CONVICTION_WALLET_SESSION_SECRET: "x".repeat(32),

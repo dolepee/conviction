@@ -344,9 +344,11 @@ async function initialize() {
     });
     if (!response.ok) {
       connectButton.disabled = true;
-      if (response.status === 429) {
+      if ([429, 503].includes(response.status) && response.headers.get("retry-after")) {
         setStatus(
-          "Browser setup status is temporarily rate limited. Retrying automatically; do not connect or fund a new wallet here.",
+          response.status === 429
+            ? "Browser setup status is temporarily rate limited. Retrying automatically; do not connect or fund a new wallet here."
+            : "Browser setup status is temporarily busy. Retrying automatically; do not connect or fund a new wallet here.",
           "error",
         );
         retryWalletSetup(retryDelayMilliseconds(response.headers.get("retry-after"), 60));

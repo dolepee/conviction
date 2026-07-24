@@ -102,12 +102,12 @@ assert.ok(app.includes('BROWSER_SETUP_REQUIRES_ACTIVATION'), "wallet setup UI do
 assert.ok(app.includes('BROWSER_SETUP_AUTH_CHECKING'), "wallet setup UI does not expose a retryable Builder authorization state");
 assert.ok(app.includes('BROWSER_SETUP_AUTH_UNAVAILABLE'), "wallet setup UI does not fail closed when Builder authorization is unavailable");
 assert.ok(
-  app.includes('response.status === 429') && app.includes('response.headers.get("retry-after")'),
-  "homepage does not retry a temporary wallet-setup rate limit",
+  app.includes('[429, 503].includes(response.status)') && app.includes('response.headers.get("retry-after")'),
+  "homepage does not retry temporary wallet-setup rate-limit or capacity responses",
 );
 assert.ok(
-  walletSetupApp.includes('response.status === 429') && walletSetupApp.includes('response.headers.get("retry-after")'),
-  "wallet setup page does not retry a temporary wallet-setup rate limit",
+  walletSetupApp.includes('[429, 503].includes(response.status)') && walletSetupApp.includes('response.headers.get("retry-after")'),
+  "wallet setup page does not retry temporary wallet-setup rate-limit or capacity responses",
 );
 assert.match(
   app,
