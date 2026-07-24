@@ -17,6 +17,23 @@ let sessionToken = null;
 let depositWallet = null;
 let pendingDeploymentPollToken = null;
 let pendingApprovalPollToken = null;
+let walletSetupRetryTimer = null;
+
+function retryDelayMilliseconds(value, fallbackSeconds = 15) {
+  const seconds = Number(value);
+  const boundedSeconds = Number.isSafeInteger(seconds) && seconds >= 1 && seconds <= 60
+    ? seconds
+    : fallbackSeconds;
+  return boundedSeconds * 1_000;
+}
+
+function retryWalletSetup(delayMilliseconds) {
+  if (walletSetupRetryTimer) return;
+  walletSetupRetryTimer = window.setTimeout(() => {
+    walletSetupRetryTimer = null;
+    void initialize();
+  }, delayMilliseconds);
+}
 
 function setStatus(message, kind = "info") {
   statusBox.textContent = message;
@@ -325,16 +342,46 @@ async function initialize() {
     const response = await fetch("/api/wallet-setup", {
       headers: { accept: "application/json" },
     });
+    if (!response.ok) {
+      connectButton.disabled = true;
+      if ([429, 503].includes(response.status) && response.headers.get("retry-after")) {
+        setStatus(
+          response.status === 429
+            ? "Browser setup status is temporarily rate limited. Retrying automatically; do not connect or fund a new wallet here."
+            : "Browser setup status is temporarily busy. Retrying automatically; do not connect or fund a new wallet here.",
+          "error",
+        );
+        retryWalletSetup(retryDelayMilliseconds(response.headers.get("retry-after"), 60));
+        return;
+      }
+      throw new Error("wallet setup scaffold unavailable");
+    }
     scaffold = await response.json();
     if (
-      !response.ok ||
       scaffold?.status !== "BROWSER_SETUP_BETA_READY" ||
       scaffold?.browserSetup?.approvalCalls?.length !== 5
     ) {
       connectButton.disabled = true;
-      setStatus("Browser wallet setup is not activated yet. Do not connect or fund a new wallet here.", "error");
+      if (["BROWSER_SETUP_AUTH_CHECKING", "BROWSER_SETUP_AUTH_UNAVAILABLE"].includes(scaffold?.status)) {
+        const checking = scaffold.status === "BROWSER_SETUP_AUTH_CHECKING";
+        setStatus(
+          checking
+            ? "Browser setup authorization is still being checked. Retrying shortly; do not connect or fund a new wallet here."
+            : "Browser setup authorization is temporarily unavailable. Retrying automatically; do not connect or fund a new wallet here.",
+          checking ? "info" : "error",
+        );
+        retryWalletSetup(retryDelayMilliseconds(scaffold.retryAfterSeconds));
+        return;
+      }
+      setStatus(
+        scaffold?.status === "BROWSER_SETUP_AUTH_UNAVAILABLE"
+          ? "Browser setup authorization is temporarily unavailable. Do not connect or fund a new wallet here."
+          : "Browser wallet setup is not activated yet. Do not connect or fund a new wallet here.",
+        "error",
+      );
       return;
     }
+    connectButton.disabled = false;
     setStatus("Setup is available. Connect a dedicated buyer wallet to begin; no chain action occurs on connect.");
   } catch {
     connectButton.disabled = true;

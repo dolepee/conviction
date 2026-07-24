@@ -99,6 +99,16 @@ assert.ok(app.includes('postJson("/api/market"'), "one-field market lookup is no
 assert.ok(app.includes('fetch("/api/wallet-setup"'), "wallet setup scaffold is not connected");
 assert.ok(app.includes('BROWSER_SETUP_BETA_READY'), "wallet setup beta is not discoverable in the UI");
 assert.ok(app.includes('BROWSER_SETUP_REQUIRES_ACTIVATION'), "wallet setup UI does not fail closed when inactive");
+assert.ok(app.includes('BROWSER_SETUP_AUTH_CHECKING'), "wallet setup UI does not expose a retryable Builder authorization state");
+assert.ok(app.includes('BROWSER_SETUP_AUTH_UNAVAILABLE'), "wallet setup UI does not fail closed when Builder authorization is unavailable");
+assert.ok(
+  app.includes('[429, 503].includes(response.status)') && app.includes('response.headers.get("retry-after")'),
+  "homepage does not retry temporary wallet-setup rate-limit or capacity responses",
+);
+assert.ok(
+  walletSetupApp.includes('[429, 503].includes(response.status)') && walletSetupApp.includes('response.headers.get("retry-after")'),
+  "wallet setup page does not retry temporary wallet-setup rate-limit or capacity responses",
+);
 assert.match(
   app,
   /if \(scaffold\.status === "BROWSER_SETUP_BETA_READY"\) \{[\s\S]*?scaffold\?\.paymentAllowed !== true[\s\S]*?scaffold\?\.actions\?\.pay !== true[\s\S]*?scaffold\?\.actions\?\.trade !== true[\s\S]*?scaffold\?\.browserSetup\?\.page !== "\/wallet-setup"/,
@@ -106,8 +116,18 @@ assert.match(
 );
 assert.match(
   app,
-  /scaffold\.status !== "BROWSER_SETUP_REQUIRES_ACTIVATION"[\s\S]*?scaffold\.chainWritesAllowed !== false[\s\S]*?scaffold\?\.paymentAllowed !== false[\s\S]*?scaffold\?\.actions\?\.pay !== false[\s\S]*?scaffold\?\.actions\?\.trade !== false/,
-  "homepage must render the explicit inactive setup guidance only for the inactive contract",
+  /BROWSER_SETUP_REQUIRES_ACTIVATION[\s\S]*?BROWSER_SETUP_AUTH_CHECKING[\s\S]*?BROWSER_SETUP_AUTH_UNAVAILABLE[\s\S]*?scaffold\.chainWritesAllowed !== false[\s\S]*?scaffold\?\.paymentAllowed !== false[\s\S]*?scaffold\?\.actions\?\.pay !== false[\s\S]*?scaffold\?\.actions\?\.trade !== false/,
+  "homepage must render explicit no-write guidance for inactive or Builder-unavailable setup",
+);
+assert.match(
+  walletSetupApp,
+  /BROWSER_SETUP_AUTH_CHECKING[\s\S]*?Retrying shortly; do not connect or fund a new wallet here/,
+  "wallet setup page must keep browser actions disabled while Builder authorization is checking",
+);
+assert.match(
+  walletSetupApp,
+  /BROWSER_SETUP_AUTH_UNAVAILABLE[\s\S]*?Retrying automatically; do not connect or fund a new wallet here/,
+  "wallet setup page must retry safely after temporary Builder authorization failure",
 );
 for (const marker of [
   'src="/assets/browser-open.js"',
@@ -129,6 +149,11 @@ assert.ok(
   "browser OPEN does not use the official Polymarket TypeScript client",
 );
 assert.ok(walletSetupApp.includes('relay("auth")'), "browser setup does not verify Builder authorization before deployment consent");
+assert.match(
+  walletSetupHtml,
+  /<button[^>]*id="connect-wallet"[^>]*\bdisabled\b[^>]*>/,
+  "browser wallet connection must remain disabled until the asynchronous authorization probe succeeds",
+);
 assert.ok(
   browserOpenSource.indexOf('element("confirm-open-payment")') <
     browserOpenSource.indexOf('element("confirm-open-trade")'),

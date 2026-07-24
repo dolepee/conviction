@@ -91,7 +91,7 @@ test("builder authentication is a read-only signed probe with no relayer payload
     },
     nowSeconds: () => 1_000,
   });
-  const result = await proxy.run({ operation: "builder-auth", session: { wallet: WALLET }, body: {} });
+  const result = await proxy.run({ operation: "builder-auth", body: {} });
   assert.deepEqual(result, { ok: true, operation: "builder-auth", authentication: "builder" });
   assert.equal(calls[0].url, `${POLYMARKET_RELAYER_ORIGIN}/transactions`);
   assert.equal(calls[0].options.headers.POLY_BUILDER_API_KEY, CREDENTIALS.key);

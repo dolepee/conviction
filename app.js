@@ -88,13 +88,40 @@ const defaultSpendHelp = "After market lookup, Conviction suggests the selected 
 
 document.querySelector("#year").textContent = String(new Date().getFullYear());
 
+let walletSetupRetryTimer = null;
+
+function retryDelayMilliseconds(value, fallbackSeconds = 15) {
+  const seconds = Number(value);
+  const boundedSeconds = Number.isSafeInteger(seconds) && seconds >= 1 && seconds <= 60
+    ? seconds
+    : fallbackSeconds;
+  return boundedSeconds * 1_000;
+}
+
+function retryWalletSetupScaffold(delayMilliseconds) {
+  if (walletSetupRetryTimer) return;
+  walletSetupRetryTimer = window.setTimeout(() => {
+    walletSetupRetryTimer = null;
+    void loadWalletSetupScaffold();
+  }, delayMilliseconds);
+}
+
 async function loadWalletSetupScaffold() {
   if (!walletSetupStatus) return;
   try {
     const response = await fetch("/api/wallet-setup", {
       headers: { accept: "application/json" },
     });
-    if (!response.ok) throw new Error("wallet setup scaffold unavailable");
+    if (!response.ok) {
+      if ([429, 503].includes(response.status) && response.headers.get("retry-after")) {
+        walletSetupStatus.textContent = response.status === 429
+          ? "Browser setup status is temporarily rate limited. Retrying automatically; do not connect or fund a new wallet here."
+          : "Browser setup status is temporarily busy. Retrying automatically; do not connect or fund a new wallet here.";
+        retryWalletSetupScaffold(retryDelayMilliseconds(response.headers.get("retry-after"), 60));
+        return;
+      }
+      throw new Error("wallet setup scaffold unavailable");
+    }
     const scaffold = await response.json();
     if (scaffold.status === "BROWSER_SETUP_BETA_READY") {
       if (
@@ -113,13 +140,24 @@ async function loadWalletSetupScaffold() {
       return;
     }
     if (
-      scaffold.status !== "BROWSER_SETUP_REQUIRES_ACTIVATION" ||
+      ![
+        "BROWSER_SETUP_REQUIRES_ACTIVATION",
+        "BROWSER_SETUP_AUTH_CHECKING",
+        "BROWSER_SETUP_AUTH_UNAVAILABLE",
+      ].includes(scaffold.status) ||
       scaffold.chainWritesAllowed !== false ||
       scaffold?.paymentAllowed !== false ||
       scaffold?.actions?.pay !== false ||
       scaffold?.actions?.trade !== false
     ) {
       throw new Error("unexpected wallet setup contract");
+    }
+    if (["BROWSER_SETUP_AUTH_CHECKING", "BROWSER_SETUP_AUTH_UNAVAILABLE"].includes(scaffold.status)) {
+      walletSetupStatus.textContent = scaffold.status === "BROWSER_SETUP_AUTH_CHECKING"
+        ? "Browser setup authorization is still being checked. Retrying shortly; do not connect or fund a new wallet here."
+        : "Browser setup authorization is temporarily unavailable. Retrying automatically; do not connect or fund a new wallet here.";
+      retryWalletSetupScaffold(retryDelayMilliseconds(scaffold.retryAfterSeconds));
+      return;
     }
     walletSetupStatus.textContent = "Browser setup is not activated yet. Use an already-ready buyer-controlled Deposit Wallet.";
   } catch {

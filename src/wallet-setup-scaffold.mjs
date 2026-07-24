@@ -16,24 +16,38 @@ function freeze(value) {
 // This contract never exposes credentials. `configured` only reports whether
 // the server has the Builder values, an independent session secret, durable
 // one-time state, and a fixed Polygon verification RPC.
-export function walletSetupScaffold({ configured = false } = {}) {
+export function walletSetupScaffold({
+  configured = false,
+  builderAuthorized = false,
+  builderAuthorizationPending = false,
+} = {}) {
+  const active = configured && builderAuthorized;
+  const authorizationChecking = configured && !active && builderAuthorizationPending;
+  const authorizationUnavailable = configured && !active && !authorizationChecking;
   return freeze({
     ok: true,
     version: WALLET_SETUP_SCAFFOLD_VERSION,
-    status: configured ? "BROWSER_SETUP_BETA_READY" : "BROWSER_SETUP_REQUIRES_ACTIVATION",
-    readOnly: !configured,
-    paymentAllowed: configured,
-    chainWritesAllowed: configured,
+    status: active
+      ? "BROWSER_SETUP_BETA_READY"
+      : authorizationChecking
+        ? "BROWSER_SETUP_AUTH_CHECKING"
+      : authorizationUnavailable
+        ? "BROWSER_SETUP_AUTH_UNAVAILABLE"
+        : "BROWSER_SETUP_REQUIRES_ACTIVATION",
+    readOnly: !active,
+    paymentAllowed: active,
+    chainWritesAllowed: active,
     credentialsAccepted: false,
     buyerKeysAccepted: false,
+    retryAfterSeconds: authorizationChecking ? 15 : authorizationUnavailable ? 60 : null,
     actions: {
-      connect: configured,
-      deploy: configured,
-      approve: configured,
+      connect: active,
+      deploy: active,
+      approve: active,
       fund: false,
       bridge: false,
-      pay: configured,
-      trade: configured,
+      pay: active,
+      trade: active,
     },
     existingReadyWallet: {
       endpoint: "/api/readiness",
@@ -42,7 +56,7 @@ export function walletSetupScaffold({ configured = false } = {}) {
     compatibility: {
       existingPaidOpenRoute: "unchanged-ready-deposit-wallet-only",
       currentNativeOkxExecutor: "existing agent/plugin route remains supported; browser Deposit Wallet OPEN is an additional buyer-local route",
-      xLayerPayment: configured
+      xLayerPayment: active
         ? "buyer-local EIP-3009 x402 signature with a separate later trade confirmation"
         : "inactive",
     },
@@ -75,8 +89,12 @@ export function walletSetupScaffold({ configured = false } = {}) {
       existingPaidRouteUnchanged: true,
     },
     approvalDisclosure: APPROVAL_DISCLOSURE,
-    notice: configured
+    notice: active
       ? "Setup first verifies Builder authorization through a read-only relayer check. Only then can it deploy and approve after two explicit browser-wallet consents, then run one buyer-local paid OPEN with a separate trade confirmation. It cannot fund or bridge."
-      : "Browser setup is not activated. Do not fund a new wallet from this screen.",
+      : authorizationChecking
+        ? "Browser setup authorization is still being checked. Do not connect or fund a new wallet here; this page will retry shortly."
+      : authorizationUnavailable
+        ? "Browser setup authorization is temporarily unavailable. Do not connect or fund a new wallet here."
+        : "Browser setup is not activated. Do not fund a new wallet from this screen.",
   });
 }
