@@ -183,10 +183,14 @@ export function createPolymarketRelayerProxy({
   async function run({ operation, session, body }) {
     if (operation === "nonce") {
       const query = new URLSearchParams({ address: session.wallet, type: "WALLET" });
+      const headers = fixedRelayerHeaders &&
+        sameAddress(fixedRelayerHeaders.RELAYER_API_KEY_ADDRESS, session.wallet)
+        ? fixedRelayerHeaders
+        : undefined;
       return {
         ok: true,
         operation,
-        relayer: await request(`/nonce?${query}`),
+        relayer: await request(`/nonce?${query}`, { headers }),
       };
     }
     if (operation === "transaction") {

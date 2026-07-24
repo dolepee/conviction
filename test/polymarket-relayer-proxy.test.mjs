@@ -52,6 +52,7 @@ test("relayer proxy fixes the origin and scopes nonce to the session wallet", as
     `${POLYMARKET_RELAYER_ORIGIN}/nonce?address=${WALLET}&type=WALLET`,
   );
   assert.equal(calls[0].options.redirect, "error");
+  assert.equal(calls[0].options.headers, undefined);
   assert.throws(
     () => createPolymarketRelayerProxy({
       credentials: CREDENTIALS,
@@ -59,6 +60,25 @@ test("relayer proxy fixes the origin and scopes nonce to the session wallet", as
     }),
     /origin is immutable/,
   );
+});
+
+test("matching-account nonce fetch uses the dedicated Relayer API key", async () => {
+  const calls = [];
+  const proxy = createPolymarketRelayerProxy({
+    credentials: CREDENTIALS,
+    relayerCredentials: RELAYER_CREDENTIALS,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse({ nonce: "9" });
+    },
+  });
+  await proxy.run({
+    operation: "nonce",
+    session: { wallet: WALLET },
+    body: {},
+  });
+  assert.equal(calls[0].options.headers.RELAYER_API_KEY, RELAYER_CREDENTIALS.key);
+  assert.equal(calls[0].options.headers.RELAYER_API_KEY_ADDRESS, RELAYER_CREDENTIALS.address);
 });
 
 test("relayer proxy forwards only a validated wallet-create body with body-bound headers", async () => {
