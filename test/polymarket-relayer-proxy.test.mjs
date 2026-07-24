@@ -10,10 +10,15 @@ import {
 } from "../src/polymarket-relayer-proxy.mjs";
 
 const WALLET = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const OTHER_WALLET = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const CREDENTIALS = {
   key: "builder-key",
   secret: Buffer.from("builder-secret").toString("base64"),
   passphrase: "builder-passphrase",
+};
+const RELAYER_CREDENTIALS = {
+  key: "relayer-key",
+  address: WALLET,
 };
 
 function jsonResponse(body, { status = 200 } = {}) {
@@ -47,6 +52,7 @@ test("relayer proxy fixes the origin and scopes nonce to the session wallet", as
     `${POLYMARKET_RELAYER_ORIGIN}/nonce?address=${WALLET}&type=WALLET`,
   );
   assert.equal(calls[0].options.redirect, "error");
+  assert.equal(calls[0].options.headers, undefined);
   assert.throws(
     () => createPolymarketRelayerProxy({
       credentials: CREDENTIALS,
@@ -54,6 +60,25 @@ test("relayer proxy fixes the origin and scopes nonce to the session wallet", as
     }),
     /origin is immutable/,
   );
+});
+
+test("matching-account nonce fetch uses the dedicated Relayer API key", async () => {
+  const calls = [];
+  const proxy = createPolymarketRelayerProxy({
+    credentials: CREDENTIALS,
+    relayerCredentials: RELAYER_CREDENTIALS,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse({ nonce: "9" });
+    },
+  });
+  await proxy.run({
+    operation: "nonce",
+    session: { wallet: WALLET },
+    body: {},
+  });
+  assert.equal(calls[0].options.headers.RELAYER_API_KEY, RELAYER_CREDENTIALS.key);
+  assert.equal(calls[0].options.headers.RELAYER_API_KEY_ADDRESS, RELAYER_CREDENTIALS.address);
 });
 
 test("relayer proxy forwards only a validated wallet-create body with body-bound headers", async () => {
@@ -82,6 +107,113 @@ test("relayer proxy forwards only a validated wallet-create body with body-bound
   assert.equal(calls[0].options.headers.POLY_BUILDER_API_KEY, CREDENTIALS.key);
   assert.equal(calls[0].options.headers.POLY_BUILDER_TIMESTAMP, "1000");
   assert.match(calls[0].options.headers.POLY_BUILDER_SIGNATURE, /^[A-Za-z0-9_-]+=*$/);
+});
+
+test("wallet creation remains Builder-authenticated when a Relayer API key is configured", async () => {
+  const calls = [];
+  const proxy = createPolymarketRelayerProxy({
+    credentials: CREDENTIALS,
+    relayerCredentials: RELAYER_CREDENTIALS,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse({ transactionID: "tx-relayer", state: "STATE_NEW" });
+    },
+  });
+  const request = JSON.stringify({
+    type: "WALLET-CREATE",
+    from: WALLET,
+    to: DEPOSIT_WALLET_FACTORY,
+  });
+  const result = await proxy.run({
+    operation: "submit",
+    session: { wallet: WALLET },
+    body: { request },
+  });
+  assert.equal(result.action, "DEPLOY_DEPOSIT_WALLET");
+  assert.equal(calls[0].options.headers.POLY_BUILDER_API_KEY, CREDENTIALS.key);
+  assert.equal(calls[0].options.headers.RELAYER_API_KEY, undefined);
+});
+
+test("matching-account wallet operations may use the dedicated Relayer API key", async () => {
+  const calls = [];
+  const proxy = createPolymarketRelayerProxy({
+    credentials: CREDENTIALS,
+    relayerCredentials: RELAYER_CREDENTIALS,
+    validate: async () => ({ action: "APPROVE_DEPOSIT_WALLET" }),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse({ transactionID: "tx-relayer", state: "STATE_NEW" });
+    },
+  });
+  const request = JSON.stringify({ type: "WALLET" });
+  await proxy.run({
+    operation: "submit",
+    session: { wallet: WALLET },
+    body: { request },
+  });
+  assert.equal(calls[0].options.headers.RELAYER_API_KEY, RELAYER_CREDENTIALS.key);
+  assert.equal(calls[0].options.headers.RELAYER_API_KEY_ADDRESS, RELAYER_CREDENTIALS.address);
+  assert.equal(calls[0].options.headers.POLY_BUILDER_API_KEY, undefined);
+});
+
+test("a foreign buyer operation never uses another account's Relayer API key", async () => {
+  const calls = [];
+  const proxy = createPolymarketRelayerProxy({
+    credentials: CREDENTIALS,
+    relayerCredentials: RELAYER_CREDENTIALS,
+    validate: async () => ({ action: "APPROVE_DEPOSIT_WALLET" }),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return jsonResponse({ transactionID: "tx-builder", state: "STATE_NEW" });
+    },
+  });
+  await proxy.run({
+    operation: "submit",
+    session: { wallet: OTHER_WALLET },
+    body: { request: JSON.stringify({ type: "WALLET" }) },
+  });
+  assert.equal(calls[0].options.headers.POLY_BUILDER_API_KEY, CREDENTIALS.key);
+  assert.equal(calls[0].options.headers.RELAYER_API_KEY, undefined);
+});
+
+test("a Relayer key alone cannot create a wallet for a new buyer", async () => {
+  let fetched = false;
+  const proxy = createPolymarketRelayerProxy({
+    relayerCredentials: RELAYER_CREDENTIALS,
+    fetchImpl: async () => {
+      fetched = true;
+      return jsonResponse({});
+    },
+  });
+  const request = JSON.stringify({
+    type: "WALLET-CREATE",
+    from: WALLET,
+    to: DEPOSIT_WALLET_FACTORY,
+  });
+  await assert.rejects(
+    proxy.run({
+      operation: "submit",
+      session: { wallet: WALLET },
+      body: { request },
+    }),
+    (error) => error.code === "builder_auth_required",
+  );
+  assert.equal(fetched, false);
+});
+
+test("relayer proxy rejects malformed or missing authentication", () => {
+  assert.throws(
+    () => createPolymarketRelayerProxy({ relayerCredentials: { key: "", address: WALLET } }),
+    /invalid relayer credentials/,
+  );
+  assert.throws(
+    () => createPolymarketRelayerProxy({ relayerCredentials: { key: "key", address: "0x1234" } }),
+    /invalid relayer credentials/,
+  );
+  assert.throws(
+    () => createPolymarketRelayerProxy(),
+    /relayer authentication is required/,
+  );
 });
 
 test("relayer proxy polls only the exact transaction record from the fixed origin", async () => {

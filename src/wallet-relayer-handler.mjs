@@ -24,10 +24,33 @@ function bearer(request) {
 }
 
 function credentialsFromEnvironment() {
+  const key = process.env.POLYMARKET_BUILDER_API_KEY;
+  const secret = process.env.POLYMARKET_BUILDER_SECRET;
+  const passphrase = process.env.POLYMARKET_BUILDER_PASSPHRASE;
+  if (![key, secret, passphrase].every((value) => typeof value === "string" && value.trim().length > 0)) {
+    return undefined;
+  }
   return {
-    key: process.env.POLYMARKET_BUILDER_API_KEY,
-    secret: process.env.POLYMARKET_BUILDER_SECRET,
-    passphrase: process.env.POLYMARKET_BUILDER_PASSPHRASE,
+    key: key.trim(),
+    secret: secret.trim(),
+    passphrase: passphrase.trim(),
+  };
+}
+
+function relayerCredentialsFromEnvironment() {
+  const key = process.env.POLYMARKET_RELAYER_API_KEY;
+  const address = process.env.POLYMARKET_RELAYER_API_KEY_ADDRESS;
+  if (
+    typeof key !== "string" ||
+    key.trim().length === 0 ||
+    typeof address !== "string" ||
+    !/^0x[0-9a-fA-F]{40}$/.test(address)
+  ) {
+    return undefined;
+  }
+  return {
+    key: key.trim(),
+    address,
   };
 }
 
@@ -146,7 +169,10 @@ export function createWalletRelayerHandler({
     secret: process.env.CONVICTION_WALLET_SESSION_SECRET,
     state: walletState,
   });
-  const walletRelayer = relayer || createPolymarketRelayerProxy({ credentials: credentialsFromEnvironment() });
+  const walletRelayer = relayer || createPolymarketRelayerProxy({
+    credentials: credentialsFromEnvironment(),
+    relayerCredentials: relayerCredentialsFromEnvironment(),
+  });
   let polygonVerifier = verifier;
 
   function setupVerifier() {

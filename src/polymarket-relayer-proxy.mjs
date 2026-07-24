@@ -22,7 +22,44 @@ const HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 function builderConfigFromCredentials(credentials) {
+  if (!credentials) return undefined;
+  if (
+    typeof credentials.key !== "string" ||
+    credentials.key.trim().length === 0 ||
+    typeof credentials.secret !== "string" ||
+    credentials.secret.trim().length === 0 ||
+    typeof credentials.passphrase !== "string" ||
+    credentials.passphrase.trim().length === 0
+  ) {
+    return undefined;
+  }
   return new BuilderConfig({ localBuilderCreds: credentials });
+}
+
+function relayerHeaders(credentials) {
+  if (!credentials) return undefined;
+  if (
+    typeof credentials.key !== "string" ||
+    credentials.key.trim().length === 0 ||
+    typeof credentials.address !== "string" ||
+    !ADDRESS_RE.test(credentials.address)
+  ) {
+    throw new TypeError("invalid relayer credentials");
+  }
+  return Object.freeze({
+    RELAYER_API_KEY: credentials.key.trim(),
+    RELAYER_API_KEY_ADDRESS: credentials.address.toLowerCase(),
+  });
+}
+
+function sameAddress(left, right) {
+  return (
+    typeof left === "string" &&
+    typeof right === "string" &&
+    ADDRESS_RE.test(left) &&
+    ADDRESS_RE.test(right) &&
+    left.toLowerCase() === right.toLowerCase()
+  );
 }
 
 function transactionId(value) {
@@ -116,6 +153,7 @@ async function boundedJson(response) {
 
 export function createPolymarketRelayerProxy({
   credentials,
+  relayerCredentials,
   fetchImpl = fetch,
   validate = validateBuilderRequest,
   nowSeconds = () => Math.floor(Date.now() / 1_000),
@@ -128,6 +166,10 @@ export function createPolymarketRelayerProxy({
     throw new TypeError("fetchImpl and nowSeconds must be functions");
   }
   const builderConfig = builderConfigFromCredentials(credentials);
+  const fixedRelayerHeaders = relayerHeaders(relayerCredentials);
+  if (!builderConfig && !fixedRelayerHeaders) {
+    throw new TypeError("relayer authentication is required");
+  }
 
   async function request(path, options = {}) {
     const response = await fetchImpl(`${POLYMARKET_RELAYER_ORIGIN}${path}`, {
@@ -141,10 +183,14 @@ export function createPolymarketRelayerProxy({
   async function run({ operation, session, body }) {
     if (operation === "nonce") {
       const query = new URLSearchParams({ address: session.wallet, type: "WALLET" });
+      const headers = fixedRelayerHeaders &&
+        sameAddress(fixedRelayerHeaders.RELAYER_API_KEY_ADDRESS, session.wallet)
+        ? fixedRelayerHeaders
+        : undefined;
       return {
         ok: true,
         operation,
-        relayer: await request(`/nonce?${query}`),
+        relayer: await request(`/nonce?${query}`, { headers }),
       };
     }
     if (operation === "transaction") {
@@ -180,18 +226,39 @@ export function createPolymarketRelayerProxy({
       nowSeconds: nowSeconds(),
     });
     const timestamp = nowSeconds();
-    const builderHeaders = await builderConfig.generateBuilderHeaders(
-      "POST",
-      RELAYER_SUBMIT_PATH,
-      body.request,
-      timestamp,
-    );
-    if (!builderHeaders) throw new Error("Builder credentials are unavailable");
+    let authenticationHeaders;
+    if (
+      validated.action === "APPROVE_DEPOSIT_WALLET" &&
+      fixedRelayerHeaders &&
+      sameAddress(fixedRelayerHeaders.RELAYER_API_KEY_ADDRESS, session.wallet)
+    ) {
+      authenticationHeaders = fixedRelayerHeaders;
+    } else if (builderConfig) {
+      authenticationHeaders = await builderConfig.generateBuilderHeaders(
+        "POST",
+        RELAYER_SUBMIT_PATH,
+        body.request,
+        timestamp,
+      );
+    } else if (validated.action === "DEPLOY_DEPOSIT_WALLET") {
+      throw new BuilderGuardError(
+        503,
+        "builder_auth_required",
+        "Builder credentials are required to create a Deposit Wallet for a new buyer",
+      );
+    } else {
+      throw new BuilderGuardError(
+        403,
+        "relayer_account_mismatch",
+        "The Relayer API key does not authorize this buyer account",
+      );
+    }
+    if (!authenticationHeaders) throw new Error("Relayer credentials are unavailable");
     const relayer = await request(RELAYER_SUBMIT_PATH, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        ...builderHeaders,
+        ...authenticationHeaders,
       },
       body: body.request,
     });
