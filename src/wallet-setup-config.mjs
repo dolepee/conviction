@@ -36,14 +36,10 @@ export function browserSetupConfigured(environment = process.env) {
     typeof environment.POLYMARKET_BUILDER_API_KEY === "string" && environment.POLYMARKET_BUILDER_API_KEY.trim().length > 0 &&
     typeof environment.POLYMARKET_BUILDER_SECRET === "string" && environment.POLYMARKET_BUILDER_SECRET.trim().length > 0 &&
     typeof environment.POLYMARKET_BUILDER_PASSPHRASE === "string" && environment.POLYMARKET_BUILDER_PASSPHRASE.trim().length > 0;
-  const hasRelayerCredentials =
-    typeof environment.POLYMARKET_RELAYER_API_KEY === "string" && environment.POLYMARKET_RELAYER_API_KEY.trim().length > 0 &&
-    typeof environment.POLYMARKET_RELAYER_API_KEY_ADDRESS === "string" &&
-    /^0x[0-9a-fA-F]{40}$/.test(environment.POLYMARKET_RELAYER_API_KEY_ADDRESS);
   return Boolean(
     typeof environment.CONVICTION_WALLET_SESSION_SECRET === "string" &&
     Buffer.byteLength(environment.CONVICTION_WALLET_SESSION_SECRET, "utf8") >= 32 &&
-    (hasBuilderCredentials || hasRelayerCredentials) &&
+    hasBuilderCredentials &&
     httpsEndpoint(state.url) &&
     typeof state.token === "string" && state.token.length >= 16 &&
     httpsEndpoint(environment.CONVICTION_POLYGON_RPC_URL)

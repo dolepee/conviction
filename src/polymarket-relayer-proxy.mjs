@@ -52,6 +52,16 @@ function relayerHeaders(credentials) {
   });
 }
 
+function sameAddress(left, right) {
+  return (
+    typeof left === "string" &&
+    typeof right === "string" &&
+    ADDRESS_RE.test(left) &&
+    ADDRESS_RE.test(right) &&
+    left.toLowerCase() === right.toLowerCase()
+  );
+}
+
 function transactionId(value) {
   if (typeof value !== "string" || !TRANSACTION_ID_RE.test(value)) {
     throw new BuilderGuardError(502, "invalid_relayer_response", "Polymarket relayer returned an invalid transaction identifier");
@@ -212,12 +222,33 @@ export function createPolymarketRelayerProxy({
       nowSeconds: nowSeconds(),
     });
     const timestamp = nowSeconds();
-    const authenticationHeaders = fixedRelayerHeaders || await builderConfig.generateBuilderHeaders(
-      "POST",
-      RELAYER_SUBMIT_PATH,
-      body.request,
-      timestamp,
-    );
+    let authenticationHeaders;
+    if (
+      validated.action === "APPROVE_DEPOSIT_WALLET" &&
+      fixedRelayerHeaders &&
+      sameAddress(fixedRelayerHeaders.RELAYER_API_KEY_ADDRESS, session.wallet)
+    ) {
+      authenticationHeaders = fixedRelayerHeaders;
+    } else if (builderConfig) {
+      authenticationHeaders = await builderConfig.generateBuilderHeaders(
+        "POST",
+        RELAYER_SUBMIT_PATH,
+        body.request,
+        timestamp,
+      );
+    } else if (validated.action === "DEPLOY_DEPOSIT_WALLET") {
+      throw new BuilderGuardError(
+        503,
+        "builder_auth_required",
+        "Builder credentials are required to create a Deposit Wallet for a new buyer",
+      );
+    } else {
+      throw new BuilderGuardError(
+        403,
+        "relayer_account_mismatch",
+        "The Relayer API key does not authorize this buyer account",
+      );
+    }
     if (!authenticationHeaders) throw new Error("Relayer credentials are unavailable");
     const relayer = await request(RELAYER_SUBMIT_PATH, {
       method: "POST",

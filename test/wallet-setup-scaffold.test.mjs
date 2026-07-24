@@ -112,7 +112,7 @@ test("wallet setup activation requires a complete secure server configuration", 
     POLYMARKET_RELAYER_API_KEY: "relayer-key",
     POLYMARKET_RELAYER_API_KEY_ADDRESS: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   };
-  assert.equal(browserSetupConfigured(relayerEnvironment), true);
+  assert.equal(browserSetupConfigured(relayerEnvironment), false);
   assert.equal(browserSetupConfigured({ ...relayerEnvironment, POLYMARKET_RELAYER_API_KEY_ADDRESS: "0x1234" }), false);
   assert.equal(browserSetupConfigured({ ...environment, CONVICTION_WALLET_STATE_REST_URL: "http://state.example.com" }), false);
   assert.equal(browserSetupConfigured({ ...environment, CONVICTION_WALLET_SESSION_SECRET: "short" }), false);
