@@ -114,4 +114,12 @@ test("wallet setup activation requires a complete secure server configuration", 
   };
   assert.equal(browserSetupConfigured(vercelKvEnvironment), true);
   assert.equal(browserSetupConfigured({ ...vercelKvEnvironment, KV_REST_API_URL: "http://state.example.com" }), false);
+  assert.equal(browserSetupConfigured({
+    ...vercelKvEnvironment,
+    CONVICTION_WALLET_STATE_REST_URL: "https://stale-custom.example.com",
+  }), false);
+  assert.equal(browserSetupConfigured({
+    ...vercelKvEnvironment,
+    CONVICTION_WALLET_STATE_REST_TOKEN: "stale-custom-token-at-least-sixteen-bytes",
+  }), false);
 });

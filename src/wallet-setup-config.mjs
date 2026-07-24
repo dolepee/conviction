@@ -8,9 +8,23 @@ function httpsEndpoint(value) {
 }
 
 export function walletSetupStateEnvironment(environment = process.env) {
+  const explicitUrl = environment.CONVICTION_WALLET_STATE_REST_URL;
+  const explicitToken = environment.CONVICTION_WALLET_STATE_REST_TOKEN;
+  const hasExplicitUrl = typeof explicitUrl === "string" && explicitUrl.length > 0;
+  const hasExplicitToken = typeof explicitToken === "string" && explicitToken.length > 0;
+
+  // Explicit state configuration is an inseparable credential pair. Never
+  // combine one stale/custom override with the other half of Vercel's KV pair.
+  if (hasExplicitUrl || hasExplicitToken) {
+    return Object.freeze({
+      url: hasExplicitUrl && hasExplicitToken ? explicitUrl : undefined,
+      token: hasExplicitUrl && hasExplicitToken ? explicitToken : undefined,
+    });
+  }
+
   return Object.freeze({
-    url: environment.CONVICTION_WALLET_STATE_REST_URL || environment.KV_REST_API_URL,
-    token: environment.CONVICTION_WALLET_STATE_REST_TOKEN || environment.KV_REST_API_TOKEN,
+    url: environment.KV_REST_API_URL,
+    token: environment.KV_REST_API_TOKEN,
   });
 }
 
