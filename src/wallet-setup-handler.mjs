@@ -11,6 +11,8 @@ import { createWalletSetupStateFromEnvironment } from "./wallet-setup-state.mjs"
 const BUILDER_AUTH_CACHE_TTL_MILLISECONDS = 60_000;
 const BUILDER_AUTH_CACHE_TTL_SECONDS = 60;
 const BUILDER_AUTH_LOCK_TTL_SECONDS = 30;
+const BUILDER_AUTH_LOCK_WAIT_MILLISECONDS = 2_500;
+const BUILDER_AUTH_LOCK_POLL_MILLISECONDS = 100;
 const BUILDER_AUTH_STATUS_NAMESPACE = "builder-authorization-status";
 const BUILDER_AUTH_LOCK_NAMESPACE = "builder-authorization-probe";
 const publicGuard = createPublicApiGuard({
@@ -63,15 +65,32 @@ function authorizationStatusId(credentials, environment) {
     .digest("hex");
 }
 
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForAuthorizationStatus({ state, statusId, wait }) {
+  const attempts = Math.ceil(BUILDER_AUTH_LOCK_WAIT_MILLISECONDS / BUILDER_AUTH_LOCK_POLL_MILLISECONDS);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await wait(BUILDER_AUTH_LOCK_POLL_MILLISECONDS);
+    const stored = cachedAuthorization(
+      await state.get(BUILDER_AUTH_STATUS_NAMESPACE, statusId),
+    );
+    if (stored !== undefined) return stored;
+  }
+  return undefined;
+}
+
 export function createBuilderAuthorizationProbe({
   environment = process.env,
   createRelayer = createPolymarketRelayerProxy,
   now = () => Date.now(),
+  wait = sleep,
   cacheTtlMilliseconds = BUILDER_AUTH_CACHE_TTL_MILLISECONDS,
   state,
 } = {}) {
-  if (typeof createRelayer !== "function" || typeof now !== "function") {
-    throw new TypeError("createRelayer and now must be functions");
+  if (typeof createRelayer !== "function" || typeof now !== "function" || typeof wait !== "function") {
+    throw new TypeError("createRelayer, now, and wait must be functions");
   }
   if (!Number.isSafeInteger(cacheTtlMilliseconds) || cacheTtlMilliseconds <= 0) {
     throw new TypeError("cacheTtlMilliseconds must be a positive safe integer");
@@ -103,7 +122,19 @@ export function createBuilderAuthorizationProbe({
             statusId,
             BUILDER_AUTH_LOCK_TTL_SECONDS,
           );
-          if (!claimed) return false;
+          if (!claimed) {
+            const contenderResult = await waitForAuthorizationStatus({
+              state: statusState,
+              statusId,
+              wait,
+            });
+            if (contenderResult !== undefined) {
+              cached = contenderResult;
+              cachedUntil = now() + cacheTtlMilliseconds;
+              return contenderResult;
+            }
+            return false;
+          }
           const relayer = createRelayer({ credentials });
           let result;
           try {

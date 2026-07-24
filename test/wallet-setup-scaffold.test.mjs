@@ -217,6 +217,47 @@ test("Builder authorization status is shared durably across setup-handler instan
   assert.equal(runs, 1);
 });
 
+test("contending Builder authorization probes wait for the lock owner's result", async () => {
+  const environment = {
+    VERCEL_ENV: "production",
+    POLYMARKET_BUILDER_API_KEY: "builder-key",
+    POLYMARKET_BUILDER_SECRET: "builder-secret",
+    POLYMARKET_BUILDER_PASSPHRASE: "builder-passphrase",
+  };
+  const state = createInMemoryWalletSetupState();
+  let releaseOwner;
+  let runs = 0;
+  const owner = createBuilderAuthorizationProbe({
+    environment,
+    state,
+    createRelayer: () => ({
+      run: async () => {
+        runs += 1;
+        await new Promise((resolve) => { releaseOwner = resolve; });
+        return { ok: true, authentication: "builder" };
+      },
+    }),
+  });
+  const ownerPromise = owner();
+  await new Promise((resolve) => setImmediate(resolve));
+  const contender = createBuilderAuthorizationProbe({
+    environment,
+    state,
+    createRelayer: () => ({
+      run: async () => {
+        throw new Error("the contender must not create a second upstream probe");
+      },
+    }),
+    wait: async () => {
+      releaseOwner();
+      await ownerPromise;
+    },
+  });
+  assert.equal(await contender(), true);
+  assert.equal(await ownerPromise, true);
+  assert.equal(runs, 1);
+});
+
 test("Builder authorization status never crosses credential sets", async () => {
   const state = createInMemoryWalletSetupState();
   let runs = 0;
