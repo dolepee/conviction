@@ -101,6 +101,14 @@ assert.ok(app.includes('BROWSER_SETUP_BETA_READY'), "wallet setup beta is not di
 assert.ok(app.includes('BROWSER_SETUP_REQUIRES_ACTIVATION'), "wallet setup UI does not fail closed when inactive");
 assert.ok(app.includes('BROWSER_SETUP_AUTH_CHECKING'), "wallet setup UI does not expose a retryable Builder authorization state");
 assert.ok(app.includes('BROWSER_SETUP_AUTH_UNAVAILABLE'), "wallet setup UI does not fail closed when Builder authorization is unavailable");
+assert.ok(
+  app.includes('response.status === 429') && app.includes('response.headers.get("retry-after")'),
+  "homepage does not retry a temporary wallet-setup rate limit",
+);
+assert.ok(
+  walletSetupApp.includes('response.status === 429') && walletSetupApp.includes('response.headers.get("retry-after")'),
+  "wallet setup page does not retry a temporary wallet-setup rate limit",
+);
 assert.match(
   app,
   /if \(scaffold\.status === "BROWSER_SETUP_BETA_READY"\) \{[\s\S]*?scaffold\?\.paymentAllowed !== true[\s\S]*?scaffold\?\.actions\?\.pay !== true[\s\S]*?scaffold\?\.actions\?\.trade !== true[\s\S]*?scaffold\?\.browserSetup\?\.page !== "\/wallet-setup"/,

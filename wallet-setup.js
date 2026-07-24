@@ -19,6 +19,22 @@ let pendingDeploymentPollToken = null;
 let pendingApprovalPollToken = null;
 let walletSetupRetryTimer = null;
 
+function retryDelayMilliseconds(value, fallbackSeconds = 15) {
+  const seconds = Number(value);
+  const boundedSeconds = Number.isSafeInteger(seconds) && seconds >= 1 && seconds <= 60
+    ? seconds
+    : fallbackSeconds;
+  return boundedSeconds * 1_000;
+}
+
+function retryWalletSetup(delayMilliseconds) {
+  if (walletSetupRetryTimer) return;
+  walletSetupRetryTimer = window.setTimeout(() => {
+    walletSetupRetryTimer = null;
+    void initialize();
+  }, delayMilliseconds);
+}
+
 function setStatus(message, kind = "info") {
   statusBox.textContent = message;
   statusBox.classList.toggle("is-error", kind === "error");
@@ -326,9 +342,20 @@ async function initialize() {
     const response = await fetch("/api/wallet-setup", {
       headers: { accept: "application/json" },
     });
+    if (!response.ok) {
+      connectButton.disabled = true;
+      if (response.status === 429) {
+        setStatus(
+          "Browser setup status is temporarily rate limited. Retrying automatically; do not connect or fund a new wallet here.",
+          "error",
+        );
+        retryWalletSetup(retryDelayMilliseconds(response.headers.get("retry-after"), 60));
+        return;
+      }
+      throw new Error("wallet setup scaffold unavailable");
+    }
     scaffold = await response.json();
     if (
-      !response.ok ||
       scaffold?.status !== "BROWSER_SETUP_BETA_READY" ||
       scaffold?.browserSetup?.approvalCalls?.length !== 5
     ) {
@@ -341,15 +368,7 @@ async function initialize() {
             : "Browser setup authorization is temporarily unavailable. Retrying automatically; do not connect or fund a new wallet here.",
           checking ? "info" : "error",
         );
-        if (!walletSetupRetryTimer) {
-          const delay = Number.isSafeInteger(scaffold.retryAfterSeconds)
-            ? scaffold.retryAfterSeconds * 1_000
-            : 15_000;
-          walletSetupRetryTimer = window.setTimeout(() => {
-            walletSetupRetryTimer = null;
-            void initialize();
-          }, delay);
-        }
+        retryWalletSetup(retryDelayMilliseconds(scaffold.retryAfterSeconds));
         return;
       }
       setStatus(

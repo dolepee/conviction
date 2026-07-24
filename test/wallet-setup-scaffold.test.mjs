@@ -399,6 +399,7 @@ test("wallet setup public status is rate limited before an authorization probe",
   await handler(request, second);
   assert.equal(second.statusCode, 429);
   assert.equal(second.body.error.code, "rate_limited");
+  assert.equal(second.headers["retry-after"], "60");
 });
 
 test("wallet setup activation requires a complete secure server configuration", () => {
