@@ -102,8 +102,15 @@ assert.match(
   /\.js \.site-nav\.is-open\s*\{[^}]*visibility:\s*visible/s,
   "mobile navigation cannot be opened",
 );
+assert.match(
+  css,
+  /\.js \.site-nav\.is-open\s*\{[^}]*overflow-y:\s*auto/s,
+  "open mobile navigation must remain scrollable on short viewports",
+);
 assert.ok(site.includes('event.key === "Escape"'), "mobile navigation does not close with Escape");
 assert.ok(site.includes('navToggle.setAttribute("aria-expanded"'), "mobile navigation does not expose expanded state");
+assert.ok(site.includes('window.matchMedia("(max-width: 860px)")'), "mobile navigation does not track its breakpoint");
+assert.match(site, /mobileMenu\.addEventListener\("change"[\s\S]*?setMenu\(false\)/, "mobile navigation state is not cleared when leaving its breakpoint");
 assert.ok(site.includes("history.pushState"), "product sessions are not connected to history");
 assert.ok(site.includes("window.addEventListener(\"popstate\""), "product sessions do not support browser navigation");
 assert.ok(site.includes("view.hidden = !active"), "inactive product sessions are not hidden semantically");

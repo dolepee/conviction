@@ -47,6 +47,7 @@ const navigation = document.querySelector("#primary-navigation");
 const metaDescription = document.querySelector('meta[name="description"]');
 const canonical = document.querySelector('link[rel="canonical"]');
 const ogUrl = document.querySelector('meta[property="og:url"]');
+const mobileMenu = window.matchMedia("(max-width: 860px)");
 
 document.documentElement.classList.add("js");
 
@@ -101,6 +102,10 @@ for (const link of document.querySelectorAll("a[data-route-to]")) {
 
 navToggle.addEventListener("click", () => {
   setMenu(navToggle.getAttribute("aria-expanded") !== "true");
+});
+
+mobileMenu.addEventListener("change", (event) => {
+  if (!event.matches) setMenu(false);
 });
 
 document.addEventListener("keydown", (event) => {

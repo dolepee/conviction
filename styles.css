@@ -31,7 +31,6 @@ body {
     var(--paper);
   overflow-x: hidden;
 }
-body.menu-open { overflow: hidden; }
 a { color: inherit; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
@@ -370,6 +369,8 @@ h1 em { font-style: normal; color: var(--blue); }
     transition: max-height .2s ease, visibility .2s;
   }
   .js .site-nav.is-open { max-height: calc(100vh - 70px); visibility: visible; }
+  body.menu-open { overflow: hidden; }
+  .js .site-nav.is-open { overflow-y: auto; overscroll-behavior: contain; }
   .site-nav a {
     min-height: 58px;
     padding: .8rem 24px;
