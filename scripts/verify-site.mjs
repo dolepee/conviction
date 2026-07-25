@@ -373,6 +373,15 @@ assert.ok(
   html.includes(signedOpenProof.positionProofHash),
   "issuer-signed OPEN proof hash is not shown",
 );
+for (const signedHeroMarker of [
+  "9.818180 shares",
+  "1.079999 pUSD",
+  "90,672,458",
+  "0x8d45…f2cb",
+  "11/11 checks",
+]) {
+  assert.ok(html.includes(signedHeroMarker), `issuer-signed hero proof is missing ${signedHeroMarker}`);
+}
 assert.equal(
   html.includes("0x1746d89ea5c08c5edc214fcca3baf5b3bc6ce7b4ea9d02427dd88035cd4373b3"),
   false,
