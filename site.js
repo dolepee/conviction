@@ -41,6 +41,15 @@ const routeAliases = new Map([
   ["/index.html", "home"],
   ...Object.entries(routes).map(([name, route]) => [route.path, name]),
 ]);
+const legacyHashRoutes = new Map([
+  ["#try", "trade"],
+  ["#manage", "manage"],
+  ["#proof", "proofs"],
+  ["#verify", "proofs"],
+  ["#safety", "security"],
+  ["#how", "home"],
+  ["#top", "home"],
+]);
 
 const navToggle = document.querySelector("#nav-toggle");
 const navigation = document.querySelector("#primary-navigation");
@@ -54,6 +63,14 @@ document.documentElement.classList.add("js");
 function routeFromPath(pathname) {
   const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
   return routeAliases.get(normalized) || "home";
+}
+
+function routeFromLocation() {
+  const pathRoute = routeFromPath(window.location.pathname);
+  if (pathRoute === "home" && legacyHashRoutes.has(window.location.hash)) {
+    return legacyHashRoutes.get(window.location.hash);
+  }
+  return pathRoute;
 }
 
 function setMenu(open) {
@@ -115,5 +132,11 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-window.addEventListener("popstate", () => activateRoute(routeFromPath(window.location.pathname)));
-activateRoute(routeFromPath(window.location.pathname), { scroll: false });
+window.addEventListener("popstate", () => activateRoute(routeFromLocation()));
+window.addEventListener("hashchange", () => activateRoute(routeFromLocation()));
+
+const initialRoute = routeFromLocation();
+if (legacyHashRoutes.has(window.location.hash)) {
+  history.replaceState({ route: initialRoute }, "", routes[initialRoute].path);
+}
+activateRoute(initialRoute, { scroll: false });

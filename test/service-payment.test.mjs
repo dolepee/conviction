@@ -191,7 +191,7 @@ test("pins the listing payment to one exact X Layer amount and payee", () => {
     extra: { name: "USD₮0", version: "1" },
   });
   assert.match(config.customPaywallHtml, /free interactive OPEN preview/);
-  assert.match(config.customPaywallHtml, /href="\/#try"/);
+  assert.match(config.customPaywallHtml, /href="\/trade"/);
   assert.doesNotMatch(config.customPaywallHtml, /manage-preview/);
   assert.match(config.settlementFailedResponseBody().body.error.message, /position card was not delivered$/);
   assert.equal(PAID_SERVICE_QUOTE_TTL_MS, 300_000);
@@ -206,7 +206,7 @@ test("pins the position manager to a distinct paid resource and price", () => {
   assert.match(config.description, /CLOSE/);
   assert.match(config.customPaywallHtml, /repository-backed buyer agent\/CLI/);
   assert.match(config.customPaywallHtml, /<code>\/api\/manage-preview<\/code>/);
-  assert.match(config.customPaywallHtml, /href="\/#manage"/);
+  assert.match(config.customPaywallHtml, /href="\/manage"/);
   assert.doesNotMatch(config.customPaywallHtml, /interactive OPEN preview/);
   assert.match(config.settlementFailedResponseBody().body.error.message, /bounded position-manager card was not delivered$/);
 });

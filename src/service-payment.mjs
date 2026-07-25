@@ -46,7 +46,7 @@ export const POSITION_CARD_SERVICE = Object.freeze({
   description: "Create one ready-to-sign, fee-inclusive YES or NO position card. First call POST /api/readiness; only a request that passes ready-deposit-wallet identity preflight is eligible for an x402 payment challenge.",
   deliveryNoun: "position card",
   previewHtml: "Use the free interactive OPEN preview on the Conviction home page.",
-  previewHref: "/#try",
+  previewHref: "/trade",
   previewLabel: "Open the free OPEN preview",
   outputSchema: Object.freeze({
     input: Object.freeze({
@@ -218,7 +218,7 @@ export const POSITION_MANAGER_SERVICE = Object.freeze({
   description: "Create one source-bound bounded CLOSE or TAKE_PROFIT card",
   deliveryNoun: "bounded position-manager card",
   previewHtml: "Use the repository-backed buyer agent/CLI, or send the same JSON to <code>/api/manage-preview</code> for a free non-executable manager preview.",
-  previewHref: "/#manage",
+  previewHref: "/manage",
   previewLabel: "See Position Manager",
   outputSchema: Object.freeze({
     input: Object.freeze({

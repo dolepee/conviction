@@ -113,6 +113,8 @@ assert.ok(site.includes('window.matchMedia("(max-width: 860px)")'), "mobile navi
 assert.match(site, /mobileMenu\.addEventListener\("change"[\s\S]*?setMenu\(false\)/, "mobile navigation state is not cleared when leaving its breakpoint");
 assert.ok(site.includes("history.pushState"), "product sessions are not connected to history");
 assert.ok(site.includes("window.addEventListener(\"popstate\""), "product sessions do not support browser navigation");
+assert.ok(site.includes('["#try", "trade"]'), "legacy free-preview links do not route to Trade");
+assert.ok(site.includes('["#manage", "manage"]'), "legacy manager links do not route to Manage");
 assert.ok(site.includes("view.hidden = !active"), "inactive product sessions are not hidden semantically");
 assert.ok(css.includes(":focus-visible"), "missing visible focus styling");
 assert.ok(css.includes("prefers-reduced-motion"), "missing reduced-motion support");
