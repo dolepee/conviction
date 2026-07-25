@@ -6,6 +6,7 @@ import { sha256 } from "../src/canonical.mjs";
 const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 const css = await readFile(new URL("../styles.css", import.meta.url), "utf8");
 const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+const site = await readFile(new URL("../site.js", import.meta.url), "utf8");
 const walletSetupHtml = await readFile(new URL("../wallet-setup.html", import.meta.url), "utf8");
 const walletSetupCss = await readFile(new URL("../wallet-setup.css", import.meta.url), "utf8");
 const walletSetupApp = await readFile(new URL("../wallet-setup.js", import.meta.url), "utf8");
@@ -63,6 +64,15 @@ for (const required of [
   'rel="apple-touch-icon"',
   'rel="manifest"',
   'class="skip-link"',
+  'id="nav-toggle"',
+  'id="primary-navigation"',
+  'data-route-view="home"',
+  'data-route-view="trade"',
+  'data-route-view="manage"',
+  'data-route-view="proofs"',
+  'data-route-view="wallet"',
+  'data-route-view="security"',
+  'data-route-view="developers"',
   'id="proof"',
   'id="manage"',
   'id="try"',
@@ -79,18 +89,42 @@ for (const required of [
 }
 assert.ok(css.includes("@media (max-width: 560px)"), "missing mobile breakpoint");
 assert.ok(
-  css.includes("width: min(1240px, calc(100% - 28px))"),
-  "mobile page width must use a valid bounded calculation",
+  css.includes("--shell: calc(100% - 28px)"),
+  "mobile page shell must use a valid bounded calculation",
+);
+assert.match(
+  css,
+  /\.js \.nav-toggle\s*\{[^}]*display:\s*inline-flex/s,
+  "mobile navigation toggle is not exposed",
+);
+assert.match(
+  css,
+  /\.js \.site-nav\.is-open\s*\{[^}]*visibility:\s*visible/s,
+  "mobile navigation cannot be opened",
+);
+assert.match(
+  css,
+  /\.js \.site-nav\.is-open\s*\{[^}]*overflow-y:\s*auto/s,
+  "open mobile navigation must remain scrollable on short viewports",
+);
+assert.ok(site.includes('event.key === "Escape"'), "mobile navigation does not close with Escape");
+assert.ok(site.includes('navToggle.setAttribute("aria-expanded"'), "mobile navigation does not expose expanded state");
+assert.ok(site.includes('window.matchMedia("(max-width: 860px)")'), "mobile navigation does not track its breakpoint");
+assert.match(site, /mobileMenu\.addEventListener\("change"[\s\S]*?setMenu\(false\)/, "mobile navigation state is not cleared when leaving its breakpoint");
+assert.ok(site.includes("history.pushState"), "product sessions are not connected to history");
+assert.ok(site.includes("window.addEventListener(\"popstate\""), "product sessions do not support browser navigation");
+assert.ok(
+  site.includes('const productionOrigin = "https://conviction-bay.vercel.app"'),
+  "route metadata is not pinned to the production origin",
 );
 assert.doesNotMatch(
-  css,
-  /\.site-header nav\s*\{[^}]*display:\s*none/s,
-  "primary section navigation must remain available on mobile",
+  site,
+  /new URL\(route\.path, window\.location\.origin\)/,
+  "preview or local hosts must not become route canonicals",
 );
-assert.ok(
-  css.includes("grid-template-columns: repeat(5, minmax(0, 1fr))"),
-  "mobile section navigation is not laid out as a compact five-link grid",
-);
+assert.ok(site.includes('["#try", "trade"]'), "legacy free-preview links do not route to Trade");
+assert.ok(site.includes('["#manage", "manage"]'), "legacy manager links do not route to Manage");
+assert.ok(site.includes("view.hidden = !active"), "inactive product sessions are not hidden semantically");
 assert.ok(css.includes(":focus-visible"), "missing visible focus styling");
 assert.ok(css.includes("prefers-reduced-motion"), "missing reduced-motion support");
 assert.ok(css.includes("--muted: #5f6964"), "muted text token does not meet AA contrast");
@@ -350,6 +384,15 @@ assert.ok(
   html.includes(signedOpenProof.positionProofHash),
   "issuer-signed OPEN proof hash is not shown",
 );
+for (const signedHeroMarker of [
+  "9.818180 shares",
+  "1.079999 pUSD",
+  "90,672,458",
+  "0x8d45…f2cb",
+  "11/11 checks",
+]) {
+  assert.ok(html.includes(signedHeroMarker), `issuer-signed hero proof is missing ${signedHeroMarker}`);
+}
 assert.equal(
   html.includes("0x1746d89ea5c08c5edc214fcca3baf5b3bc6ce7b4ea9d02427dd88035cd4373b3"),
   false,
@@ -381,6 +424,7 @@ assert.match(robots, /Allow: \//);
 const spaRewrite = vercel.rewrites.find((rewrite) => rewrite.destination === "/index.html");
 assert.match(spaRewrite?.source || "", /robots/);
 assert.match(spaRewrite?.source || "", /manifest/);
+assert.match(spaRewrite?.source || "", /site\.js/);
 assert.deepEqual(
   vercel.rewrites.filter((rewrite) => rewrite.destination.startsWith("/api/readiness?walletRoute=")).map((rewrite) => [rewrite.source, rewrite.destination]),
   [

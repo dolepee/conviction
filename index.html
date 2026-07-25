@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Conviction — Open, close, and manage bounded prediction-market positions</title>
+    <title>Conviction — Bound the trade. Prove the fill.</title>
     <meta
       name="description"
-      content="Open or close bounded Polymarket YES/NO positions with Polygon fill proof, or arm take profit with authenticated CLOB evidence and prove later fills."
+      content="Open, close, or manage buyer-held Polymarket positions with explicit bounds, separate consent, and issuer-signed Polygon proof."
     />
     <meta name="theme-color" content="#f6f0df" />
     <meta name="color-scheme" content="light" />
@@ -36,111 +36,135 @@
     <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" sizes="180x180" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="stylesheet" href="/styles.css" />
+    <script src="/site.js" type="module"></script>
     <script src="/app.js" type="module"></script>
   </head>
-  <body>
+  <body data-route="home">
     <a class="skip-link" href="#main">Skip to main content</a>
     <header class="site-header">
-      <a class="brand" href="#top" aria-label="Conviction home">
+      <a class="brand" href="/" data-route-to="home" aria-label="Conviction home">
         <img src="/assets/conviction-logo.svg" alt="" width="38" height="38" />
-        <span>Conviction</span>
+        <span class="brand-copy"><strong>Conviction</strong><small>Bounded execution</small></span>
       </a>
-      <nav aria-label="Primary navigation">
-        <a href="#how">How it works</a>
-        <a href="#manage">Manage</a>
-        <a href="#try">Try it</a>
-        <a href="#verify">Verify</a>
-        <a href="#safety">Safety</a>
+      <button
+        class="nav-toggle"
+        id="nav-toggle"
+        type="button"
+        aria-expanded="false"
+        aria-controls="primary-navigation"
+      >
+        <span>Menu</span>
+        <i aria-hidden="true"></i>
+      </button>
+      <nav class="site-nav" id="primary-navigation" aria-label="Primary navigation">
+        <a href="/trade" data-route-to="trade">Trade</a>
+        <a href="/manage" data-route-to="manage">Manage</a>
+        <a href="/proofs" data-route-to="proofs">Proofs</a>
+        <a href="/wallet" data-route-to="wallet">Wallet</a>
+        <a href="/security" data-route-to="security">Security</a>
+        <a href="/developers" data-route-to="developers">Developers</a>
       </nav>
-      <span class="network-pill"><i aria-hidden="true"></i> Polygon live</span>
+      <a class="network-pill" href="/api/health" target="_blank" rel="noreferrer">
+        <i aria-hidden="true"></i> Live
+      </a>
     </header>
 
-    <main id="main">
-      <section class="hero" id="top" aria-labelledby="hero-title">
+    <main id="main" tabindex="-1">
+      <section class="hero route-view is-active" data-route-view="home" id="top" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <p class="eyebrow">Buyer-held wallet. Explicit bounds. Independent proof.</p>
-          <h1 id="hero-title">Turn a market call into a <em>managed position.</em></h1>
+          <p class="eyebrow">The execution layer for prediction-market agents</p>
+          <h1 id="hero-title">Bound the trade.<br /><em>Prove the fill.</em></h1>
           <p class="lede">
-            Your buyer agent can open or close a YES/NO position, or arm a take-profit order, without handing
-            Conviction a key. It checks first-use readiness, pays the selected service, shows the exact bounds,
-            obtains fresh trade consent, handles the official wallet flow, and returns independently checked evidence
-            in the same session.
+            Open YES or NO, close an exact position, or arm take profit from a buyer-held wallet. Conviction
+            shows the full economic bound before consent, keeps service payment separate from trade approval,
+            and returns evidence rebuilt from public chain state.
           </p>
           <div class="hero-actions">
-            <a class="button button-primary" href="#try">Try a no-wallet preview</a>
+            <a class="button button-primary" href="/trade" data-route-to="trade">Preview a live market</a>
             <a
               class="button button-quiet"
-              href="https://polygonscan.com/tx/0xf54b4b0deb2f0e53e0c01688eb5a66277177e96af2913d03cbf84d90d7da7313"
+              href="https://polygonscan.com/tx/0xf09235303198470114e46c123c19e4e0562420e933d10a169dc92bf1ed2f34bf"
               target="_blank"
               rel="noreferrer"
-            >Open live acceptance fill <span aria-hidden="true">↗</span></a>
+            >Open issuer-signed fill <span aria-hidden="true">↗</span></a>
           </div>
           <ul class="trust-strip" aria-label="Product guarantees">
-            <li>OPEN or Position Manager</li>
-            <li>No key leaves your wallet</li>
-            <li>CLOB identity + Polygon proof</li>
+            <li>Buyer-held wallet</li>
+            <li>Separate payment + trade consent</li>
+            <li>Issuer-signed Polygon proof</li>
           </ul>
         </div>
 
         <article class="fill-ticket" aria-labelledby="ticket-title">
           <div class="ticket-topline">
-            <span>LIVE ACCEPTANCE / OPEN</span>
-            <span class="verified-mark">Card → fill → proof</span>
+            <span>CONTROLLED PROOF / SIGNED OPEN</span>
+            <span class="verified-mark">Verified</span>
           </div>
-          <h2 id="ticket-title">Controlled house run: one paid, bounded journey verified live.</h2>
+          <div class="execution-flow" aria-label="Execution proof flow">
+            <span>Intent</span><i aria-hidden="true"></i><span>Consent</span><i aria-hidden="true"></i><span>Fill</span><i aria-hidden="true"></i><span>Proof</span>
+          </div>
+          <h2 id="ticket-title">An issuer-signed order settled inside its five-minute window.</h2>
           <div class="ticket-direction">
             <span class="yes-orb">YES</span>
             <div>
-              <strong>10.000000 shares</strong>
+              <strong>9.818180 shares</strong>
               <small>matched on Polymarket V2</small>
             </div>
           </div>
           <dl class="ticket-grid">
-            <div><dt>Spend</dt><dd>1.10 pUSD</dd></div>
-            <div><dt>Max price</dt><dd>11¢</dd></div>
+            <div><dt>Spend</dt><dd>1.079999 pUSD</dd></div>
+            <div><dt>Max price</dt><dd>12¢</dd></div>
             <div><dt>Order</dt><dd>FAK</dd></div>
-            <div><dt>Block</dt><dd>90,673,518</dd></div>
+            <div><dt>Block</dt><dd>90,672,458</dd></div>
           </dl>
           <div class="ticket-proof">
-            <span>Proof</span>
-            <code>0x7048…ea98</code>
-            <span aria-label="All live acceptance checks passed">8/8 checks</span>
+            <span>Issuer-signed proof</span>
+            <code>0x8d45…f2cb</code>
+            <span aria-label="All signed proof checks passed">11/11 checks</span>
           </div>
         </article>
       </section>
 
-      <section class="loop" id="how" aria-labelledby="loop-title">
+      <section class="loop route-view is-active" data-route-view="home" id="how" aria-labelledby="loop-title">
         <div class="section-heading">
-          <p class="eyebrow">The product loop</p>
-          <h2 id="loop-title">One visible step at a time.</h2>
+          <p class="eyebrow">One position lifecycle</p>
+          <h2 id="loop-title">From conviction to verifiable position.</h2>
+          <p>Conviction is deliberately narrow: one market, one bounded action, one buyer wallet, one proof.</p>
         </div>
         <ol class="loop-steps">
-          <li><span>01</span><h3>Paste a market</h3><p>Start read-only. No wallet, approval, payment, signature, or transaction.</p></li>
-          <li><span>02</span><h3>Preview the bounds</h3><p>Choose YES or NO, total risk budget, and the maximum price you accept.</p></li>
-          <li><span>03</span><h3>Confirm one bounded trade</h3><p>After the separate service payment, your buyer agent dry-runs the exact order and asks for fresh trade consent.</p></li>
-          <li><span>04</span><h3>Receive the proof</h3><p>The same session returns an authenticated order proof or independently verified Polygon fill.</p></li>
+          <li><span>01 / DISCOVER</span><h3>Read the live book</h3><p>Start with a no-wallet preview of both outcome tokens and current viable bounds.</p></li>
+          <li><span>02 / BOUND</span><h3>Set risk, not vibes</h3><p>Choose YES or NO, all-in budget, hard price cap, and one exact action.</p></li>
+          <li><span>03 / CONSENT</span><h3>Keep the two approvals separate</h3><p>Pay for the service, inspect the final card, then confirm the trade independently.</p></li>
+          <li><span>04 / PROVE</span><h3>Rebuild the result</h3><p>Verify the actual wallet, token, shares, debit, price, receipt, and signed window.</p></li>
         </ol>
+        <div class="route-cta">
+          <div><strong>Ready to inspect a market?</strong><span>The first two steps are free and read-only.</span></div>
+          <a class="button button-primary" href="/trade" data-route-to="trade">Open Trade</a>
+        </div>
       </section>
 
-      <section class="loop" id="manage" aria-labelledby="manage-title">
+      <section class="loop route-view" data-route-view="manage" id="manage" aria-labelledby="manage-title">
         <div class="section-heading">
-          <p class="eyebrow">Two paid products, one position lifecycle</p>
+          <p class="eyebrow">Position Manager · 0.10 USD₮0</p>
           <h2 id="manage-title">Open it. Exit it. Or leave a bounded target.</h2>
           <p>
-            OPEN costs 0.05 USD₮0 on X Layer. Position Manager costs 0.10 USD₮0 and accepts exactly one
-            source-bound action: immediate CLOSE or post-only TAKE_PROFIT. These are service fees; Polygon
-            principal, venue fees, and gas remain separate.
+            Position Manager consumes the verified source position and accepts exactly one source-bound action:
+            immediate CLOSE or post-only TAKE_PROFIT. Service fees are paid on X Layer; Polygon principal,
+            venue fees, and gas remain separate.
           </p>
         </div>
-        <ol class="loop-steps">
-          <li><span>01</span><h3>OPEN</h3><p>Buy YES or NO with a fee-inclusive risk budget, hard maximum price, and FAK semantics.</p></li>
-          <li><span>02</span><h3>CLOSE</h3><p>Sell exact whole shares immediately with a hard floor and FOK exact-fill-or-no-fill semantics.</p></li>
-          <li><span>03</span><h3>TAKE PROFIT</h3><p>Arm one post-only GTD SELL at your target, then check, prove any fill, or cancel only that exact order.</p></li>
-          <li><span>04</span><h3>FAIL CLOSED</h3><p>Token, wallet, source, amount, price, expiry, status, or receipt substitution stops the action.</p></li>
-        </ol>
+        <div class="action-grid">
+          <article><span>OPEN · 0.05</span><h3>Enter with a hard ceiling.</h3><p>FAK BUY, whole-share planning, fee-inclusive budget, and a wallet-bound issuer-signed card.</p><a href="/trade" data-route-to="trade">Preview OPEN →</a></article>
+          <article><span>CLOSE · 0.10</span><h3>Exit an exact quantity now.</h3><p>FOK SELL with a hard minimum return. Partial or substituted fills do not pass proof.</p><a href="/api/executor" target="_blank" rel="noreferrer">Inspect executor →</a></article>
+          <article><span>TAKE PROFIT · 0.10</span><h3>Leave one bounded target.</h3><p>Post-only GTD SELL, tied to the source position, with status, later-fill proof, and exact cancellation.</p><a href="/api/health" target="_blank" rel="noreferrer">Check live capability →</a></article>
+        </div>
+        <aside class="manager-boundary">
+          <strong>Fail-closed boundary</strong>
+          <p>Token, wallet, source proof, amount, price, expiry, status, or receipt substitution stops the action.</p>
+        </aside>
       </section>
 
-      <section class="proof-section" id="proof" aria-labelledby="proof-title">
+      <section class="proof-section route-view" data-route-view="proofs" id="proof" aria-labelledby="proof-title">
         <div class="proof-intro">
           <p class="eyebrow">Not a screenshot</p>
           <h2 id="proof-title">The receipt is the product.</h2>
@@ -193,10 +217,10 @@
         </div>
       </section>
 
-      <section class="compiler-section" id="try" aria-labelledby="compiler-title">
+      <section class="compiler-section route-view" data-route-view="trade" id="try" aria-labelledby="compiler-title">
         <div class="section-heading">
-          <p class="eyebrow">Guided position card</p>
-          <h2 id="compiler-title">Start with one market. No wallet required.</h2>
+          <p class="eyebrow">Trade session · OPEN · 0.05 USD₮0</p>
+          <h2 id="compiler-title">Inspect the market before your wallet enters the room.</h2>
           <p>
             The first two steps are read-only: no key, approval, payment, signature, or transaction.
             Your wallet is requested only after you have inspected the exact fee-inclusive bounds.
@@ -322,7 +346,7 @@
         </div>
       </section>
 
-      <section class="verification-section" id="verify" aria-labelledby="verify-title">
+      <section class="verification-section route-view" data-route-view="proofs" id="verify" aria-labelledby="verify-title">
         <div class="section-heading">
           <p class="eyebrow">After execution</p>
           <h2 id="verify-title">Verify the fill, not the success message.</h2>
@@ -353,7 +377,45 @@
         </div>
       </section>
 
-      <section class="safety-section" id="safety" aria-labelledby="safety-title">
+      <section class="wallet-section route-view" data-route-view="wallet" id="wallet" aria-labelledby="wallet-title">
+        <div class="section-heading">
+          <p class="eyebrow">Buyer readiness</p>
+          <h2 id="wallet-title">First-run setup is part of the product.</h2>
+          <p>
+            Conviction checks whether the buyer is distinct from the service payee, regionally eligible,
+            funded on both rails, and ready for the selected wallet route before a paid journey begins.
+          </p>
+        </div>
+        <div class="readiness-grid">
+          <article>
+            <span>01</span>
+            <h3>Connect a dedicated wallet</h3>
+            <p>Use a low-balance buyer-controlled wallet. Conviction never receives the key or CLOB credentials.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>Prepare Polymarket access</h3>
+            <p>The guided browser setup surfaces deposit-wallet state, approval scope, and any policy blocker before payment.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>Fund the two rails</h3>
+            <p>X Layer USD₮0 pays for the service. Polygon pUSD funds the position. They remain visibly separate.</p>
+          </article>
+          <article>
+            <span>04</span>
+            <h3>Return READY or stop</h3>
+            <p>Unsupported buyers receive a structured next action. Conviction does not charge and discover the blocker later.</p>
+          </article>
+        </div>
+        <div class="route-cta">
+          <div><strong>New buyer wallet?</strong><span>Run the guided setup before starting a paid OPEN.</span></div>
+          <a class="button button-primary" href="/wallet-setup">Open guided setup</a>
+          <a class="button button-quiet" href="/api/readiness" target="_blank" rel="noreferrer">Inspect readiness API</a>
+        </div>
+      </section>
+
+      <section class="safety-section route-view" data-route-view="security" id="safety" aria-labelledby="safety-title">
         <div>
           <p class="eyebrow">Hard boundary</p>
           <h2 id="safety-title">Conviction bounds intent. Your wallet decides whether to execute.</h2>
@@ -377,12 +439,44 @@
           </p>
         </div>
       </section>
+
+      <section class="developers-section route-view" data-route-view="developers" id="developers" aria-labelledby="developers-title">
+        <div class="section-heading">
+          <p class="eyebrow">Builder surface</p>
+          <h2 id="developers-title">Two paid services. One verifiable contract.</h2>
+          <p>Every paid response is designed for agent consumption: explicit input schema, signed intent, executable handoff, and deterministic proof fields.</p>
+        </div>
+        <div class="endpoint-grid">
+          <article>
+            <header><span>POST</span><code>/api/service</code><b>0.05 USD₮0</b></header>
+            <h3>Bounded YES/NO Position</h3>
+            <p>Market, outcome, all-in spend, maximum price, and buyer wallet in. Issuer-signed OPEN card out.</p>
+          </article>
+          <article>
+            <header><span>POST</span><code>/api/manage</code><b>0.10 USD₮0</b></header>
+            <h3>Position Manager</h3>
+            <p>Verified source proof plus CLOSE or TAKE_PROFIT intent in. One source-bound manager card out.</p>
+          </article>
+          <article>
+            <header><span>POST</span><code>/api/receipt</code><b>FREE</b></header>
+            <h3>Signed proof verification</h3>
+            <p>Signed dossier, Polygon transaction, and order ID in. Recomputed assurance and proof hash out.</p>
+          </article>
+        </div>
+        <div class="developer-links">
+          <a class="button button-primary" href="/api/executor" target="_blank" rel="noreferrer">Open executor descriptor</a>
+          <a class="button button-quiet" href="https://github.com/dolepee/conviction" target="_blank" rel="noreferrer">Read source on GitHub</a>
+          <a class="button button-quiet" href="/assets/conviction-signed-open-proof.json" download>Download signed proof</a>
+        </div>
+      </section>
     </main>
 
     <footer class="site-footer">
       <div class="brand"><img src="/assets/conviction-logo.svg" alt="" width="32" height="32" /><span>Conviction</span></div>
       <p>Built for OKX.AI Genesis · controlled house proof, not external traction.</p>
       <nav class="footer-links" aria-label="Trust and support">
+        <a href="/trade" data-route-to="trade">Trade</a>
+        <a href="/proofs" data-route-to="proofs">Proofs</a>
         <a href="/privacy.html">Privacy</a>
         <a href="/terms.html">Terms</a>
         <a href="/api/health">Status</a>
