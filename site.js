@@ -1,3 +1,5 @@
+const productionOrigin = "https://conviction-bay.vercel.app";
+
 const routes = {
   home: {
     path: "/",
@@ -85,8 +87,8 @@ function activateRoute(routeName, { scroll = true } = {}) {
   document.body.dataset.route = name;
   document.title = route.title;
   metaDescription?.setAttribute("content", route.description);
-  canonical?.setAttribute("href", new URL(route.path, window.location.origin).href);
-  ogUrl?.setAttribute("content", new URL(route.path, window.location.origin).href);
+  canonical?.setAttribute("href", new URL(route.path, productionOrigin).href);
+  ogUrl?.setAttribute("content", new URL(route.path, productionOrigin).href);
 
   for (const view of document.querySelectorAll("[data-route-view]")) {
     const active = view.dataset.routeView === name;
