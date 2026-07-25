@@ -6,6 +6,7 @@ import { sha256 } from "../src/canonical.mjs";
 const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 const css = await readFile(new URL("../styles.css", import.meta.url), "utf8");
 const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+const site = await readFile(new URL("../site.js", import.meta.url), "utf8");
 const walletSetupHtml = await readFile(new URL("../wallet-setup.html", import.meta.url), "utf8");
 const walletSetupCss = await readFile(new URL("../wallet-setup.css", import.meta.url), "utf8");
 const walletSetupApp = await readFile(new URL("../wallet-setup.js", import.meta.url), "utf8");
@@ -63,6 +64,15 @@ for (const required of [
   'rel="apple-touch-icon"',
   'rel="manifest"',
   'class="skip-link"',
+  'id="nav-toggle"',
+  'id="primary-navigation"',
+  'data-route-view="home"',
+  'data-route-view="trade"',
+  'data-route-view="manage"',
+  'data-route-view="proofs"',
+  'data-route-view="wallet"',
+  'data-route-view="security"',
+  'data-route-view="developers"',
   'id="proof"',
   'id="manage"',
   'id="try"',
@@ -79,18 +89,24 @@ for (const required of [
 }
 assert.ok(css.includes("@media (max-width: 560px)"), "missing mobile breakpoint");
 assert.ok(
-  css.includes("width: min(1240px, calc(100% - 28px))"),
-  "mobile page width must use a valid bounded calculation",
+  css.includes("--shell: calc(100% - 28px)"),
+  "mobile page shell must use a valid bounded calculation",
 );
-assert.doesNotMatch(
+assert.match(
   css,
-  /\.site-header nav\s*\{[^}]*display:\s*none/s,
-  "primary section navigation must remain available on mobile",
+  /\.js \.nav-toggle\s*\{[^}]*display:\s*inline-flex/s,
+  "mobile navigation toggle is not exposed",
 );
-assert.ok(
-  css.includes("grid-template-columns: repeat(5, minmax(0, 1fr))"),
-  "mobile section navigation is not laid out as a compact five-link grid",
+assert.match(
+  css,
+  /\.js \.site-nav\.is-open\s*\{[^}]*visibility:\s*visible/s,
+  "mobile navigation cannot be opened",
 );
+assert.ok(site.includes('event.key === "Escape"'), "mobile navigation does not close with Escape");
+assert.ok(site.includes('navToggle.setAttribute("aria-expanded"'), "mobile navigation does not expose expanded state");
+assert.ok(site.includes("history.pushState"), "product sessions are not connected to history");
+assert.ok(site.includes("window.addEventListener(\"popstate\""), "product sessions do not support browser navigation");
+assert.ok(site.includes("view.hidden = !active"), "inactive product sessions are not hidden semantically");
 assert.ok(css.includes(":focus-visible"), "missing visible focus styling");
 assert.ok(css.includes("prefers-reduced-motion"), "missing reduced-motion support");
 assert.ok(css.includes("--muted: #5f6964"), "muted text token does not meet AA contrast");
@@ -381,6 +397,7 @@ assert.match(robots, /Allow: \//);
 const spaRewrite = vercel.rewrites.find((rewrite) => rewrite.destination === "/index.html");
 assert.match(spaRewrite?.source || "", /robots/);
 assert.match(spaRewrite?.source || "", /manifest/);
+assert.match(spaRewrite?.source || "", /site\.js/);
 assert.deepEqual(
   vercel.rewrites.filter((rewrite) => rewrite.destination.startsWith("/api/readiness?walletRoute=")).map((rewrite) => [rewrite.source, rewrite.destination]),
   [

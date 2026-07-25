@@ -9,6 +9,7 @@ const files = [
   "manifest.webmanifest",
   "privacy.html",
   "robots.txt",
+  "site.js",
   "styles.css",
   "terms.html",
   "wallet-setup.css",
